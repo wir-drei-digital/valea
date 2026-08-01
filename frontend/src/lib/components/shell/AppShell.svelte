@@ -20,15 +20,9 @@
   import { goto } from '$app/navigation';
   import ContentBar from './ContentBar.svelte';
   import { menuItems } from '$lib/shell/content-bar';
-  import { panesThatFit } from '$lib/shell/pane-fit';
-  import {
-    PANE_CAP,
-    dedupeSurfaces,
-    parsePanes,
-    withPanes,
-    type PaneDescriptor
-  } from '$lib/panes/pane-route';
-  import { loadNavVisible, routeKeyFor, saveNavVisible } from '$lib/panes/pane-memory';
+  import { paneRoom } from '$lib/shell/pane-room.svelte';
+  import { dedupeSurfaces, parsePanes, withPanes, type PaneDescriptor } from '$lib/panes/pane-route';
+  import { routeKeyFor } from '$lib/panes/pane-memory';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
 
@@ -56,40 +50,21 @@
   const isPaneHost = $derived(routeKeyFor(page.url.pathname) !== null);
   const panes = $derived(parsePanes(page.url.searchParams));
 
-  // The nav collapse is persisted because every route mounts its own
-  // AppShell: held in component state it would spring back open on the next
-  // navigation, one click after the user asked for the width.
-  let navVisible = $state(loadNavVisible());
+  // The window measurement and the nav collapse both live in `paneRoom`, not
+  // here. The collapse is persisted because every route mounts its own
+  // AppShell (held in component state it would spring back open on the next
+  // navigation, one click after the user asked for the width); the ROOM the
+  // two of them add up to is shared because route-owned controls open panes
+  // too, and a gate only this component could see was a gate they all walked
+  // past. See `pane-room.svelte.ts`.
+  const navVisible = $derived(paneRoom.navVisible);
 
-  function toggleNav(): void {
-    navVisible = !navVisible;
-    saveNavVisible(navVisible);
-  }
-
-  // `undefined` until the window is measured — on the server there is no
-  // window at all. Every read is guarded, because `panesThatFit(NaN, …)`
-  // returns NaN (`spare < 0` is false for NaN, and `Math.min(2, NaN)` is
-  // NaN), and a NaN pane count silently becomes "no room" at best and a
-  // `RangeError` in whatever tries to build an array of that many.
-  let windowWidth = $state<number | undefined>(
-    typeof window === 'undefined' ? undefined : window.innerWidth
-  );
-  const paneSlots = $derived(
-    typeof windowWidth === 'number' && Number.isFinite(windowWidth)
-      ? panesThatFit(windowWidth, navVisible)
-      : 0
-  );
-
-  // Width is consulted ONLY here, at the moment a pane would be added —
-  // never on resize. Narrowing the window mounts and unmounts nothing; see
-  // `pane-fit.ts`'s header for why continuous auto-hide is not implementable
-  // without dropping a live session's channel.
-  const canAddPane = $derived(isPaneHost && panes.length < PANE_CAP && panes.length < paneSlots);
-  const addPaneReason = $derived(
-    panes.length >= PANE_CAP
-      ? 'Two panes beside the main view is the maximum'
-      : 'Not enough width for another pane'
-  );
+  // Width is consulted ONLY here and at the other pane-opening controls, at
+  // the moment a pane would be added — never on resize. Narrowing the window
+  // mounts and unmounts nothing; see `pane-fit.ts`'s header for why continuous
+  // auto-hide is not implementable without dropping a live session's channel.
+  const canAddPane = $derived(isPaneHost && paneRoom.canAdd(panes.length));
+  const addPaneReason = $derived(paneRoom.reasonFor(panes.length));
 
   const enabledMountKeys = $derived(
     mountsStore.mounts.filter((m) => m.enabled && !m.degraded).map((m) => m.mountKey)
@@ -135,7 +110,7 @@
   }
 </script>
 
-<svelte:window bind:innerWidth={windowWidth} />
+<svelte:window bind:innerWidth={paneRoom.width} />
 
 <div class="bg-paper-surface text-ink-body flex h-screen">
   {#if navVisible}
@@ -151,7 +126,7 @@
       {canAddPane}
       {addPaneReason}
       {navVisible}
-      onToggleNav={toggleNav}
+      onToggleNav={() => paneRoom.toggleNav()}
     />
   </div>
 </div>

@@ -25,10 +25,14 @@ vi.mock('$app/navigation', () => ({
 
 const ORIGIN = 'http://localhost';
 
-function host(initial: string, primary: PaneDescriptor | null = null) {
+function host(
+  initial: string,
+  primary: PaneDescriptor | null = null,
+  roomForPane?: () => boolean
+) {
   let url = new URL(initial, ORIGIN);
   const panes = () => dedupeSurfaces(primary, parsePanes(url.searchParams));
-  const wiring = paneWiring({ url: () => url, panes, primary: () => primary });
+  const wiring = paneWiring({ url: () => url, panes, primary: () => primary, roomForPane });
 
   return {
     wiring,
@@ -171,5 +175,46 @@ describe('takeAutoCreatedPath', () => {
     h.land();
     expect(h.panes()).toEqual([{ kind: 'files', mountKey: 'life', paths: ['CONTEXT.md'] }]);
     expect(h.context().takeAutoCreatedPath?.()).toBeNull();
+  });
+});
+
+describe('openBeside — the width gate a route-owned control must share', () => {
+  const session: PaneDescriptor = { kind: 'chat', sessionId: 's9' };
+
+  it('appends the pane when the window has room', () => {
+    const h = host('/knowledge/life/A.md', null, () => true);
+    h.wiring.openBeside(session);
+    h.land();
+    expect(h.panes()).toEqual([session]);
+  });
+
+  it('refuses when the window has no room for another pane', () => {
+    // The bug this closes: at a 900px window `panesThatFit` is 0, the bar's
+    // ＋ Pane is correctly disabled, and this control — six pixels above it —
+    // opened a chat into a ~130px column anyway. The picker disables itself
+    // with the reason; this is the guard behind it, which also covers
+    // keyboard activation of an `aria-disabled` button.
+    const h = host('/knowledge/life/A.md', null, () => false);
+    h.wiring.openBeside(session);
+    expect(h.navigated()).toBe(0);
+    expect(h.panes()).toEqual([]);
+  });
+
+  it('has no opinion for a route that supplies none', () => {
+    // Absent means absent, not false: a route with no such control must not
+    // have its own `openBeside` silently disabled by an unset option.
+    const h = host('/knowledge/life/A.md');
+    h.wiring.openBeside(session);
+    h.land();
+    expect(h.panes()).toEqual([session]);
+  });
+
+  it('refuses a full row even when the window says there is room', () => {
+    // The cap outranks the width — `PANE_CAP` is the one refusal no monitor
+    // can lift, and the room reader must not be able to talk past it.
+    const h = host(`/knowledge/life/A.md?pane=${life}&pane=mail:me@x.test`, null, () => true);
+    expect(h.panes()).toHaveLength(2);
+    h.wiring.openBeside(session);
+    expect(h.navigated()).toBe(0);
   });
 });

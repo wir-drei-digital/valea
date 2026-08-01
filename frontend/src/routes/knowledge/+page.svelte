@@ -22,6 +22,7 @@
   import { goto, replaceState } from '$app/navigation';
   import { AppFrame, ListPane, MainColumn, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { paneWiring } from '$lib/panes/pane-wiring';
+  import { paneRoom } from '$lib/shell/pane-room.svelte';
   import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -113,8 +114,15 @@
       void goto(hrefWithPanes(knowledgeHref(sel.mountKey, sel.path), page.url), {
         keepFocus: true,
         noScroll: true
-      })
+      }),
+    roomForPane: () => paneRoom.canAdd(panes.length)
   });
+
+  // The session picker opens a PANE, so it answers to the same gate ＋ Pane
+  // does — see `pane-room.svelte.ts` for what the two disagreeing cost.
+  const pickerDisabled = $derived(
+    paneRoom.canAdd(panes.length) ? null : paneRoom.reasonFor(panes.length)
+  );
 
   // Reopen whatever was last beside the file browser, but only when the URL
   // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
@@ -271,6 +279,7 @@
                       {mountKey}
                       onOpenSession={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
                       onNewSession={() => wiring.openBeside({ kind: 'chat-new', mountKey })}
+                      disabledReason={pickerDisabled}
                     />
                     <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
                   </div>

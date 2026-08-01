@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { panesThatFit, splitsThatFit, truncateToFit } from './pane-fit';
+import { panesThatFit, splitsThatFit, treeFits, truncateToFit } from './pane-fit';
 import type { PaneDescriptor } from '$lib/panes/pane-route';
 
 const a: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [] };
@@ -101,5 +101,44 @@ describe('truncateToFit', () => {
     const panes = [a, b];
     truncateToFit(panes, 700, true);
     expect(panes).toEqual([a, b]);
+  });
+});
+
+// Same convention as `splitsThatFit` above: the widths are written out rather
+// than imported, so a constant that moves has to be argued for here.
+describe('treeFits', () => {
+  it('affords the tree once a split still clears its minimum beside it', () => {
+    expect(treeFits(240 + 240, 1)).toBe(true);
+  });
+
+  it('drops the tree one pixel below that', () => {
+    // THE finding: an assistant-opened Files pane at a 900px window is 260px
+    // wide, and a fixed 240px `shrink-0` tree leaves the file a 20px column —
+    // mounted, fetched, and completely invisible, for the price of a pane slot.
+    expect(treeFits(240 + 240 - 1, 1)).toBe(false);
+    expect(treeFits(260, 1)).toBe(false);
+  });
+
+  it('affords the tree on an EMPTY pane at any width', () => {
+    // There is no file to starve, and a pane with neither tree nor file is
+    // the blank surface the blanket auto-hide proposal was rejected for.
+    expect(treeFits(260, 0)).toBe(true);
+    expect(treeFits(1, 0)).toBe(true);
+  });
+
+  it('affords the tree while the pane is unmeasured', () => {
+    // `bind:clientWidth` reads 0 until the first ResizeObserver delivery.
+    // Reading that as "infinitely narrow" would blink the tree out of every
+    // Files pane on mount, including the wide ones.
+    expect(treeFits(0, 1)).toBe(true);
+    expect(treeFits(-1, 1)).toBe(true);
+  });
+
+  it('judges two open files by the same one-split floor', () => {
+    // The question is whether the tree starves the file column, not whether
+    // both files clear the minimum — `splitsThatFit` already caps that, and
+    // truncating the row would close a file the user opened.
+    expect(treeFits(240 + 240, 2)).toBe(true);
+    expect(treeFits(240 + 240 - 1, 2)).toBe(false);
   });
 });

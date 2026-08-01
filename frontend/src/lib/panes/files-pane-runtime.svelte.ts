@@ -9,10 +9,12 @@
  * Files panes never share an auto-open claim. Only the tree preference is
  * shared, and that goes through `pane-memory`, not through here.
  *
- * It carries no width figure and no add-split action any more: both existed
- * for a header "open a second file" button that has been removed, because a
- * header control has no file to name and could only guess one. The pane's
- * width cap is now purely local to the pane body.
+ * It carries no width FIGURE and no add-split action any more: both existed for
+ * a header "open a second file" button that has been removed, because a header
+ * control has no file to name and could only guess one. The split cap is purely
+ * local to the pane body now. What does cross back up is `treeBlocked` — a
+ * width-derived REASON rather than a measurement, and only because the control
+ * it governs lives in the header.
  */
 import { loadChrome, saveChrome } from './pane-memory';
 import type { PaneDescriptor } from './pane-route';
@@ -39,7 +41,29 @@ export class FilesPaneState {
    */
   autoPath = $state<string | null>(null);
 
+  /**
+   * Why the tree cannot be shown right now, or `null` when it can.
+   *
+   * Written by the pane BODY, which is the only thing that can measure the
+   * pane, and read by the header control, which sits in `PaneHost`'s header and
+   * can measure nothing. That is the same header/body bridge `treeVisible`
+   * already is, in the other direction — and it is what keeps the toggle from
+   * lying: with a file open in a pane too narrow for `TREE_W + SPLIT_MIN` the
+   * body hides the tree regardless of the preference, and a button still
+   * reading "Hide the file tree", `aria-pressed="true"`, over no tree is worse
+   * than a disabled one, because it names a state that is not on screen.
+   */
+  treeBlocked = $state<string | null>(null);
+
+  /** What is actually rendered: the preference, unless the width overrides it. */
+  get treeShown(): boolean {
+    return this.treeVisible && this.treeBlocked === null;
+  }
+
   toggleTree(): void {
+    // Matches the `aria-disabled` control: the guard covers pointer AND
+    // keyboard activation, which an `aria-disabled` button still receives.
+    if (this.treeBlocked !== null) return;
     this.treeVisible = !this.treeVisible;
     const chrome = loadChrome();
     saveChrome({ ...chrome, files: { tree: this.treeVisible } });

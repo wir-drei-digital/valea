@@ -37,7 +37,9 @@ export type PaneWiring = {
   /**
    * Append a pane, for a route-owned control that opens one (the knowledge
    * routes' session picker). The bar's ＋ Pane does the same thing from the
-   * shell. Deduped against the primary, and a no-op once the row is full.
+   * shell. Deduped against the primary, and a no-op once the row is full or
+   * the window has no width for another pane — the SAME gate ＋ Pane applies,
+   * because a pane opened here is indistinguishable from one opened there.
    */
   openBeside: (d: PaneDescriptor) => void;
 };
@@ -55,6 +57,19 @@ export function paneWiring(read: {
    * its own, so a file opens into a Files pane instead.
    */
   openInPrimary?: (sel: FileSelection) => void;
+  /**
+   * Whether the window has room for one more pane — `paneRoom.canAdd`, passed
+   * as a thunk so this module stays free of `window` and stays unit-testable.
+   * `openBeside` alone consults it; `openFileSurface` deliberately does not,
+   * for the reason its own body records.
+   *
+   * Absent means "no opinion", which is what a route with no such control
+   * wants — but the two knowledge routes that DO have one must pass it. The
+   * control disables itself with the reason as well; this is the second half
+   * of the `aria-disabled` pattern, the guard that also covers keyboard
+   * activation and a stale closure.
+   */
+  roomForPane?: () => boolean;
 }): PaneWiring {
   function go(next: PaneDescriptor[], replace = false): void {
     // Focus and scroll are kept on every one of these: opening a file from a
@@ -97,9 +112,16 @@ export function paneWiring(read: {
     if (at === -1) {
       // No Files surface yet. The cap is the only refusal — a row already
       // holding two panes cannot grow a third. Width is deliberately NOT
-      // consulted: refusing to show a file the assistant just cited would be
-      // a silent failure, and the same reasoning floors `openInFirst` at one
-      // file however narrow the pane is.
+      // consulted, unlike `openBeside` below: refusing to show a file the
+      // assistant just cited would be a silent failure, and the same reasoning
+      // floors `openInFirst` at one file however narrow the pane is.
+      //
+      // That rationale only holds because the pane it creates ADAPTS. It used
+      // to invert: at a 900px window this made a 260px Files pane whose fixed
+      // 240px `shrink-0` tree left the file a 20px column, so the pane became
+      // the silent failure the width was ignored to avoid, and cost a slot
+      // doing it. `FilesPane` now drops the tree rather than the file
+      // (`treeFits`), which is what makes ignoring the width honest here.
       if (panes.length >= PANE_CAP) return;
       autoCreatedPath = sel.path;
       go([...panes, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }]);
@@ -195,6 +217,7 @@ export function paneWiring(read: {
     openBeside: (d) => {
       const panes = read.panes();
       if (panes.length >= PANE_CAP) return;
+      if (read.roomForPane && !read.roomForPane()) return;
       go(dedupeSurfaces(read.primary?.() ?? null, [...panes, d]));
     }
   };

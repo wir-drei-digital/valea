@@ -31,7 +31,7 @@
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { icmToNav, knowledgeHref } from '$lib/shell/nav';
   import { ancestorHrefs } from '$lib/shell/reveal-path';
-  import { splitsThatFit } from '$lib/shell/pane-fit';
+  import { TREE_W, splitsThatFit, treeFits } from '$lib/shell/pane-fit';
   import { loadFilesSplit, saveFilesSplit } from '$lib/panes/pane-split';
   import {
     canOpenBeside,
@@ -55,11 +55,37 @@
   }: { descriptor: FilesPaneDescriptor; context: PaneContext; state: FilesPaneState } = $props();
 
   let paneWidth = $state(0);
+
+  /**
+   * The tree is only rendered when the pane can AFFORD it beside the file.
+   *
+   * Every programmatic pane creator — an assistant tool chip, a citation, a
+   * cross-ICM re-point — deliberately ignores the width gate the bar's ＋ Pane
+   * enforces, because refusing to show a file the assistant just cited would be
+   * a silent failure. But a 240px `shrink-0` tree inside a 260px pane makes the
+   * pane ITSELF the silent failure: the file mounts into a 20px column and the
+   * row has spent a slot on nothing. Dropping the navigator instead leaves the
+   * whole pane to the file the pane was created to show. See `treeFits`.
+   *
+   * The preference is never rewritten by this — the user's `treeVisible` is
+   * intact and comes back the moment the pane is wide enough — so `treeBlocked`
+   * travels to the header instead, where the toggle disables itself and says
+   * why rather than claiming to show a tree that is not there.
+   */
+  const treeShown = $derived(pane.treeVisible && treeFits(paneWidth, descriptor.paths.length));
+  $effect(() => {
+    pane.treeBlocked = treeFits(paneWidth, descriptor.paths.length)
+      ? null
+      : 'Not enough width for the tree beside a file';
+  });
+
   // How many files may sit BESIDE each other here, from this pane's own width.
   // Stays local: the header has no control that needs it any more, and the only
-  // things that consult it are the two openers below. The first file is never
-  // subject to it — see `files-pane-state.ts`.
-  const maxSplits = $derived(splitsThatFit(paneWidth, pane.treeVisible));
+  // things that consult it are the two openers below. Measured against what is
+  // RENDERED, not what is preferred — a tree the width just took away is 240px
+  // the splits get to keep. The first file is never subject to this cap at all
+  // — see `files-pane-state.ts`.
+  const maxSplits = $derived(splitsThatFit(paneWidth, treeShown));
 
   const treeNav = $derived(
     icmToNav(icmStore.groups.find((g) => g.mount === descriptor.mountKey)?.tree ?? [])
@@ -229,11 +255,16 @@
 </script>
 
 <div bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
-  {#if pane.treeVisible}
-    <!-- Fixed 240px and deliberately not resizable: it is a navigator, not a
+  {#if treeShown}
+    <!-- Fixed `TREE_W` and deliberately not resizable: it is a navigator, not a
          second reading surface, and a draggable edge here would compete with
-         the split divider a few hundred pixels to its right. -->
-    <div class="border-paper-hairline w-[240px] shrink-0 overflow-y-auto border-r">
+         the split divider a few hundred pixels to its right. The width is the
+         constant the fit arithmetic reasons about, not a literal beside it —
+         `splitsThatFit` subtracts exactly this many pixels. -->
+    <div
+      style:width="{TREE_W}px"
+      class="border-paper-hairline shrink-0 overflow-y-auto border-r"
+    >
       <!-- `entryMenus` is explicit because this tree drives selection through
            `onSelect` (a click rewrites the descriptor, it does not navigate)
            and IcmTree reads that as picker mode, which suppresses the
