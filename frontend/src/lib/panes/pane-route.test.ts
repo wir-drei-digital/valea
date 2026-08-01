@@ -3,6 +3,8 @@ import {
   ORIGIN_LABEL_CAP,
   PANE_CAP,
   chatNavigatorFromUrl,
+  chatNewHref,
+  chatNewParam,
   dedupeSurfaces,
   paneIdentity,
   panesEqual,
@@ -578,5 +580,87 @@ describe('promoteTarget', () => {
     expect(out.searchParams.get('all')).toBeNull();
     expect(out.searchParams.get('icm')).toBeNull();
     expect(out.searchParams.get('drafts')).toBeNull();
+  });
+
+  it('promotes a blank composer to the composer route', () => {
+    const url = new URL('https://x/mail?account=mara%40example.com');
+    const out = new URL(promoteTarget(chatNew, url, [chatNew]), 'https://x');
+    expect(out.pathname).toBe('/chat');
+    expect(out.searchParams.get('icm')).toBe('life');
+    expect(out.searchParams.get('from')).toBeNull();
+    expect(out.searchParams.get('session')).toBeNull();
+  });
+
+  // ⤢ on an origin-bearing composer must not quietly detach it. A promoted
+  // composer that lost `from` looks completely normal while being attached to
+  // nothing — the exact bug the origin exists to prevent, through a different
+  // door.
+  it('carries the origin through ⤢ so the route round-trips it', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: {
+        kind: 'mail-message',
+        path: 'views/INBOX/42.md',
+        mount: 'mail-mara',
+        label: 'Liefertermin'
+      }
+    };
+    const url = new URL('https://x/mail?account=mara%40example.com&pane=mail:a%40b.com');
+    const out = new URL(promoteTarget(d, url, [d, mailList]), 'https://x');
+    expect(out.pathname).toBe('/chat');
+    expect(parsePaneParam(chatNewParam(out))).toEqual(d);
+    // The surviving pane rides along, and appending it must not disturb the
+    // origin — mutating `searchParams` re-serializes the whole query.
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(mailList)]);
+  });
+});
+
+describe('chatNewParam / chatNewHref', () => {
+  it('is null without an ICM, so the route shows no composer', () => {
+    expect(chatNewParam(new URL('https://x/chat'))).toBeNull();
+    expect(chatNewParam(new URL('https://x/chat?icm='))).toBeNull();
+    expect(chatNewParam(new URL('https://x/chat?session=a91f'))).toBeNull();
+  });
+
+  it('reads a bare ?icm= as the blank composer', () => {
+    expect(parsePaneParam(chatNewParam(new URL('https://x/chat?icm=life')))).toEqual(chatNew);
+    expect(chatNewHref(chatNew)).toBe('/chat?icm=life');
+  });
+
+  it.each([
+    { kind: 'page' as const, path: 'notes/CONTEXT.md' },
+    { kind: 'file' as const, path: 'a/b/c.pdf' },
+    { kind: 'page' as const, path: 'n.md', label: 'Label' },
+    { kind: 'mail-message' as const, path: 'views/INBOX/42.md', mount: 'mail-mara' },
+    {
+      kind: 'mail-message' as const,
+      path: 'views/INBOX/42.md',
+      mount: 'mail-mara',
+      label: 'Liefertermin'
+    },
+    // The pathological one: a real `/` and a literal `%2F` in the same path.
+    // `searchParams.get` decodes once, so `?from=` has to be encoded once MORE
+    // than the pane param is or these two would come back as different fields.
+    { kind: 'file' as const, path: 'a/b%2Fc/d e.pdf', label: 'a&b=c#d' }
+  ])('round-trips %j through the route', (from) => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'my icm/2', from };
+    const url = new URL(chatNewHref(d), 'https://x');
+    expect(parsePaneParam(chatNewParam(url))).toEqual(d);
+  });
+
+  it('is the same wire form the pane param uses, not a second spelling', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'Label' }
+    };
+    const url = new URL(chatNewHref(d), 'https://x');
+    expect(chatNewParam(url)).toBe(serializePaneParam(d));
+  });
+
+  it('fails closed on a hand-written ?from= that does not parse', () => {
+    const url = new URL('https://x/chat?icm=life&from=nope%2Fx.md');
+    expect(parsePaneParam(chatNewParam(url))).toBeNull();
   });
 });

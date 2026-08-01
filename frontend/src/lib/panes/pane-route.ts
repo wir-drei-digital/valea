@@ -360,6 +360,44 @@ export function chatNavigatorFromUrl(url: URL): boolean {
   return url.searchParams.get('all') === '1';
 }
 
+/**
+ * `/chat`'s own query shape for a new-session composer, spelled as the
+ * `chat:new:` PANE param — so an origin has exactly one codec and the route
+ * can never disagree with a pane about how one is written. `?icm=` alone is
+ * the blank composer; `?from=` carries the origin fields verbatim.
+ *
+ * Null when there is no `?icm=` (nothing to compose against). A `?from=` that
+ * does not parse fails the whole descriptor in `parsePaneParam` rather than
+ * degrading to a blank composer — see the note there.
+ */
+export function chatNewParam(url: URL): string | null {
+  const icm = url.searchParams.get('icm');
+  if (!icm) return null;
+  const from = url.searchParams.get('from');
+  const mount = encodeURIComponent(icm);
+  return from ? `chat:new:${mount}/${from}` : `chat:new:${mount}`;
+}
+
+/**
+ * The inverse of `chatNewParam`: where a `chat-new` descriptor lives as a
+ * ROUTE, origin and all.
+ *
+ * The origin travels as the pane param's own tail, SLICED off the serialized
+ * form rather than rebuilt, so the two spellings cannot drift apart. It is
+ * encoded one more time on the way into a query value because reading it back
+ * with `searchParams.get` decodes once — without that extra layer a path
+ * containing `%2F` would come back with a real `/` in it and split into the
+ * wrong fields.
+ */
+export function chatNewHref(d: ChatNewPaneDescriptor): string {
+  const icm = `icm=${encodeURIComponent(d.mountKey)}`;
+  if (!d.from) return `/chat?${icm}`;
+  // The mount key is whole-string encoded, so the first `/` is the field
+  // separator and nothing before it can contain one.
+  const param = serializePaneParam(d);
+  return `/chat?${icm}&from=${encodeURIComponent(param.slice(param.indexOf('/') + 1))}`;
+}
+
 /** Pane-chrome title. Kept static/pure (no store lookups) — the view inside the pane carries its own richer header. */
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {
@@ -414,7 +452,11 @@ function routeFor(d: PaneDescriptor): string {
     case 'chat':
       return `/chat?session=${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
-      return `/chat?icm=${encodeURIComponent(d.mountKey)}`;
+      // `from` MUST travel. A composer promoted with ⤢ that dropped its
+      // origin would look completely normal while being detached from the
+      // message or entry it was opened from — the same bug the origin exists
+      // to prevent, arriving through the maximize button instead.
+      return chatNewHref(d);
     case 'mail':
       return d.msgId === null
         ? `/mail?account=${encodeURIComponent(d.account)}`
