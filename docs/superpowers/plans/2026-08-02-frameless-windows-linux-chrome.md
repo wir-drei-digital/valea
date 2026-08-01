@@ -155,7 +155,9 @@ Replace `desktop/src-tauri/tauri.windows.conf.json` with:
 }
 ```
 
-**Do not "clean up" the repeated keys.** Tauri's platform merge replaces the whole `app.windows` array, so anything omitted here reverts to its serde default — `create` to `true` (which makes Tauri auto-create a second `main` window), `visible` to `true`, the size to 800×600. `externalBin` above already works this way and is the existing precedent. `tauri-config.test.ts` is the guard.
+⚠️ **Do not add a comment to this file explaining the duplication.** These configs are parsed as **strict JSON** — `tauri-build`'s default feature set is `["config-json"]` and Valea enables no others (`desktop/src-tauri/Cargo.toml:18`), so JSON5 is off and `serde_json` rejects `//`. A comment here does not warn anyone; it fails the build. The warning lives in `tauri-config.test.ts`'s header comment, which is the file a reader hits when the guard fails.
+
+**And do not "clean up" the repeated keys.** Tauri's platform merge replaces the whole `app.windows` array, so anything omitted reverts to its serde default: `create` to `true`, `visible` to `true`, the size to 800×600. The failure that produces is worth knowing precisely — Tauri auto-creates the `main` window before the setup hook, and `build_main_window`'s own build is then **rejected for a duplicate label**, not run alongside it. In debug that error propagates out of setup; in release it is logged and you are left with a visible, default-sized 800×600 window that the app never finished wiring. `externalBin` above already follows this pattern and is the existing precedent. `tauri-config.test.ts` is the guard.
 
 The three macOS keys are deliberately absent: they are accepted everywhere and effective only on macOS.
 
@@ -577,7 +579,16 @@ Setting the real value needs an `$effect`, not an inline style: `+layout.svelte`
   });
 ```
 
-In `frontend/src/lib/components/panes/PaneHost.svelte`, the pane header band is the one row that collides — it already carries promote and close at its own top-right, which on a single-pane route is exactly where the window controls land. Only the LAST pane in the row can collide, so only it pays. Find the header `<div>` (the one with `border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2`) and add:
+**The inset has FOUR consumers, not one.** `PaneHost` renders a header only around SIDE panes; every route's primary draws its own top row, and a route with no side panes open has no `PaneHost` header at all. Whichever surface is currently rightmost is the one under the controls, so each of these gets the same `padding-right` treatment:
+
+| Surface | File | When it is rightmost |
+|---|---|---|
+| Side-pane header | `panes/PaneHost.svelte` | only the LAST pane in the row |
+| Chat session header | `agent/SessionHeader.svelte:93` | chat primary, no side panes |
+| Knowledge primary header | `routes/knowledge/[...path]/+page.svelte:308` | knowledge primary, no side panes |
+| Calendar header | `routes/calendar/+page.svelte:139` | always — calendar has no `PaneHost` |
+
+The rule in each is the same shape. For `PaneHost`, find the header `<div>` (`border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2`) and add:
 
 ```svelte
         style={i === keyed.length - 1
@@ -585,9 +596,15 @@ In `frontend/src/lib/components/panes/PaneHost.svelte`, the pane header band is 
           : undefined}
 ```
 
-The `, 0px` fallback matters: `PaneHost` is rendered by vitest-less code paths and by the browser dev server, where `layout.css`'s `:root` rule is present — but a `calc()` against an undefined variable is an invalid declaration that silently drops the whole `padding-right`, taking the 0.75rem with it.
+For the other three, add to the existing header element (adjusting the base padding to match what that element already has — `px-4` → `1rem`, `px-7` → `1.75rem`):
 
-⚠️ **The primary pane's header is NOT `PaneHost`'s.** Each route's primary view draws its own top row (`SessionHeader`, `FilesPaneControls` via the pane header, the knowledge routes' own headers). A route showing NO side panes therefore has no `PaneHost` side-pane header at all, and its primary's top-right is what sits under the controls. Check `ChatView`'s `SessionHeader` (which has the ellipsis menu at its right edge) at 1080px with zero panes open before declaring this task done; if it collides, the same variable applies there, and it is still one variable with two consumers rather than a prop.
+```svelte
+  style="padding-right: calc(1rem + var(--window-controls-inset, 0px))"
+```
+
+⚠️ **The `, 0px` fallback is required, not defensive.** A `calc()` referencing an undefined custom property is an *invalid declaration at computed-value time* — the browser drops the whole `padding-right`, taking the base padding with it. Without the fallback, any context where `layout.css` has not applied (a component test harness, a storybook-style page, SSR before hydration) silently loses the header's horizontal padding entirely.
+
+⚠️ **Do not try to solve this by making the controls non-`fixed`.** They must be `fixed` to survive the loading and onboarding branches, which have no shared layout ancestor with the routes. Four small declarations reading one variable is the cost of that, and it is still one owner rather than a prop threaded through nine routes.
 
 Export `WindowControls` from `frontend/src/lib/components/shell/index.ts` alongside the other shell components.
 
@@ -679,9 +696,9 @@ Same rule as the Windows file: the repetition is required, because Tauri's platf
 Run: `cd frontend && bun run test src/lib/shell/tauri-config.test.ts`
 Expected: PASS (7 tests)
 
-- [ ] **Step 5: Widen the drag strip, and stop it before the controls**
+- [ ] **Step 5: Stop the drag strip before the controls — and DO NOT widen it**
 
-In `frontend/src/routes/+layout.svelte`, replace the fixed strip with one that is taller where the app owns the frame and ends before the controls:
+In `frontend/src/routes/+layout.svelte`, the only change the strip needs is to end before the controls:
 
 ```svelte
 {#if chrome !== 'browser'}
@@ -694,12 +711,18 @@ In `frontend/src/routes/+layout.svelte`, replace the fixed strip with one that i
        disable the drag along with the problem. -->
   <div
     data-tauri-drag-region
-    class={['fixed top-0 left-0 z-50', chrome === 'macos-overlay' ? 'h-3' : 'h-8']}
-    style="right: var(--window-controls-inset)"
+    class="fixed top-0 left-0 z-50 h-3"
+    style="right: var(--window-controls-inset, 0px)"
     aria-hidden="true"
   ></div>
 {/if}
 ```
+
+⚠️ **The height stays 3 (12px) on every platform.** An earlier draft of this plan widened it to 32px on Windows/Linux "so the whole top edge is draggable", and that is a bug: the strip is a `fixed z-50` sheet, so every pixel it covers stops being clickable. `PaneHost`'s header buttons are `size-8` with `-my-1.5` inside a 44px band, so they begin around y=6 — a 32px sheet would swallow most of promote and close on every side pane. The calendar route's content starts 24px from the top and would lose its top-right actions the same way.
+
+The 12px figure is load-bearing and the existing comment in that file says why: it is *inside every pane's own top padding, so it never sits over anything interactive*. Widening it also contradicts the spec's own "no title bar strip" decision — an invisible 32px band that eats clicks is a title bar in everything but appearance.
+
+Dragging is not short-changed by this: the sidebar's 48px brand band is the primary drag surface and already renders on every desktop OS, exactly as on macOS today.
 
 - [ ] **Step 6: Full check**
 

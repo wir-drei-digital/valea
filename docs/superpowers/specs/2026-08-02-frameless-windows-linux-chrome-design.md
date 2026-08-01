@@ -70,35 +70,52 @@ of this project.
 ## Snap Layouts: considered, costed, dropped
 
 `tauri.conf.json` sets `minWidth: 1080`. Windows honours a window's minimum
-size when snapping, so a zone narrower than 1080px cannot be filled:
+size when snapping, so a zone narrower than that cannot be filled.
 
-| Display | Half | Third | Quarter |
-|---|---|---|---|
-| 1366×768 | 683 ✗ | 455 ✗ | 341 ✗ |
-| **1920×1080** | **960 ✗** | 640 ✗ | 480 ✗ |
-| 2560×1440 | 1280 ✓ | 853 ✗ | 640 ✗ |
-| 3440×1440 | 1720 ✓ | 1146 ✓ | 860 ✗ |
-| 3840×2160 | 1920 ✓ | 1280 ✓ | 960 ✗ |
+⚠️ **In EFFECTIVE (logical) pixels, not physical ones.** Tauri's `minWidth` is
+logical (`tauri-utils-2.9.2/src/config.rs:1955`) and tao scales it to physical
+for `WM_GETMINMAXINFO` (`tao-0.35.3/.../windows/event_loop.rs:1843`), so a
+3840px panel at 200% is a 1920-effective-pixel workspace and behaves like the
+row below, not like a 4K row. The table is therefore indexed by **effective
+width**:
 
-**On 1920×1080 — the most common Windows display — every zone fails.**
-Implementing the flyout there produces a menu that opens and then does not
-work, which is worse than the honest absence of one. Microsoft's own guidance
-is that snap-friendly windows should work at ~500 effective pixels, and
-recommends 330.
+| Effective width | ½ | ⅓ | ¼ | ⅔ | ¾ |
+|---|---|---|---|---|---|
+| 1366 | 683 ✗ | 455 ✗ | 341 ✗ | 911 ✗ | 1024 ✗ |
+| **1920** | **960 ✗** | 640 ✗ | 480 ✗ | **1280 ✓** | **1440 ✓** |
+| 2560 | 1280 ✓ | 853 ✗ | 640 ✗ | 1706 ✓ | 1920 ✓ |
+| 3440 | 1720 ✓ | 1146 ✓ | 860 ✗ | 2293 ✓ | 2580 ✓ |
+
+**At 1920 effective pixels every half-or-smaller zone fails, and only the wide
+side of an asymmetric layout works.** Windows' flyout offers roughly six zones;
+two of them would accept the window. A menu where most options silently refuse
+is worse than no menu, and there is no API to hide the ones that will not work.
+
+*(An earlier draft of this section said "every zone fails" and divided physical
+resolutions directly. Both were wrong — asymmetric layouts have ⅔ and ¾ zones,
+and physical ≠ effective. The conclusion survives the correction, but it is a
+narrower claim than the one originally made.)*
+
+Microsoft's guidance is that snap-friendly windows should work at ~500
+effective pixels, and recommends 330.
 
 Three ways out were costed. **Daniel took the first (2026-08-02):**
 
 1. **Drop it.** ✅ Costs nothing already built. The frameless window is
    unaffected, and so is Win+arrow snapping — that hits the same minimum, but
    nothing offered the user a menu and then failed to honour it.
-2. **Lower `minWidth` toward ~800.** Would make snapping real, and is a
-   different, much larger project: `PRIMARY_MIN` (380) + `PANE_MIN` (300) + the
-   236px nav already wants 916px before one side pane fits, so below ~950px the
-   app is nav-plus-one-pane and the **parked** nav collapse would have to come
-   back.
+2. **Lower `minWidth` toward ~800.** Buys less than it looks: at 1920 effective
+   pixels 800 enables halves, but thirds (640) and quarters (480) still fail,
+   and Microsoft's ~500 target is far below anything this layout reaches. It
+   would **not** require restoring the parked nav collapse, contrary to an
+   earlier draft — `panesThatFit` already refuses a side pane below
+   `236 + 380 + 300 = 916` (`pane-fit.ts`), so the app degrades to nav plus
+   primary on its own, and a primary-only view needs only 616px. The real cost
+   is that every route has to be honest at 800px wide, which nothing has been
+   designed for.
 3. **Ship it as a large-monitor feature.** Rejected: the OS decides when to
-   show the flyout, so there is no way to offer it on 1440p and hide it on
-   1080p. It would be dead on the majority of Windows machines.
+   show the flyout, so there is no way to offer the two zones that work and
+   hide the four that do not.
 
 **What dropping it removes** — and this is most of the project's risk: the
 `windows` crate dependency, a `SetWindowSubclass` that had to coexist with
@@ -164,18 +181,28 @@ default. Two of those are actively harmful:
 
 - **`create` defaults to `true`** (base sets `false`). Tauri auto-creates every
   `create: true` window before the setup hook (`tauri-2.11.2/src/app.rs:2516`,
-  `.filter(|w| w.create)`), and `build_main_window` then builds a second window
-  with the same `main` label.
-- **`visible` defaults to `true`** (base sets `false`). Lesser: `build_main_window`
-  calls `show()` almost immediately, so this is a brief flash rather than a
-  hang — but a flash of an 800×600 window, since `width`/`height` revert too,
-  along with `minWidth`, `minHeight`, `center`, `title` and `resizable`.
+  `.filter(|w| w.create)`). `build_main_window`'s own build is then **rejected
+  for a duplicate label** rather than producing a second window
+  (`tauri-2.11.2/src/manager/window.rs:66`). In debug that error propagates out
+  of setup; in release it is logged, leaving a live window the app never
+  finished wiring.
+- **`visible` defaults to `true`** (base sets `false`), and `width`/`height`
+  fall to 800×600 along with `minWidth`, `minHeight`, `center`, `title` and
+  `resizable`. Combined with the above, the user sees an immediately-visible
+  800×600 window — not the brief flash an earlier draft described, because
+  `build_main_window`'s `show()` never runs.
 
 **So each platform file restates the window object in full.** The existing
 `tauri.windows.conf.json` already demonstrates the pattern without explaining
 it: it lists both `externalBin` entries, not just the added one, because that
-array is replaced too. The duplication is load-bearing and gets a comment in
-each file, since the instinct on reading it is to delete the "redundant" keys.
+array is replaced too.
+
+⚠️ **The explanation cannot go in the JSON files.** `tauri-build`'s default
+feature set is `["config-json"]` and Valea enables no others
+(`desktop/src-tauri/Cargo.toml:18`), so JSON5 is off and `serde_json` rejects
+comments — a warning comment there fails the build rather than preventing the
+mistake. It belongs in the drift-guard test, which is what a reader reaches
+when the guard trips.
 
 ⚠️ This makes the platform files a **drift hazard** — a new base key has to be
 added in three places, and the failure is silent on the platform nobody
@@ -202,12 +229,25 @@ it should be: `default.json` is the only capability without one, while
 `updates`, `notifications`, `mail-keychain` and `external-links` all list both
 loopback origins. But `remote` governs URLs that are *not* the app's own, and
 `is_local_url` (`tauri-2.11.2/src/webview/mod.rs:1698`) treats any URL relative
-to `frontendDist` or `devUrl` as **local** — which `http://localhost:4817` and
-`http://localhost:4273` both are. `local` defaults to `true`, so `default.json`
-already applies to the SPA, which is why dragging works today. The four `remote`
-blocks elsewhere are belt-and-braces. Adding one here would widen `core:default`,
-`dialog` and `shell` to remote origins for no benefit — the exact security
-trade the caution in Tauri's own docs is about.
+to the app's base URL as **local**. `local` defaults to `true`, so
+`default.json` already applies to the page the app actually loads — which is
+why `allow-start-dragging` works today.
+
+⚠️ **Precisely: exactly ONE of the two ports is local per build.** Tauri picks
+the base URL at compile time — `devUrl` in dev, `frontendDist` otherwise
+(`tauri-2.11.2/src/manager/mod.rs:348`) — and `make_relative` requires scheme,
+host *and* port to match. So 4273 is local in a dev build and 4817 in a
+release one, never both at once. That makes the four `remote` blocks elsewhere
+**not** redundant: `build_main_window`'s navigation guard permits both ports in
+either build, so they authorise the origin that is not the compile-time local
+one. The conclusion for `default.json` is unchanged — the SPA's own origin is
+always the local one — but "both ports are local, the other blocks are
+belt-and-braces" was wrong, and is corrected here because it is the kind of
+reasoning someone would reuse.
+
+Adding a `remote` block here would widen `core:default`, `dialog` and `shell`
+to remote origins for no benefit — the exact trade the caution in Tauri's docs
+is about.
 
 ### `WindowControls.svelte`
 
@@ -233,13 +273,30 @@ is a single padding rule applied under `'windows' | 'linux'` — never a prop
 threaded through routes, which is the trap `NavToggle`'s comment records from
 the other side.
 
-⚠️ **The pane header is the one real collision**, and the padding rule does not
-solve it: `PaneHost`'s header already carries promote and close at its own
-top-right, which on a single-pane route is exactly where the window controls
-land. Global column padding would shrink all content for the full window height
-to fix one 45px band. The honest fix is a shell-owned CSS variable
-(`--window-controls-inset`, `0px` off Windows/Linux) that `PaneHost`'s header
-adds to its right padding — one declaration, one consumer, no prop.
+⚠️ **Four surfaces collide, not one.** `PaneHost` renders a header only around
+SIDE panes, so a route with none open has no `PaneHost` header at all and its
+own primary header is what sits under the controls. The rightmost surface is
+whichever of these is showing:
+
+| Surface | When |
+|---|---|
+| `PaneHost`'s side-pane header | last pane in the row only |
+| `SessionHeader` (chat) | chat primary, no side panes |
+| The Knowledge primary's header band | knowledge primary, no side panes |
+| Calendar's `<header>` | always — calendar renders no `PaneHost` |
+
+Global column padding would shrink all content for the full window height to
+fix a 45px band. The fix is a shell-owned CSS variable
+(`--window-controls-inset`, `0px` everywhere else) that each of those four adds
+to its right padding — one owner, four short declarations, and no prop threaded
+through routes.
+
+The variable is set on `document.documentElement` from the root layout, not as
+an inline style: `+layout.svelte` renders fragments, so there is no element to
+carry it, and a variable on the `fixed` controls element would not inherit into
+route content at all. Every `calc()` reading it needs a `, 0px` fallback — a
+`calc()` against an undefined custom property is invalid at computed-value time
+and drops the whole declaration, base padding included.
 
 ### Actions and state
 
@@ -251,16 +308,33 @@ without a click (double-clicking the drag region, Win+Up, a window manager). So
 `maximized` is `$state`, seeded from `.isMaximized()` on mount and updated from
 `.onResized()` — never from the click handler.
 
-**Every listener is unsubscribed on destroy.** `onResized` and `onScaleChanged`
-both return an unlisten function; a component that drops them leaks a listener
-per remount.
+**Every listener is unsubscribed on destroy**, and this is an acceptance
+criterion rather than a note — a remount test belongs in the matrix, not just
+in the prose.
+
+⚠️ `onResized` returns a **`Promise<UnlistenFn>`**, not an unlisten function
+(`@tauri-apps/api/window.d.ts`). Teardown therefore has to handle destruction
+*before the promise resolves*: keep the promise, and unlisten in the cleanup by
+chaining off it. A component that stores `await`ed results in a local and is
+destroyed mid-registration leaks the listener it never saw.
 
 ### Drag surfaces
 
 - `Sidebar`'s 48px band — reused as-is; it already renders on every desktop OS.
-- `+layout`'s fixed 12px top strip — kept, and widened to the control cluster's
-  height on Windows/Linux, and it must **stop short of the controls
-  horizontally**, not layer over them.
+- `+layout`'s fixed 12px top strip — kept **at 12px on every platform**, and
+  changed only to **stop short of the controls horizontally**.
+
+  ⚠️ An earlier draft widened it to the control cluster's height on
+  Windows/Linux "so the whole top edge is draggable". That is a bug and it
+  contradicts this design's own "no title bar strip" decision. The strip is a
+  `fixed z-50` sheet, so every pixel it covers stops being clickable:
+  `PaneHost`'s header buttons are `size-8` with `-my-1.5` and begin around y=6,
+  so a 32px sheet swallows most of promote and close on every side pane, and
+  the calendar route's top-right actions go the same way. An invisible 32px
+  band that eats clicks is a title bar in everything but appearance. 12px is
+  the figure the existing comment justifies — *inside every pane's own top
+  padding, so it never sits over anything interactive* — and the sidebar's 48px
+  brand band is the real drag surface, exactly as on macOS.
 
   The reason is worth stating precisely, because the obvious one is wrong.
   Tauri's drag script walks the composed path and refuses to drag when it finds
@@ -345,6 +419,7 @@ gate.
 | Controls clear of the pane header at 1080px | ✓ | ✓ | ✓ | ✓ |
 | High-DPI 150% / 200%, and a second monitor at another scale | ✓ | ✓ | ✓ | n/a |
 | Keyboard focus order, accessible names, `aria-pressed` state | ✓ | ✓ | ✓ | ✓ |
+| Listener cleanup: remount the controls, no duplicate `onResized` handlers | ✓ | ✓ | ✓ | ✓ |
 | Forced-colors / high-contrast mode | ✓ | ✓ | ✓ | ✓ |
 
 **Linux is not one platform.** At minimum: GNOME Wayland, GNOME X11, one
@@ -413,7 +488,30 @@ GNOME; and the acceptance matrix was missing startup states, Windows 10,
 that reopened a settled decision**: `minWidth: 1080` makes every snap zone fail
 on a 1920×1080 display.
 
-**The Snap Layouts reversal** came out of that last finding and is the review's
+**Third pass (Codex, against the rewrite)** caught three things that would have
+reached the implementation, and corrected this document's own arithmetic:
+
+- **Comments cannot go in the Tauri config files.** This spec had asked for one
+  in each; `tauri-build`'s default is strict JSON, so it would have failed the
+  build rather than warned anyone.
+- **The drag strip must not be widened.** The rewrite had it growing to the
+  control height on Windows/Linux; as a `fixed z-50` sheet that swallows
+  `PaneHost`'s header buttons (which start around y=6) and calendar's top-right
+  actions — and it contradicted this spec's own "no title bar strip" decision.
+- **Four surfaces need the inset, not one.** `PaneHost` headers only side
+  panes; chat, knowledge and calendar each own their rightmost header.
+- **"Every snap zone fails at 1920" was overstated** — asymmetric layouts have
+  ⅔ and ¾ zones that clear 1080 — and the table divided *physical* resolutions
+  against a *logical* minimum. Both corrected above. The decision stands on the
+  narrower claim.
+- Smaller: the partial-config failure is a duplicate-label error rather than
+  two windows; `onResized` returns a `Promise<UnlistenFn>`; listener cleanup
+  was described but never made an acceptance criterion; and the `remote`
+  rejection reached the right answer by the wrong route — only one port is
+  local per build, so the other capabilities' `remote` blocks are load-bearing
+  rather than belt-and-braces.
+
+**The Snap Layouts reversal** came out of an earlier finding and is the review's
 biggest single effect: a decision taken in the morning on the belief that the
 cost was Win32 complexity, reversed the same day once the sizing arithmetic was
 done. It deleted the largest task, the only native code, and every
