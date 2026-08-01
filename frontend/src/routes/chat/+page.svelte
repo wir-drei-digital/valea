@@ -157,6 +157,16 @@
   // carries the origin, serialized exactly as it is inside a pane param —
   // `chatNewParam` composes the two into that one wire form, so the route and
   // a pane can never read an origin differently.
+  //
+  // The route does NOT inherit the parser's guarantee whole. `parsePaneParam`
+  // fails the WHOLE descriptor on an unreadable origin so a detached composer
+  // can never look like an attached one; here that null falls through to the
+  // empty state below, whose "Start a session" button calls `startSession` —
+  // which still reads the same `?icm=` and would create the very session the
+  // parser refused. That is tolerable only because the empty state makes no
+  // attachment claim: nothing on it says "about this message", so a session
+  // started from it is an ordinary blank session and the user is not misled.
+  // A composer that rendered normally while attached to nothing would not be.
   const primaryDescriptor = $derived<PaneDescriptor | null>(
     selectedId ? { kind: 'chat', sessionId: selectedId } : parsePaneParam(chatNewParam(page.url))
   );
