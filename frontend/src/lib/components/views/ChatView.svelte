@@ -202,6 +202,25 @@
     );
   });
 
+  /**
+   * "Open files beside this session" — files-beside-chat, created from the
+   * chat side, replacing the popover file tree this header used to carry.
+   *
+   * The subject is the session's own ICM, so a session whose mount is not
+   * known yet (the flat list is still loading, or the row carries no
+   * `icmMount`) offers no control rather than one that would open a browser
+   * over the wrong workspace. Every other refusal is the host's
+   * `besideRefusal`, so this control and the route's agree by construction.
+   */
+  const canOpenFiles = $derived(openMountKey !== null && context.openBeside !== undefined);
+  const filesRefusal = $derived(context.besideRefusal?.('files') ?? null);
+
+  function openFilesBeside(): void {
+    const key = openMountKey;
+    if (!key) return;
+    context.openBeside?.({ kind: 'files', mountKey: key, paths: [], active: 0, compare: null });
+  }
+
   const openIcmName = $derived.by(() => {
     // New-session mode has no session row to read a name off yet — the mount
     // catalog is the only source (`MountSummary.name` is the ICM's display
@@ -620,6 +639,8 @@
       icmName={openIcmName}
       ended={false}
       archiving={false}
+      onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+      {filesRefusal}
       gutter={context.placement === 'primary'}
     />
     <div class="min-h-0 flex-1 overflow-y-auto">
@@ -667,6 +688,8 @@
         filesCount={fileActivities.length}
         onShowFiles={railCanShow && !railOpen ? reopenRail : undefined}
         filesPanel={!railCanShow ? filesPopover : undefined}
+        onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+        {filesRefusal}
         gutter={context.placement === 'primary'}
       />
       {#if archiveError}

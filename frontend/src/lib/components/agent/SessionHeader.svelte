@@ -6,11 +6,16 @@
   // ended, whether an archive call is in flight) arrives as a prop, so the
   // same header renders for a route primary and for a session inside a pane.
   //
-  // It carried a popover FILE TREE here, on the folder name. That is retired:
-  // the tree is a pane now (`FilesPane`), reachable from the bar's ＋ Pane
-  // beside any chat, where it is a real browser with rename, delete, two
-  // splits and persistent expansion rather than a menu that closed on every
-  // click. The folder line is a plain label again.
+  // It carried a popover FILE TREE here, on the folder name. That is retired,
+  // and `onOpenFiles` is its replacement: the tree is a PANE now (`FilesPane`),
+  // a real browser with tabs, rename, delete, compare and persistent expansion
+  // rather than a menu that closed on every click. Opening it from here is
+  // files-beside-chat, created from the chat side — the composition the bar's
+  // ＋ Pane → Files used to be the only route to.
+  //
+  // `filesRefusal` is the half that must not be lost with the bar: at the pane
+  // cap, at a narrow window, or with a file browser already on screen, the
+  // control says WHY rather than doing nothing.
   //
   // `onArchive` is the "there is a session here" signal (the route's old
   // `selectedId` gate): a host in new-session mode has no session yet and
@@ -31,6 +36,7 @@
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import PanelRight from '@lucide/svelte/icons/panel-right';
   import * as Popover from '$lib/components/ui/popover';
 
   let {
@@ -43,6 +49,8 @@
     filesCount = 0,
     onShowFiles,
     filesPanel,
+    onOpenFiles,
+    filesRefusal = null,
     gutter = false
   }: {
     icmName: string | null;
@@ -61,6 +69,18 @@
      * affordance never disappears with the layout; it defers.
      */
     filesPanel?: Snippet;
+    /**
+     * Open the file browser BESIDE this session. Absent on a host that cannot
+     * place a pane at all, in which case no control renders — an affordance
+     * that could never work is worse than none.
+     */
+    onOpenFiles?: () => void;
+    /**
+     * Why it cannot open right now, `null` when it can. Present with
+     * `onOpenFiles`, never instead of it: the control still renders, still
+     * takes focus, and says the reason. See `pane-offer.ts`.
+     */
+    filesRefusal?: string | null;
     /**
      * This header is the top-left of the content column (a session rendered as
      * a route's PRIMARY), so the shell's nav toggle floats over its first row —
@@ -81,7 +101,7 @@
   });
 </script>
 
-{#if icmName || onArchive || onDelete}
+{#if icmName || onArchive || onDelete || onOpenFiles}
   <div
     class={[
       'border-paper-hairline flex items-center gap-1.5 border-b pe-4 pb-2',
@@ -123,6 +143,36 @@
           Context · {filesCount}
         </button>
       {/if}
+    {/if}
+    {#if onOpenFiles}
+      <!-- `aria-disabled`, not the `disabled` attribute: a truly disabled
+           button takes no pointer events, so its `title` never appears, and it
+           leaves the tab order, so a keyboard user could never reach the reason
+           either. The same shape `IcmTree`'s row affordance takes. The ICON
+           dims, never the button — this is a fact about the row, not a
+           consequence, so no accent colour and no alarm. -->
+      <button
+        type="button"
+        title={filesRefusal ?? 'Open files beside this session'}
+        aria-label={filesRefusal
+          ? `Open files beside this session — unavailable: ${filesRefusal.toLowerCase()}`
+          : 'Open files beside this session'}
+        aria-disabled={filesRefusal ? 'true' : undefined}
+        onclick={() => {
+          if (filesRefusal) return;
+          onOpenFiles();
+        }}
+        class={[
+          'text-ink-meta -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors',
+          filesRefusal ? 'cursor-default' : 'hover:bg-paper-pill hover:text-ink-heading'
+        ]}
+      >
+        <PanelRight
+          class={['size-4', filesRefusal ? 'opacity-40' : '']}
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+      </button>
     {/if}
     {#if onArchive || onDelete}
       <Popover.Root bind:open={menuOpen}>

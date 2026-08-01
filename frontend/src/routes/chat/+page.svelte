@@ -193,11 +193,16 @@
   }
 
   // Stable identity on purpose: `ChatView` derives from `context.openFile`,
-  // and a fresh object every render would churn that for no reason.
+  // and a fresh object every render would churn that for no reason. Both
+  // `openBeside` members are the wiring's own — the session header's "Open
+  // files" must meet exactly the gate a pane-placed session meets, or the two
+  // placements disagree about what the row will accept.
   const primaryContext: PaneContext = {
     placement: 'primary',
     openPane: openSessionAsPrimary,
     openFile: wiring.openFileSurface,
+    openBeside: wiring.openBeside,
+    besideRefusal: wiring.besideRefusal,
     onArchived: afterArchive
   };
 </script>
