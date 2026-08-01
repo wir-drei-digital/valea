@@ -114,6 +114,23 @@ export function paneWiring(read: {
       // Self-closing, so Back never steps through a pane that immediately
       // removes itself.
       onArchived: () => go(replaceAt(read.panes(), index, null), true),
+      /**
+       * ONE subject inside a multi-subject pane vanished. The host drops that
+       * subject and closes the pane only when nothing is left — the per-subject
+       * rule, in `dropSubject`.
+       *
+       * It deliberately does NOT call `shiftAuto`. The assistant's auto-open
+       * claim is an INDEX into a Files pane's `paths`, so a removal has to
+       * re-map it — but `FilesPane.fileVanished` already does exactly that,
+       * on the line before it calls this, because it is the only component
+       * that can reach both the claim and the index being removed. Doing it
+       * again here would apply the shift twice: idempotent when the claim sits
+       * BELOW the removed index, but a claim above it would be released
+       * instead of moved, silently costing the "recycle my own split"
+       * behaviour the claim exists for. The split is the one from
+       * `auto-open.ts`'s header — the pane owns the claim, the host owns the
+       * descriptor.
+       */
       onVanished: (subject) => {
         const panes = read.panes();
         const pane = panes[index];
