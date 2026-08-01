@@ -118,7 +118,11 @@
 
   const primaryPaths = $derived.by((): string[] => {
     if (isFolder) return [];
-    return splitPath ? [decodedPath, splitPath] : [decodedPath];
+    // `?split=` naming the file already in the pathname is one file, not two.
+    // `FilesPane` keys its `{#each}` on the path, so letting the pair through
+    // is a duplicate key, which Svelte throws on during render — the whole app
+    // blanks. Same guard `parsePaneParam` applies to the `|` wire form.
+    return splitPath && splitPath !== decodedPath ? [decodedPath, splitPath] : [decodedPath];
   });
 
   // Keep the open path's ancestors expanded — a deep link should land with

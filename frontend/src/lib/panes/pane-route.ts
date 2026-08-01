@@ -73,7 +73,13 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
     if (rawPaths.length > 2) return null;
     const paths = rawPaths.map(decodePath);
     if (paths.some((p) => p === null)) return null;
-    return { kind: 'files', mountKey, paths: paths as string[] };
+    // DEDUPED, and this is not tidiness. `FilesPane` keys its `{#each}` on the
+    // path, so `files:life/A.md|A.md` — reachable from any hand-written or
+    // shared link — is a duplicate key, which Svelte throws on during render:
+    // the whole app blanks, no nav, no bar, no error page. One file named
+    // twice is one file, so the honest reading is a single split rather than
+    // a refusal that would drop a perfectly good subject.
+    return { kind: 'files', mountKey, paths: [...new Set(paths as string[])] };
   }
 
   if (kind === 'chat') {

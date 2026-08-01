@@ -48,6 +48,36 @@ describe('serialize/parse round-trips', () => {
   });
 });
 
+describe('parsePaneParam dedupes a split pair', () => {
+  // `FilesPane` keys its `{#each}` on the path, so a repeated one is a
+  // duplicate key — Svelte throws during render and the whole app blanks
+  // (no nav, no bar, no error page). Reachable from any hand-written or
+  // shared link, so the codec is where it has to stop.
+  it('collapses the same file named twice to one split', () => {
+    expect(parsePaneParam('files:life/AGENTS.md|AGENTS.md')).toEqual({
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['AGENTS.md']
+    });
+  });
+
+  it('collapses a pair that only matches once decoded', () => {
+    expect(parsePaneParam('files:life/planning%2FA.md|planning/A.md')).toEqual({
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['planning/A.md']
+    });
+  });
+
+  it('leaves two genuinely different files alone', () => {
+    expect(parsePaneParam('files:life/A.md|B.md')).toEqual({
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['A.md', 'B.md']
+    });
+  });
+});
+
 describe('parsePaneParam fails closed', () => {
   it.each([
     null,
