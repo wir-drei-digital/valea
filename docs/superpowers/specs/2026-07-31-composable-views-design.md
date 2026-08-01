@@ -28,7 +28,7 @@ impossible to get lost in.
 
 | Pane | Navigator | Content |
 |---|---|---|
-| Files | ICM tree | one or two file views |
+| Files | ICM tree | a strip of tabs, one file showing |
 | Mail | message list | the open message |
 | Chat | sessions list | the transcript |
 
@@ -62,8 +62,10 @@ nothing outside the Files pane can observe that relationship.
 - **Mail follows the same principle**, so its list moves inside the Mail view
   and mail becomes usable as a pane — the "mail beside chat" case that made
   this app-level rather than a chat feature.
-- **Only Files splits.** Comparing two files is a real need; comparing two
-  transcripts or two mailboxes is not. Chat and Mail hold one subject each.
+- **Only Files shows two subjects at once.** Comparing two files is a real
+  need; comparing two transcripts or two mailboxes is not. Chat and Mail hold
+  one subject each. (Since the 2026-08-01 tabs amendment, Files holds six tabs
+  and shows one — two only through the explicit Compare control.)
 - **Controls go on a bottom bar inside the content container.** The left nav
   is a full-height fixed anchor; the bar sits *beside* it, not under it.
 - **Panes are remembered per route.** A URL that names panes always wins.
@@ -73,14 +75,15 @@ nothing outside the Files pane can observe that relationship.
 ```
 ┌────────┬──────────────────────────────────────────────────┐
 │        │ ┌──────────────┬─────────────────────────────┐   │
-│        │ │  Chat        │ Files — life          ▣ ⤢ ✕ │   │
-│  Nav   │ │  (primary)   ├──────┬──────────┬───────────┤   │
-│  236   │ │              │ tree │ AGENTS.md│ CONTEXT.md│   │
-│ (full  │ │              │ 240  │  split 1 │  split 2  │   │
-│ height)│ └──────────────┴──────┴──────────┴───────────┘   │
+│        │ │  Chat        │ Files — AGENTS.md   ▣ ⧉ ⤢ ✕ │   │
+│  Nav   │ │  (primary)   ├──────────────────────┬──────┤   │
+│  236   │ │              │ [AGENTS] [CONTEXT ✕] │      │   │
+│ (full  │ │              ├──────────────────────┤ tree │   │
+│ height)│ │              │ the active tab's file│ 240  │   │
+│        │ └──────────────┴──────────────────────┴──────┘   │
 │        │                                        ＋ Pane   │
 └────────┴──────────────────────────────────────────────────┘
-             └── shell sees 2 panes; 4 visible columns ──┘
+             └── shell sees 2 panes; 3 visible columns ──┘
 ```
 
 `AppShell` becomes nav, a row of panes, and the bar:
@@ -114,7 +117,7 @@ Knowledge all still compose through it until then; see *Build order*.
 
 | Kind | Wire form | Navigator | Status |
 |---|---|---|---|
-| files | `files:<mount>[/<path>[\|<path2>]]` | ICM tree | **new** |
+| files | `files:<mount>[/<p1>[\|<p2>…][@<i>[+<j>]]]` | ICM tree | **new** |
 | chat | `chat:<sessionId>` | sessions list | exists |
 | chat-new | `chat:new:<mountKey>` | — | exists |
 | mail | `mail:<account>[/<messageId>]` | message list | **new** |
@@ -132,8 +135,104 @@ want when a mail message opens a file and you did not ask for a browser.
 
 ### The Files pane
 
-Internals: an optional ICM tree at a fixed 240px, and one or two file views
-sharing the remainder.
+**AMENDMENT (2026-08-01, Daniel): the Files pane is TABS, and the tree is on
+the RIGHT.** Splits were the original design and they lost the width argument
+on every laptop: two files needed a 1439px window, `SPLIT_MIN` had to come down
+from 300 to 240 to reach one at all, and a pane a tool chip created could still
+starve a file to twenty pixels. A tab costs no width. **This landed** — the
+paragraphs below describe it; the split-era text that survives is marked where
+it is still true.
+
+Internals, left to right: a **tab strip** across the top of the content area,
+the active tab's file below it, and an optional ICM tree at a fixed 240px down
+the **right** edge. `treeFits` is unchanged and simply measures the other side
+now.
+
+**Tabs.**
+
+- Cap **6**. Opening a seventh replaces the **oldest inactive** tab (lowest
+  index, which is open order), never the active one, and replaces it **in
+  place** so no surviving index is renumbered. No scrolling strip, no overflow
+  chrome.
+- Exactly one tab is active. A tab shows its basename and carries the full path
+  as its `title`. Each has a ✕; closing the active tab activates its left
+  neighbour, or its right if it was first.
+- **`+` opens a pending empty tab** — active, showing "Pick a file to read it."
+  It is local state, not URL state: it holds nothing, so a reload legitimately
+  loses it. At most one exists; `+` while one is pending is a no-op. While it
+  is showing, NO tab and no tree row reads as current, because nothing is.
+
+**Tree → tab.**
+
+- A tree row's plain click **replaces the active tab's file** — the tree drives
+  the open tab, which is what makes browsing cost no tabs at all. With a
+  pending tab active it materialises into that tab; with no tabs at all it
+  opens the first.
+- The row's hover affordance is **"Open in a new tab"**, same position and same
+  `aria-disabled`-with-reason pattern as the "Open beside" it replaces. The
+  only reason it can be disabled is the 6-tab cap, never width. It refuses at
+  the cap rather than evicting: it is a secondary affordance on a row whose
+  plain click already does something, and silently destroying a tab from one
+  would be the cost the ＋ Split control was deleted for. The eviction rule
+  above is for `+`-then-pick, which is an unambiguous request for a new tab.
+- Every open tab is marked in the tree; the **active** one more strongly (the
+  tree's active background versus ink weight alone — no accent colour, since
+  being open is not a consequence). Ancestor reveal and scroll-into-view follow
+  the active tab only.
+
+**The compare escape.** True side-by-side survives as one explicit control in
+the pane header (`Columns2`, `aria-pressed`), and it is the last thing in this
+feature that consults a width.
+
+- Enabled when `splitsThatFit(paneWidth, treeShown) >= 2` **and** at least two
+  tabs exist; otherwise `aria-disabled` with the reason, never a silent no-op.
+- On: the active tab and the **previously active** tab side by side, active on
+  the left, sharing the content area through the existing
+  `PaneGroup`/`PaneResizer` and the `loadFilesSplit`/`saveFilesSplit` ratio.
+  "Previously active" is tracked as a PATH, not an index, because the list
+  renumbers; with no history it falls back to the neighbour rather than
+  refusing a control the user can see is available.
+- Below the width threshold it falls back to the active tab alone **without
+  rewriting the descriptor**, so widening the window brings the comparison
+  back. The header reads what is RENDERED, so its pressed state can never
+  announce a column that is not there. Turning it off closes neither tab.
+
+**Wire form.** `@` is a safe cursor separator for the same reason `|` is a safe
+tab separator: `encodeURIComponent` escapes both, so neither can appear inside
+an encoded path segment.
+
+```
+files:<mount>                          tree only, no tabs
+files:<mount>/<p1>                     one tab, active
+files:<mount>/<p1>|<p2>|<p3>@1         three tabs, the second active
+files:<mount>/<p1>|<p2>@0+1            compare on, tabs 0 and 1 side by side
+```
+
+`@<n>` absent means active 0. An out-of-range index clamps to 0 and an
+unhonourable compare is dropped, rather than failing the whole descriptor — the
+tabs are still valid content. A list longer than 6 truncates to the first 6
+distinct paths. Malformed cursor SYNTAX (`@x`, `@1+`, `@1@2`) still fails
+closed, and so does every pre-existing invalid case.
+
+**The primary Files surface** (`/knowledge/<mount>/<path...>`) is the same
+component, so it needs the same six tabs addressable. It is a route, so the
+file being read stays in the pathname and the strip travels beside it:
+`?tabs=<p1>|<p2>|…` carries the whole strip in order and `?compare=<n>` the
+comparison. This replaces `?split=<path>`, which could only ever address the
+second of two splits. `files-url.ts` owns both directions, and the pathname
+wins if a hand-written URL disagrees with its own strip.
+
+`SPLIT_MIN` and `splitsThatFit` are NOT deleted — compare needs both. What
+`SPLIT_MIN` no longer does is gate opening a file.
+
+**The `FILES` overline is gone** from both file views. It named the section of
+the app you were in, above a path that already named the file; with a tab strip
+overhead it was the outer of two labels for one fact. The Friendly/Raw toggle,
+the save state, the token estimate and the path all stay.
+
+*(Historical, for the reasoning that produced the split design and the
+constraints that still hold: an optional ICM tree at a fixed 240px, and one or
+two file views sharing the remainder.)*
 
 **Pane chrome stays owned by `PaneHost`.** It already renders title, promote
 and close around every side view (`PaneHost.svelte:96-120`), and duplicating
@@ -196,21 +295,23 @@ administration, not file browsing, and has no pane representation.
 Everything the middle draft needed shell-level machinery for is now local
 state in this one component:
 
-- The tree marks **every** open split, so with two files both rows highlight.
+- The tree marks **every** open tab, and the active one more strongly.
 - Opening a file expands its ancestors via `treeOpenState.open()` — already
-  idempotent, already built for this — and scrolls the newest one into view.
-  Only the newest: scrolling for both would fight itself.
-- A tree click opens into the **first** split; a hover affordance on the row
-  opens it as a second split instead. Deterministic, no focus concept — and
-  because it is now private to one component, changing the rule later costs
-  nothing outside it.
+  idempotent, already built for this — and scrolls the ACTIVE tab into view.
+  Only that one: revealing for every open tab would fight itself.
+- A tree click replaces the **active tab**; the row's hover affordance opens a
+  new one instead. Deterministic, no focus concept — and because it is private
+  to one component, changing the rule later costs nothing outside it. (Written
+  as "first split" / "second split" before the 2026-08-01 tabs amendment; the
+  shape of the rule is the same, what an index counts is not.)
 - `onBeforeMutate` (flush a pending edit before rename or delete) becomes
   `onBeforeMutate(href)`. Today `IcmTree` takes a single callback and forwards
   it only for the row matching `activePath`
   (`lib/components/shell/IcmTree.svelte:31,168`), and the Knowledge route
-  binds exactly one `FileView` ref. `FilesPane` holds a **split → `FileView`
-  ref map** and dispatches by href, so renaming either open file flushes that
-  split and not the other. Without this, a rename can flush the wrong editor
+  binds exactly one `FileView` ref. `FilesPane` holds an **open file →
+  `FileView` ref map** and dispatches by href, so renaming a compared file
+  flushes that column and not its sibling. Only RENDERED files are in the map:
+  a tab that is not showing has no editor mounted to flush. Without this, a rename can flush the wrong editor
   or skip an unsaved edit.
 
 ### The Mail pane
@@ -284,13 +385,15 @@ dropped on parse so a hand-written URL cannot exceed the cap.
 
 The **primary** pane is addressed by the route as it is today —
 `/chat?session=`, `/knowledge/<mount>/<path>`, and `/mail?message=` qualified
-by `?account=` (not `?id=`). Only a second Files split needs a new param
-(`?split=<path>`).
+by `?account=` (not `?id=`). The Files primary's other TABS need params of
+their own — `?tabs=<p1>|<p2>|…` and `?compare=<n>`, with the active tab in the
+pathname (see the Files pane's 2026-08-01 amendment). This replaced the
+`?split=<path>` this paragraph originally specified.
 
 **Promotion merge rules.** `promoteHref` today returns a bare route and drops
 everything else (`lib/panes/pane-route.ts:132-142`). Promoting from a
 composition must instead: build the target route href with that kind's own
-params (`session`; `message` + `account`; mount path + `split`), re-attach the
+params (`session`; `message` + `account`; mount path + `tabs`/`compare`), re-attach the
 **remaining** panes with `withPanes`, drop the promoted pane from that list,
 and then run the same duplicate suppression — so promoting a Files pane on a
 route whose primary becomes Files does not leave a redundant copy beside it.
@@ -340,8 +443,10 @@ pane.
 The rule is **per subject, not per pane**: a vanished subject is removed, and
 the pane closes only when it has nothing left. This matters because a Files
 descriptor can name two files — closing the whole pane because one of them was
-deleted would discard the other file and any pending edit in it. So a deleted
-split is dropped and its sibling stays; a Files pane with no files left
+deleted would discard the others and any pending edit in them (six, since the
+tabs amendment). So a deleted tab is dropped — through `closeTab`, so the
+cursor renumbers with the list — and its siblings stay; a Files pane with no
+files left
 survives as tree-only; a Chat or Mail pane, having one subject, closes
 outright. Mail closes rather than holding a tombstone — a layout that quietly
 shrinks is less alarming than one carrying a dead panel, and the message list
@@ -352,6 +457,17 @@ immediately removes itself. Chat's existing `replacePaneWithSession` sets the
 same precedent (`routes/chat/+page.svelte:241-247`).
 
 ## Width behaviour
+
+**AMENDMENT (2026-08-01, Daniel): tabs took most of this section's pressure
+away.** A Files pane now shows ONE file, so the arrangement it has to afford is
+`nav + primary + tree + one file`, not `+ two files`. What survives unchanged:
+`treeFits`, which drops the navigator rather than starving the file, and the
+constants — `SPLIT_MIN` and `splitsThatFit` are still live, because the Compare
+control is a genuine two-column arrangement and is gated on exactly the figure
+below. Verified live: chat beside a Files pane with its tree AND a readable
+file needs a ~1512px window; the same pane keeps a full-width file with the
+tree dropped at every width below that, where the old design gave it a 60px
+column.
 
 Chat plus a Files pane with a tree and two splits needs
 236 + 380 + 240 + 240 + 240 = 1336px of MINIMA. That is a floor, not a
@@ -369,8 +485,8 @@ ask actually describes.) That contradicted one of this feature's originating ask
 narrow but genuinely readable against the 596px prose cap: it degrades rather
 than blocking. When less is available, what gets
 dropped is decided from the outside in — side panes right to left, so the
-primary is last to give up space, and within a Files pane the second split
-before the tree.
+primary is last to give up space, and within a Files pane the second compared
+file before the tree.
 
 **But that decision is made when a pane opens or is restored — never on
 resize.**
@@ -402,7 +518,10 @@ unambiguous because mounted, visible and requested counts are always equal.
 `＋ Pane` disables itself when another pane would not fit, with the reason on
 hover rather than a silent no-op.
 
-**AMENDMENT (2026-08-01, Daniel): there is no `＋ Split` control.** It was
+**AMENDMENT (2026-08-01, Daniel): there is no `＋ Split` control.** *(Splits
+themselves were replaced by tabs later the same day; the reasoning below is
+what produced the tree row's per-file affordance, which survives as "Open in a
+new tab".)* It was
 specced, built, then removed. Any such button must *guess* which file to open —
 the plan's "first file in the tree" finds nothing in a real ICM, since
 top-level entries are folders — and a guess whose cost is opening the wrong
@@ -490,15 +609,20 @@ rather than per-pane.
 
 The file targets the single Files surface: if one is open (primary or pane)
 the file lands there; if not, a Files pane opens. Within it the rule tracks
-the split it created (`autoSplit`, reset when the session changes):
+the TAB it created (`autoIndex`/`autoPath`, reset when the session changes;
+`autoSplit` in this paragraph's original wording):
 
-1. if `autoSplit` still exists → replace **that** split
-2. else if a split slot is free → open there
+1. if the claimed tab still exists → replace **that** tab
+2. else if the strip is below the cap → open a new one
 3. else → do nothing
 
-So the assistant recycles its own split while a file you opened stays put —
-you can pin your file on the right and let chat cycle references on the left.
-Any user-initiated open into a split clears `autoSplit` for it. Rule 3 is the
+So the assistant recycles its own tab while a file you opened stays put — you
+can keep your file in one tab and let chat cycle references through another.
+Any user-initiated open into a tab clears the claim on it, and the file the
+assistant opens becomes the SHOWING tab, because a citation that arrives behind
+the tab you are reading is one you never see. Rule 3 is why auto-open does not
+use the cap eviction the ＋ button does: a ＋ press is a person asking for a
+tab; an assistant read is not. Rule 3 is the
 conservative floor `hasOpenPane()` provides today: auto-open never evicts a
 file the user placed.
 
@@ -513,8 +637,8 @@ Knowledge already offers. Where the two rules disagree, `dedupeSurfaces` is
 the stricter and wins.
 
 **Promote (⤢).** The pane's subject becomes the route you are on; remaining
-panes stay. For a Files pane with two splits, promoting carries both (the
-route's `?split=` param).
+panes stay. For a Files pane, promoting carries the whole tab strip and lands
+on the tab that was showing (the route's `?tabs=` / `?compare=` params).
 
 **Resizing.** `pane-split.ts` currently persists one percentage. It becomes a
 layout array keyed by pane count (`valea.pane-split.<n>`), with the Files
@@ -544,15 +668,18 @@ Extended:
 
 New:
 
-- `lib/components/panes/FilesPane.svelte` — tree + splits; owns the sync and
-  the split→`FileView` ref map that `onBeforeMutate(href)` dispatches over
+- `lib/components/panes/FilesPane.svelte` — tab strip + content + tree; owns
+  the sync and the open-file→`FileView` ref map that `onBeforeMutate(href)`
+  dispatches over
 - `lib/components/panes/MailPane.svelte` — the read surface (list + reader),
   consumed by both the pane registry and `/mail` itself
 - `lib/components/panes/ChatPane.svelte` — sessions navigator + `ChatView`,
   holding the route logic lifted out of `routes/chat/+page.svelte`
-- `lib/panes/files-pane-state.ts` — pure: open splits, cap, tree visibility,
-  the tree-click target rule
-- `lib/panes/auto-open.ts` — the three-step rule over splits and `autoSplit`
+- `lib/panes/files-pane-state.ts` — pure: the tab rules (open, close,
+  activate, cap eviction, compare resolution) over a `TabState`
+- `lib/panes/files-url.ts` — pure: the PRIMARY Files surface's pathname +
+  `?tabs=`/`?compare=` form, both directions
+- `lib/panes/auto-open.ts` — the three-step rule over tabs and the claim
 - `lib/panes/pane-memory.ts` — per-route persistence and the apply rule
 - `lib/shell/reveal-path.ts` — ancestor hrefs for `treeOpenState`, lifted out
   of `routes/knowledge/[...path]/+page.svelte`
@@ -574,8 +701,12 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
 - `pane-route.test.ts` — multi-pane parse/serialize round-trips; the `|` split
   form; cap enforcement; dedup against primary and between panes;
   single-`?pane=` back-compat; `?all=1` alias; invalid input fails closed
-- `files-pane-state.test.ts` — split cap; tree-click targets the first split;
-  hover-open adds a second; closing the last split leaves a tree-only pane
+- `files-pane-state.test.ts` — the tab rules: `resolveTabs` dedupe/truncate/
+  clamp; a tree click replaces the active tab; "open in a new tab" appends and
+  evicts the oldest inactive at the cap without renumbering; closing the active
+  tab lands on its neighbour; compare resolution and its fallback
+- `files-url.test.ts` — the primary's URL both ways, including the two
+  encoding layers a literal pipe in a filename needs
 - `auto-open.test.ts` — recycles its own split; never evicts a user's; falls
   back to a free slot; no-ops when full; a user open clears the mark
 - `pane-memory.test.ts` — save/load; URL wins over memory; route keys are
@@ -607,7 +738,7 @@ One pass, internally ordered so each step is separately reviewable:
 2. `PaneHost` renders N panes and gains the `PaneEntry` contract
    (`view` / `controls` / `createState`); `pane-split.ts` per-count layouts.
    Panes are only ever mounted or unmounted — there is no hidden state.
-3. `FilesPane` — tree + splits + `files-pane-state.ts` + `reveal-path.ts`;
+3. `FilesPane` — tree + content + `files-pane-state.ts` + `reveal-path.ts`;
    `IcmTree` multi-mark and `onBeforeMutate(href)` over a split→ref map
 4. `MailPane` — the read surface extracted from `/mail`, still consumed by
    the route
