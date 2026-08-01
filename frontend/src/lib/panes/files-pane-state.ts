@@ -17,11 +17,13 @@
  * files fit side by side", and a pane with none open is not asking that
  * question. Treating a 0 there as "open nothing" made the pane's own tree
  * inert on every laptop: a split needs `TREE_W + SPLIT_MIN` = 480px of PANE,
- * which a SIDE pane in a two-pane row does not reach until a 1436px window —
- * and at the 540px this cost before `SPLIT_MIN` dropped to 240, not until
- * 1592px. Either way 1280x800 and 1440x900 were below it, so every click in
- * the tree silently did nothing and the pane sat on "Pick a file to read it."
- * forever.
+ * which a SIDE pane in a two-pane row — `0.4 * (window - 239)`, the arithmetic
+ * written out in `pane-fit.ts`'s header — does not reach until a 1439px
+ * window; and at the 540px this cost before `SPLIT_MIN` dropped to 240, not
+ * until 1589px. Against THAT figure both 1280x800 and 1440x900 were below the
+ * line, so every click in the tree silently did nothing and the pane sat on
+ * "Pick a file to read it." forever. Against 480 a 1440 now clears it by four
+ * tenths of a pixel; 1280 still does not, and neither does anything narrower.
  * The one escape (hiding the tree) removed the thing you would click. A
  * cramped first split is a real reading surface; an inert navigator is not.
  */
@@ -63,7 +65,7 @@ export function openAsSecond(paths: string[], path: string, maxSplits: number): 
  *
  * False in exactly one case: the pane already shows a file and is too narrow
  * to hold a second, where `openAsSecond` REPLACES the split the control was
- * meant to sit beside. A side pane needs a 2036px window before two splits
+ * meant to sit beside. A side pane needs a 2039px window before two splits
  * and a tree fit, so this is not a corner case — without it the only remaining
  * way to open a second split is a control that silently destroys what you were
  * reading, the precise cost the ＋ Split button was deleted for. The row disables itself and says why

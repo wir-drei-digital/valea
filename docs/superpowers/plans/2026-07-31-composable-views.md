@@ -51,13 +51,18 @@ disagree with this list, **this list governs.**
    completed fact.
 
 4. **`SPLIT_MIN` is 240, not 300** (Daniel, 2026-08-01). At 300, two files side
-   by side was unreachable on any laptop — a side Files pane needed 2560px with
-   the tree shown, 1920px hidden — which contradicted an originating ask for
-   the feature. `TREE_W` stays 240; the tree holds deep ICM paths.
+   by side was unreachable on any laptop — a side Files pane needed 2339px with
+   the tree shown, 1739px hidden — which contradicted an originating ask for
+   the feature. At 240 those are 2039px and 1439px, and the PRIMARY-width Files
+   pane the ask describes clears the tree-shown case at 1439px. `TREE_W` stays
+   240; the tree holds deep ICM paths. (Every window figure here inverts
+   `0.4 * (window - 239)` for a side pane, `0.6 * (…)` for the primary — see
+   `pane-fit.ts`'s header.)
 
 3. **The first file always opens**, regardless of width. `openInFirst` and
    `openAsSecond` floor `paths.length === 0`. Without this the Files pane's
-   tree was inert below roughly a 1590px window.
+   tree was inert below a 1589px window at `SPLIT_MIN` 300, and below 1439px
+   at 240.
 
 ## File Structure
 

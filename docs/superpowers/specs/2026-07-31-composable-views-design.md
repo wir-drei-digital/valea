@@ -354,13 +354,18 @@ same precedent (`routes/chat/+page.svelte:241-247`).
 ## Width behaviour
 
 Chat plus a Files pane with a tree and two splits needs
-236 + 380 + 240 + 240 + 240 = 1336px.
+236 + 380 + 240 + 240 + 240 = 1336px of MINIMA. That is a floor, not a
+reachable width: the row shares `window - 239` at 60/40, so what a side pane
+actually gets is `0.4 * (window - 239)` and the window figures below are all
+that inverse (`pane-fit.ts`'s header carries the derivation).
 
 **AMENDMENT (2026-08-01, Daniel): `SPLIT_MIN` is 240, not 300.** At 300 the
 arithmetic put two files side by side out of reach on every laptop — a side
-Files pane cleared it only at 2560px with the tree shown, or 1920px hidden,
+Files pane cleared it only at 2339px with the tree shown, or 1739px hidden,
 and with the `＋ Split` control deleted there was no other route to a second
-split. That contradicted one of this feature's originating asks. 240px is
+split. (At 240 those become 2039px and 1439px, and a PRIMARY-width Files pane
+clears the tree-shown case at 1439px, which is the arrangement the originating
+ask actually describes.) That contradicted one of this feature's originating asks. 240px is
 narrow but genuinely readable against the 596px prose cap: it degrades rather
 than blocking. When less is available, what gets
 dropped is decided from the outside in — side panes right to left, so the

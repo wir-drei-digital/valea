@@ -11,10 +11,12 @@
  * rather than trusting the width figure it is handed — and, like them, it
  * exempts the FIRST file from that cap (rule 0). A split needs
  * `TREE_W + SPLIT_MIN` = 480px of pane, which a SIDE pane in a two-pane row
- * does not reach until a 1436px window, so on a 1280- or 1440-wide screen the
- * width figure is 0; treating that as "open nothing" would leave an assistant
- * read or a tool chip inert in an empty pane at exactly the widths people
- * work at.
+ * — `0.4 * (window - 239)`, spelled out in `pane-fit.ts`'s header — does not
+ * reach until a 1439px window, so on a 1280-wide screen the width figure is 0.
+ * A 1440 now clears it by four tenths of a pixel, and did NOT before
+ * `SPLIT_MIN` dropped from 300 to 240 (that threshold was 1589px). Treating a
+ * 0 as "open nothing" would leave an assistant read or a tool chip inert in an
+ * empty pane at exactly the widths people work at.
  *
  * CALLERS MUST MAINTAIN THE CLAIM. It is an INDEX into `paths`, so it stops
  * meaning what it meant the moment the list is renumbered:
@@ -65,7 +67,8 @@ export function autoOpen(
   //    rule 3 below exists to protect a file the USER placed, and an empty
   //    pane has none to protect. Without it, a tool chip or an assistant read
   //    landing in an EMPTY Files pane does nothing at all in a side pane
-  //    below a 1436px window, which includes 1280- and 1440-wide screens.
+  //    below a 1439px window — 1280-wide screens today, and 1440-wide ones
+  //    too before `SPLIT_MIN` dropped to 240 (that threshold was 1589px).
   if (paths.length === 0) return { paths: [path], autoIndex: 0 };
 
   if (cap < 1) return { paths, autoIndex: null };

@@ -32,8 +32,9 @@ describe('autoOpen', () => {
   // nothing" protects a file the USER placed, and an empty pane has none — so
   // the first file lands whatever the width says, exactly as it does in
   // `openInFirst`. A split needs 480px of pane, which a side pane does not
-  // reach below a 1436px window, so the old behaviour left every tool-chip
-  // open into an empty Files pane inert on a 1280- or 1440-wide screen.
+  // reach below a 1439px window, so the old behaviour left every tool-chip
+  // open into an empty Files pane inert on a 1280-wide screen — and on a
+  // 1440-wide one too when the requirement was 540px (threshold 1589px).
   it('opens the first file even when the width allows no split at all', () => {
     expect(autoOpen([], null, 'A.md', 0)).toEqual({ paths: ['A.md'], autoIndex: 0 });
   });

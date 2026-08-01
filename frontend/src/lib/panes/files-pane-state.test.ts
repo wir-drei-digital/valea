@@ -41,8 +41,10 @@ describe('openInFirst', () => {
 
   // THE laptop bug. `splitsThatFit` needs TREE_W + SPLIT_MIN = 480px of pane
   // before ONE split fits, which a SIDE pane in a two-pane row does not reach
-  // until a 1436px window — so on a 1280x800 or a 1440x900 the cap is 0 and
-  // every click in the pane's own tree used to do nothing at all.
+  // until a 1439px window — so on a 1280x800 the cap is 0 and every click in
+  // the pane's own tree used to do nothing at all. A 1440x900 clears it by
+  // four tenths of a pixel now, and did not when the requirement was 540px
+  // (threshold 1589px), which is when this was found.
   it('opens the first file even when the width allows no split at all', () => {
     expect(openInFirst([], 'A.md', 0)).toEqual(['A.md']);
   });
@@ -95,7 +97,7 @@ describe('openAsSecond', () => {
 });
 
 describe('canOpenBeside', () => {
-  // THE laptop case. A side pane needs a 2036px window for two splits and a
+  // THE laptop case. A side pane needs a 2039px window for two splits and a
   // tree, so below that the cap is under 2 and
   // `openAsSecond(['A'], 'B', 0)` returns ['B'] — the control named "Open
   // beside" would destroy the split it was meant to sit beside. The row
