@@ -2334,18 +2334,18 @@ UI gesture, so the human is already the approver.
 
 ## Design system pointer
 
-UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a reusable four-column grid (Sidebar · optional ListPane · Main · optional Rail) implemented as an `AppShell` component family on shadcn-svelte primitives.
+UI follows the "paper & ink, with a green pen for approval" design system: [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (canonical source: `docs/design/cockpit-design-system-v1.pdf`). Two-layer token architecture (raw tokens → shadcn-svelte semantic variable mapping); feature code never touches raw Tailwind classes directly. Shell layout is a collapsible nav column beside a content column (the route's pane row plus the content bar under it), implemented as an `AppShell` component family on shadcn-svelte primitives. A route that wants a fixed navigator column renders it inside its own `main` snippet — see [Composable views](#composable-views) below.
 
 ### Shell component inventory (`frontend/src/lib/components/shell/`)
 
-- `AppShell.svelte` — the four-column grid shell (Sidebar · optional ListPane · Main · optional Rail); pages compose inside it. Layout only: the main slot is a bare full-height flex column with no width cap and no scroll container of its own, so each route owns its own scrolling and measure (`MainColumn`, or a column pinning chrome to the pane's bottom edge like chat's composer). That variant-freedom is what lets any view render in any pane — see [Side panes](#side-panes) below.
+- `AppShell.svelte` — nav column + content column; pages compose inside it. The nav is full-height and collapsible (persisted, because every route mounts its own `AppShell`), so the content bar sits BESIDE it rather than under it. Layout only: the main slot is a bare full-height flex column with no width cap and no scroll container of its own, so each route owns its own scrolling and measure (`MainColumn`, or a column pinning chrome to the pane's bottom edge like chat's composer). That variant-freedom is what lets any view render in any pane — see [Composable views](#composable-views) below. Its `list` and `rail` slots are gone: `rail` was already dead, and `list` is replaced by each pane carrying its own navigator.
+- `ContentBar.svelte` — the strip under the pane row: the nav collapse toggle at its far left, and ＋ Pane, whose menu is built by `shell/content-bar.ts` (`menuItems` resolves a concrete subject per kind and disables with a REASON rather than hiding).
 - `AppFrame.svelte` — outer frame/chrome wrapper around `AppShell`.
 - `MainColumn.svelte` — the scrolling main-slot column with the §11 prose measure (centered 660px, or `wide` for the full pane width with just the gutter — page-editor routes, which re-cap per block via `tiptap.css`). Formerly `AppShell`'s `mainVariant="prose"|"prose-wide"` prop, relocated to the route layer.
 - `Sidebar.svelte` — left nav column: the daily group (Today, Tasks, Mail, Calendar, Chat), the Projects section (`IcmProjects.svelte`), and a Workspace utility group (Sources, Audit log). The file browser (route `/knowledge`, titled "Files" in the UI) is reached through each project's own row rather than a global nav item. The Tasks item was dropped as a stub (2026-07-26) and returned for real with [Tasks & schedules](#tasks--schedules) above.
 - `SidebarItem.svelte` — single sidebar row/link.
-- `Rail.svelte` — optional right-hand rail column.
 - `ListPane.svelte` — optional second column for list-over-detail views (e.g. Knowledge's folder/page list).
-- `IcmTree.svelte` — the live ICM nav tree for ONE mounted ICM; consumes `icmStore` (`frontend/src/lib/stores/icm.svelte.ts`) and re-renders on `icm_changed`. Two placements, never the main sidebar (which no longer carries a file tree — see [ICM project workspaces](#icm-project-workspaces) above): Knowledge's `ListPane` renders it as links, and a chat session header's file popover renders it in `onSelect` mode, where a row calls back instead of navigating (that is how a chat opens a file beside itself — see [Side panes](#side-panes) below).
+- `IcmTree.svelte` — the live ICM nav tree for ONE mounted ICM; consumes `icmStore` (`frontend/src/lib/stores/icm.svelte.ts`) and re-renders on `icm_changed`. Never the main sidebar (which no longer carries a file tree — see [ICM project workspaces](#icm-project-workspaces) above). Three placements: the Knowledge index's `ListPane` renders it as links; a Files PANE renders it as that pane's own navigator in `onSelect` mode, where a row rewrites the pane's descriptor instead of navigating; and mail compose renders it as an attachment picker. Leaf rows carry a per-row "Open beside" (`onOpenBeside`) — the only route to a second file split, since a header button would have to guess which file to open. It disables itself with a reason, never silently, when the pane is too narrow to hold two.
 - `IcmProjects.svelte` — the main sidebar's ICM project groups + recent sessions (presentational; `icm-projects.ts` owns the ordering/capping/expansion logic).
 - `MountIcmAction.svelte` — the sidebar's "Mount an ICM" affordance (mount an existing folder or create a new one).
 - `WorkspaceSwitcher.svelte` — the sidebar-footer workspace switcher, addressed by internal workspace `id`.
@@ -2361,21 +2361,103 @@ Related, not under `shell/` but part of the same top-level chrome:
 - `frontend/src/lib/components/tasks/` — the `/tasks` route's two tabs and their rows/dialogs (`TasksTab`, `QuickAdd`, `TaskRow`, `TaskEditor`, `SchedulesTab`, `ScheduleRow`, `RunHistory`, plus the pure `task-shapes.ts`/`schedule-shapes.ts`).
 - `frontend/src/lib/components/ui/` — shadcn-svelte primitives (button, dialog, input, label, badge, separator, skeleton, scroll-area, tooltip).
 
-### Side panes
+### Composable views
 
-*(spec: [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md))*
+*(specs: [2026-07-31-composable-views-design.md](superpowers/specs/2026-07-31-composable-views-design.md), superseding [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md))*
 
-The `AppShell` main slot can hold **one** side pane beside the route's own
-primary view — a file open next to a chat transcript, or a chat session open
-next to the file you are reading. Deliberately one pane, not a tiling
-manager. It rests on four pieces:
+The content area is a **row of panes**: the route's own primary view plus up to
+`PANE_CAP` (2) more — a file open beside a chat transcript, a chat session and
+a mailbox beside the file you are reading. Each pane is **self-contained**: its
+own navigator plus its own content, so a Files pane carries the ICM tree it
+browses, a Chat pane carries its sessions list, a Mail pane carries its message
+list. That is what removed the shell's `list` column: a navigator belongs to
+the surface it navigates, and nothing outside a pane can observe the
+relationship, so there is no cross-pane sync to arrange. It is deliberately not
+a tiling manager — the cap is two, panes only ever sit in one horizontal row,
+and nothing is ever hidden-but-mounted (requested, mounted and visible panes
+are always one set).
 
-- **`?pane=` — the URL is the only source of truth.** `frontend/src/lib/panes/pane-route.ts` is a pure codec for the param: `file:<mountKey>/<relPath>`, `chat:<sessionId>`, `chat:new:<mountKey>` (a new-session composer scoped to an ICM, rewritten to `chat:<id>` with `replaceState` once the session starts). Invalid input parses to `null` and the primary renders alone — a fail-closed parse, never a thrown route. Because the split lives in the URL it is linkable, survives reload, and Back closes the pane. The same module carries the helpers that keep the pane attached across in-route navigation: `withPaneParam` (set/clear on the current URL), `paneLinkSearch` (suffix for sibling links, e.g. the file tree's rows), `hrefWithPane` (an unrelated href, pane preserved), and `promoteHref` ("open as full view" — the pane's subject becomes a route).
-- **`PaneHost`** (`components/panes/PaneHost.svelte`) renders the split on `paneforge` (`PaneGroup`/`Pane`/`PaneResizer`), with the ratio persisted in `localStorage` by `panes/pane-split.ts`. It owns no pane state — every button calls back up to the route, which navigates. The primary `Pane` is mounted **unconditionally** (only the resizer and the side pane are conditional) so opening or closing a pane never destroys and rebuilds the primary: the open session's channel is not re-joined, the composer's draft survives, the transcript does not replay. A pane whose descriptor equals the primary's is dropped rather than shown twice.
-- **`panes/registry.ts`** maps a descriptor `kind` to the view component — the one place to extend when a new view becomes pane-mountable. Views are placement-agnostic (`ChatView`, `FileView`: props in, callbacks out, no URL reading), so the same component serves as a route primary and as a pane; `FilePaneAdapter` is the shim that gives `FileView` the pane's scroll container and gutter, which the full route gets from `MainColumn`.
-- **`panes/context.ts` — `PaneContext`** is what a host hands a mounted view: `placement`, plus optional `openFile`, `sessionCreated` and `onArchived` callbacks. Views must tolerate every callback being absent. This is the seam that makes the two routes mirror images of one click: on `/chat`, a transcript's tool-call chip (or the session header's file tree popover) calls `openFile` and the route opens a side pane; on `/knowledge`, the same view's same click navigates the PRIMARY and keeps the chat pane where it is.
+It rests on six pieces:
 
-The file viewers behind a `file:` pane are `frontend/src/lib/components/files/` (`PlainTextView`, `PdfView`, `ImageView`), dispatched by `views/FileView.svelte` via `knowledge/file-leaf.ts`; `.md` goes to the full page editor. Their bytes come from `GET /files/raw`, whose credential split is described under [Images — `Assets/` + `/files` endpoints](#images--assets--files-endpoints).
+- **`?pane=` — the URL is the only source of truth.**
+  `frontend/src/lib/panes/pane-route.ts` is a pure codec for the param, which
+  **repeats**: one `?pane=` per side pane, left to right. Wire forms are
+  `files:<mountKey>[/<p1>[|<p2>]]`, `chat:<sessionId>`, `chat:new:<mountKey>`
+  (a new-session composer scoped to an ICM, rewritten to `chat:<id>` with
+  `replaceState` once the session starts) and `mail:<account>[/<msgId>]`, with
+  the mount key and every path segment independently encoded — `|` is safe as
+  the split separator because a literal pipe in a filename encodes to `%7C`.
+  Invalid input parses to `null` and the rest still renders: a fail-closed
+  parse, never a thrown route. Because the row lives in the URL it is linkable,
+  survives reload, and Back closes a pane. The same module carries
+  `parsePanes`/`withPanes` (read and write the whole row), `hrefWithPanes` (an
+  unrelated href, panes preserved), `paneSearchSuffix` (for sibling links such
+  as a tree row's), `dedupeSurfaces` (one surface per kind across the primary
+  and the panes, always a fresh array), `promoteTarget` ("open as full view" —
+  the pane's subject becomes the route, and what it displaces becomes a pane),
+  and `paneIdentity`, which is a pane's SUBJECT rather than its contents and is
+  what `PaneHost` keys on. A route's PRIMARY surface is addressed by the route
+  itself, not by a `pane` param — which is why the Knowledge file route carries
+  its primary's second file as `?split=<path>`, and why promoting a two-split
+  Files pane onto that route keeps both files.
+- **`PaneHost`** (`components/panes/PaneHost.svelte`) renders the row on
+  `paneforge`, with the layout persisted per pane COUNT by `panes/pane-split.ts`
+  (`paneRowLayout` reads the arrangement the user dragged for that count, else
+  `defaultPaneLayout`, which opens at 60/40 for two). It owns no pane CONTENT
+  state — every button calls back up to the route, which navigates — but it does
+  own each pane's CHROME state, because the pane header renders before the body
+  mounts and a pane cannot hand stateful chrome upward to its already-rendering
+  parent. The primary `Pane` is mounted **unconditionally** (only resizers and
+  side panes are conditional) so opening or closing a pane never destroys and
+  rebuilds the primary: the open session's channel is not re-joined, the
+  composer's draft survives, the transcript does not replay. Side panes are
+  keyed by `paneIdentity`, not by the wire form — keying on contents made every
+  tree click inside a Files pane remount the whole pane.
+- **`panes/registry.ts`** maps a descriptor `kind` to a pane ENTRY —
+  `{ view, controls?, createState? }` — the one place to extend when a new view
+  becomes pane-mountable. `FilesPane`, `ChatPane` and `MailPane` compose the
+  same placement-agnostic views the routes use (`FileView`, `ChatView`, the mail
+  `MessageList`/`MessageView` pair): props in, callbacks out, no URL reading. No
+  adapter shim survives — a pane view owns its own scroll container and gutter
+  directly, which the full route gets from `MainColumn`.
+- **`panes/context.ts` — `PaneContext`** is what a host hands a mounted view:
+  `placement`, plus optional `openFile`, `registerFileTarget`,
+  `takeAutoCreatedPath`, `openPane` (a REWRITE of the calling surface's own
+  descriptor, never an append), `sessionCreated`, `onArchived` and `onVanished`
+  (ONE subject inside a multi-subject pane vanished — drop the subject, keep the
+  pane if anything is left). Views must tolerate every callback being absent.
+  This is the seam that makes the routes mirror images of one click: on `/chat`
+  a transcript's tool-call chip calls `openFile` and the route opens a Files
+  pane; on `/knowledge` the same click moves the PRIMARY and leaves the chat
+  pane where it is. `panes/pane-wiring.ts` writes the route half of that
+  contract once instead of four times.
+- **Width is arithmetic, not CSS** — `shell/pane-fit.ts`. `panesThatFit`
+  answers whether another pane may open and `truncateToFit` trims a restored
+  row; both are consulted only when a pane is ADDED or RESTORED, never on
+  resize, because unmounting a live `ChatView` would dispose its session store
+  and drop the composer's draft. `shell/pane-room.svelte.ts` is the single
+  shared answer, so the bar's ＋ Pane and every route-owned control that opens a
+  pane agree; a control that cannot open one disables itself with the reason
+  rather than failing silently. Inside a Files pane, `splitsThatFit` caps the
+  splits and `treeFits` decides whether the pane can afford its navigator — the
+  one rule that IS continuous, because a pane a tool chip opened can be far too
+  narrow for a 240px tree plus a readable file, and the tree is the half that
+  can be dropped.
+- **Rules the panes obey are pure and tested outside the components.**
+  `panes/files-pane-state.ts` holds the split rules (a tree click replaces split
+  0, "Open beside" adds or replaces split 1, the FIRST file always lands however
+  narrow the pane is); `panes/auto-open.ts` holds where an ASSISTANT-opened file
+  lands, tracking a CLAIM on the one split auto-open created so chat recycles
+  its own while a file the user placed stays put; `panes/pane-memory.ts` holds
+  per-route pane memory (content lives in the URL, chrome is a preference — a
+  URL naming panes always wins over memory) plus the nav collapse.
+
+The file viewers behind a Files pane's splits are
+`frontend/src/lib/components/files/` (`PlainTextView`, `PdfView`, `ImageView`),
+dispatched by `views/FileView.svelte` via `knowledge/file-leaf.ts`; `.md` goes
+to the full page editor. Their bytes come from `GET /files/raw`, whose
+credential split is described under [Images — `Assets/` + `/files`
+endpoints](#images--assets--files-endpoints).
 
 ## Release & auto-update
 
@@ -2424,6 +2506,7 @@ App-version truth for the updater: `desktop/src-tauri/tauri.conf.json`.
 - [2026-07-18-calendar-feeds-design.md](superpowers/specs/2026-07-18-calendar-feeds-design.md) — **Shipped** (Spec F — see [Calendar](#calendar-spec-f--ics-feeds-in-valea-calendar-out) above): ICS subscription-feed mirrors (no CalDAV/OAuth/Graph), the hand-written RFC 5545 parser with honest unsupported-recurrence/timezone handling, the two-store guarded derive protocol, the agent-writable Valea calendar + tokened loopback served feed, one calendar mount with mail's deny-not-ask tier, feed-URL-as-credential keychain posture.
 - [2026-07-26-icm-skills-design.md](superpowers/specs/2026-07-26-icm-skills-design.md) — **Shipped** (see [ICM skills](#icm-skills) above): ICM skills (vendored install, consent, settings) — consent-gated install of repo-vendored agent skills into a user-owned ICM's `.claude/skills/`; pinned snapshots + `catalog.yaml` in `backend/priv/skills/` with no runtime fetching; `.provenance.yaml`-derived per-mount state; staged tmp+rename installs with `resolve_real/2` containment; generation-guarded, control-token-gated list/install/update/uninstall/dismiss; a Skills section in agent settings and a one-time dismissible mount-moment offer card.
 - [2026-07-26-mail-smtp-send-design.md](superpowers/specs/2026-07-26-mail-smtp-send-design.md) — **Shipped** (Spec G — see [Mail](#mail-spec-e--mail-as-maildir-spec-g--human-only-send) and [Send](#send-spec-g) above): human-only SMTP send — Spec E's "there is no SMTP" invariant rewritten to *Valea transmits mail only on an explicit human action, hash-bound to the exact draft, sending identity, and threading the human reviewed; agents have no path to send; no code path retransmits*. Settings v5 (optional per-account `smtp` block, separate SMTP keychain entry, `outbound: human_send_and_push`), a hand-written tri-state `SmtpClient` on `:ssl`/`:gen_tcp` (the `354` boundary; `:unknown` never retried), the `send` ledger op kind with settings-pinned claim/snapshot/compose, wire/record dual compose, `send_review` + human resolution, network-free send classification at Engine activation, the kind-aware ordered display projection, the draft iteration loop (live `mail_draft` events + Request-changes routing into a session via `initial_prompt`), and the multi-account hardening pass (account-qualified selection, WAL + `busy_timeout`, per-account poll jitter). Live-acceptance checklist: `docs/superpowers/acceptance/2026-07-26-mail-smtp-send.md`.
-- [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md) — **Shipped** (see [Side panes](#side-panes) above): one side pane beside a route's primary view, addressed entirely by a `?pane=` URL param (linkable, reload-surviving, Back-closable) — a `paneforge` split with a persisted ratio (`PaneHost`), a kind→component registry over placement-agnostic views (`ChatView`, `FileView`), and a `PaneContext` callback seam that makes `/chat` and `/knowledge` mirror images of the same click. Adds file viewers for the non-`.md` formats (text/PDF/image), clickable file leaves in `IcmTree` plus a session-header file popover, ACP `toolCall.locations` relayed as clickable chips with a containment-checked `relPath`, rename/delete for non-`.md` files, and the `/files/raw` credential split (image extensions token-exempt for `<img>`; everything else needs the control token, served from a fixed type map with `nosniff`).
+- [2026-07-28-side-panes-design.md](superpowers/specs/2026-07-28-side-panes-design.md) — **Superseded** by the composable-views spec below; historical record only for the pane model itself. It shipped ONE side pane beside a route's primary view, addressed by a single `?pane=` param, over a `file:<mountKey>/<relPath>` descriptor kind, a `FilePaneAdapter` shim and a session-header file-tree popover — none of which survive. What it shipped that DOES stand: the file viewers for the non-`.md` formats (text/PDF/image), clickable file leaves in `IcmTree`, ACP `toolCall.locations` relayed as clickable chips with a containment-checked `relPath`, rename/delete for non-`.md` files, and the `/files/raw` credential split (image extensions token-exempt for `<img>`; everything else needs the control token, served from a fixed type map with `nosniff`).
+- [2026-07-31-composable-views-design.md](superpowers/specs/2026-07-31-composable-views-design.md) — **Shipped** (see [Composable views](#composable-views) above): the content area becomes a ROW of panes — the route's primary plus up to two more — each a self-contained navigator + content pair, addressed by a REPEATING `?pane=` param (linkable, reload-surviving, Back-closable). Replaces the one-pane model and the shell's `list`/`rail` columns: a Files pane carries its own ICM tree and one or two file splits, a Chat pane its sessions list, a Mail pane its message list. Adds the pane ENTRY registry (view + header controls + per-pane state), subject-identity keying so a click inside a pane never remounts it, per-count layout persistence, the content bar with ＋ Pane and the nav collapse, pure width arithmetic consulted only when a pane or split is added (`pane-fit.ts`, one shared `paneRoom`), the assistant's auto-open claim over the split it created, per-route pane memory, and promotion ("open as full view") that carries what it displaces into a pane.
 - [2026-07-29-tasks-schedules-design.md](superpowers/specs/2026-07-29-tasks-schedules-design.md) — **Shipped** (see [Tasks & schedules](#tasks--schedules) above): a native task concept and a native scheduling concept as two plain JSON files per ICM root (`tasks.json`, `schedules.json`) plus Valea's own `.valea/` namespace (materialized `briefing.md`, append-only `task-archive.jsonl`). Lenient display / strict execution with a per-entry disposition; one-writer optimistic-concurrency ledger writes with snapshot-hash-identified, append-first archival; a per-workspace 30 s scheduler over `schedule_state`/`schedule_runs` (fingerprints, monotonic anchors, tombstones, coalescing, catch-up, one-run-at-a-time, launch-time re-validation, tri-state kill switch) with a hand-rolled Vixie-semantics cron; prompt fires as `kind: "scheduled"` sessions at unchanged posture and command fires as timeout-bounded, output-capped exec spawns with no sandbox; consent as a `PermissionPolicy` always-ask on the root `schedules.json` plus a `.valea/**` write-deny (managed-settings mirror best-effort, very likely inert — the ACP callback enforces); the `/tasks` route's two tabs, the cockpit tasks line replacing `open_loops`, schedule notices, and backend-side scheduled-session filtering. Live-acceptance checklist: [docs/superpowers/acceptance/2026-07-29-tasks-schedules.md](superpowers/acceptance/2026-07-29-tasks-schedules.md).
 - [2026-07-30-icm-git-sync-design.md](superpowers/specs/2026-07-30-icm-git-sync-design.md) — **Shipped** (see [ICM git sync](#icm-git-sync) above): per-workspace `Valea.Git.Engine` over a `Valea.Git.Cli`/`Repo` seam that auto-syncs git-backed ICM mounts where it is safe and holds where it is not — fail-closed scope (repo root == mount root), one per-mount `git: {sync:, instructions:}` mode (`full`/`pull`/`off`, default `pull`), derived-state-only rows with no durable sync files, a local-read-first pass order, per-repo backoff, `merge_in_progress`/`diverged`/`blocked_local` holds that do no network at all, the doctor's `<mount key>: git sync` check with its ssh-agent hint, and the one-click conflict → agent handoff (deterministic briefing as `initial_prompt`, Engine-side claim protocol so a repo can only ever have one resolution session). **Its pass-order, `blocked_local`, notice-storage, doctor and status-enum sections are amended** by the spec's own "Implementation amendments (2026-07-30)" appendix — read that for what actually runs. Live-acceptance checklist: [docs/superpowers/acceptance/2026-07-30-icm-git-sync.md](superpowers/acceptance/2026-07-30-icm-git-sync.md).
