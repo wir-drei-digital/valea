@@ -379,6 +379,62 @@ describe('MailStore.refreshStatus', () => {
     expect(store.accounts).toEqual([]);
     expect(store.selectedAccount).toBeNull();
   });
+
+  // `statusLoaded` is what lets a surface tell "no mailbox is configured"
+  // apart from "nobody has asked yet" — `accounts` is empty in both.
+  it('has not loaded status before anything asks', () => {
+    expect(new MailStore(fakeApi({}) as never).statusLoaded).toBe(false);
+  });
+
+  it('marks status loaded even when the answer is zero accounts', async () => {
+    const store = new MailStore(
+      fakeApi({ mailStatus: async () => ({ ok: true, data: { accounts: [] } }) }) as never
+    );
+
+    await store.refreshStatus();
+
+    expect(store.accounts).toEqual([]);
+    expect(store.statusLoaded).toBe(true);
+  });
+
+  // REVERSED from "does not mark status loaded when the fetch failed". The
+  // flag means "somebody asked", not "the answer was good": leaving it false
+  // on a failure made unknown PERMANENT, and the + Pane menu cannot render
+  // that honestly — it kept Mail live forever on a click that could never
+  // land, because there was no account to name.
+  it('marks status loaded even when the status call failed', async () => {
+    const store = new MailStore(
+      fakeApi({ mailStatus: async () => ({ ok: false, error: 'workspace_not_open' }) }) as never
+    );
+
+    await store.refreshStatus();
+
+    expect(store.statusLoaded).toBe(true);
+  });
+
+  it('keeps the accounts it already knew when a later status call fails', async () => {
+    // This is what stops the reversal above turning into a lie: a failure
+    // AFTER a successful load must not read as "no mailbox is configured".
+    // Only a workspace where status has never once arrived does.
+    let fail = false;
+    const store = new MailStore(
+      fakeApi({
+        mailStatus: async () =>
+          fail
+            ? ({ ok: false, error: 'workspace_not_open' } as StatusResult)
+            : ({ ok: true, data: { accounts: [{ account: 'mara' }] } } as StatusResult)
+      }) as never
+    );
+
+    await store.refreshStatus();
+    expect(store.accounts).toHaveLength(1);
+
+    fail = true;
+    await store.refreshStatus();
+
+    expect(store.accounts).toHaveLength(1);
+    expect(store.statusLoaded).toBe(true);
+  });
 });
 
 describe('MailStore.selectAccount', () => {

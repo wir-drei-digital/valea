@@ -202,6 +202,25 @@
     );
   });
 
+  /**
+   * "Open files beside this session" — files-beside-chat, created from the
+   * chat side, replacing the popover file tree this header used to carry.
+   *
+   * The subject is the session's own ICM, so a session whose mount is not
+   * known yet (the flat list is still loading, or the row carries no
+   * `icmMount`) offers no control rather than one that would open a browser
+   * over the wrong workspace. Every other refusal is the host's
+   * `besideRefusal`, so this control and the route's agree by construction.
+   */
+  const canOpenFiles = $derived(openMountKey !== null && context.openBeside !== undefined);
+  const filesRefusal = $derived(context.besideRefusal?.('files') ?? null);
+
+  function openFilesBeside(): void {
+    const key = openMountKey;
+    if (!key) return;
+    context.openBeside?.({ kind: 'files', mountKey: key, paths: [], active: 0, compare: null });
+  }
+
   const openIcmName = $derived.by(() => {
     // New-session mode has no session row to read a name off yet — the mount
     // catalog is the only source (`MountSummary.name` is the ICM's display
@@ -216,29 +235,11 @@
     );
   });
 
-  // Safety net for the header's popover file tree, which reads
-  // `icmStore.groups`: every shell already refetches that store on mount
-  // (`AppFrame`, Today's inline shell), so this normally never fires. Three
-  // guards, each load-bearing:
-  //  - no `openFile` → no popover renders → nothing to load;
-  //  - `!icmStore.loaded` → the shell's own cold-load refetch is still in
-  //    flight, and firing a second full refetch alongside it would double
-  //    every `list_icms`/`icm_list_dir` call on every cold load;
-  //  - once per mount key → `refetch()` REASSIGNS `groups`, this effect's own
-  //    dependency, so a mount that never appears in it (disabled, degraded —
-  //    `refetch` filters those out) would otherwise refetch in a tight loop.
-  // Deeper folders lazy-load on expand through `IcmTree`'s own `loadDir`.
-  let treeRequestedFor: string | null = null;
-
-  $effect(() => {
-    if (!openFile) return;
-    if (!icmStore.loaded) return;
-    const key = openMountKey;
-    if (!key || treeRequestedFor === key) return;
-    if (icmStore.groups.some((g) => g.mount === key)) return;
-    treeRequestedFor = key;
-    void icmStore.refetch();
-  });
+  // (The root-load safety net that used to live here went with the header's
+  // popover file tree: it existed only to make sure that popover had a mount
+  // root to render. The tree is a Files pane now, and `FilesPane` reads the
+  // same store through `IcmTree`, whose own self-healing loader fetches any
+  // open folder it finds unloaded.)
 
   const ended = $derived.by(
     () =>
@@ -514,7 +515,12 @@
     autoOpenBaseline = count;
     const open = openToolFile;
     if (!open || context.placement !== 'primary') return;
-    if (context.hasOpenPane === undefined || context.hasOpenPane()) return;
+    // No `hasOpenPane` gate any more. "Never evict a file the user placed" is
+    // still the floor, but it lives where the file actually lands — the Files
+    // surface's own auto-open rule (`auto-open.ts`, rule 3) — rather than
+    // here, where "a pane is open" had stopped meaning "there is nowhere to
+    // put this" the moment a row could hold two panes and a Files pane two
+    // splits. This view just offers the file and lets the receiver decide.
     if (autoOpenInFlight) return;
     const relPath = latestTurnAutoOpenPath(current.items);
     const mountRoot = openMountRoot;
@@ -535,8 +541,10 @@
       if (!result.ok) return;
       const data = result.data as { results: { path: string; exists: boolean }[] };
       if (!data.results[0]?.exists) return;
+      // Re-checked after the await, because the transcript may have moved on
+      // while `icm_paths_exist` was out — but NOT re-checked against pane
+      // state, which is no longer this view's business (see the effect above).
       if (store !== captured || turnCount(captured.items) !== capturedTurnCount) return;
-      if (context.hasOpenPane?.() !== false) return;
       open(relPath);
     } finally {
       autoOpenInFlight = false;
@@ -629,10 +637,10 @@
   <div class="flex min-h-0 w-full flex-1 flex-col pt-3">
     <SessionHeader
       icmName={openIcmName}
-      mountKey={openMountKey}
       ended={false}
       archiving={false}
-      onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
+      onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+      {filesRefusal}
     />
     <div class="min-h-0 flex-1 overflow-y-auto">
       <p class="text-ink-meta mx-auto w-full max-w-[660px] px-8 py-5 text-[13px]">
@@ -671,16 +679,16 @@
            that deletes itself. -->
       <SessionHeader
         icmName={openIcmName}
-        mountKey={openMountKey}
         {ended}
         {archiving}
         {deleting}
         onArchive={() => void archiveOpenSession()}
         onDelete={() => void deleteOpenSession()}
-        onOpenFile={openFile ? (sel) => openFile(sel) : undefined}
         filesCount={fileActivities.length}
         onShowFiles={railCanShow && !railOpen ? reopenRail : undefined}
         filesPanel={!railCanShow ? filesPopover : undefined}
+        onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+        {filesRefusal}
       />
       {#if archiveError}
         <p class="text-warn-ink mx-auto w-full max-w-[660px] px-8 pt-1 text-[11.5px]" role="alert">

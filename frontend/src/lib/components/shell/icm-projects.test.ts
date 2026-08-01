@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   orderGroups,
   groupAllSessions,
@@ -6,6 +6,8 @@ import {
   diagnosisSummary,
   offersValeaGitignore,
   gitIconAction,
+  sessionTitle,
+  sessionRelativeTime,
   NAV_SESSIONS_TOTAL
 } from './icm-projects';
 import type { MountSummary } from '$lib/stores/mounts.svelte';
@@ -253,5 +255,47 @@ describe('gitIconAction', () => {
   it('opens the panel for a repo that needs a human, and syncs otherwise', () => {
     expect(gitIconAction({ attention: true })).toBe('open-panel');
     expect(gitIconAction({ attention: false })).toBe('sync-now');
+  });
+});
+
+describe('sessionTitle', () => {
+  it('prefers the session title', () => {
+    expect(sessionTitle({ title: 'Quarterly close', kind: 'chat' })).toBe('Quarterly close');
+  });
+
+  // A backend that has not summarised yet sends `""` or spaces, and a row
+  // titled with whitespace reads as a blank row.
+  it('falls back for a blank or whitespace-only title', () => {
+    expect(sessionTitle({ title: '   ', kind: 'chat' })).toBe('Chat session');
+    expect(sessionTitle({ title: null, kind: 'chat' })).toBe('Chat session');
+  });
+
+  it('names an untitled workflow run as a workflow run', () => {
+    expect(sessionTitle({ title: null, kind: 'workflow' })).toBe('Workflow run');
+  });
+});
+
+describe('sessionRelativeTime', () => {
+  const now = new Date('2026-07-31T12:00:00.000Z');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    return () => vi.useRealTimers();
+  });
+
+  it('renders in the largest unit that still counts', () => {
+    expect(sessionRelativeTime('2026-07-31T11:59:30.000Z')).toBe('30 seconds ago');
+    expect(sessionRelativeTime('2026-07-31T11:45:00.000Z')).toBe('15 minutes ago');
+    expect(sessionRelativeTime('2026-07-31T09:00:00.000Z')).toBe('3 hours ago');
+    expect(sessionRelativeTime('2026-07-29T12:00:00.000Z')).toBe('2 days ago');
+  });
+
+  // A row with no usable timestamp must show nothing — never "Invalid Date",
+  // and never "56 years ago" from an epoch-zero fallback.
+  it('is empty for a missing or unparseable timestamp', () => {
+    expect(sessionRelativeTime(null)).toBe('');
+    expect(sessionRelativeTime(undefined)).toBe('');
+    expect(sessionRelativeTime('not a date')).toBe('');
   });
 });

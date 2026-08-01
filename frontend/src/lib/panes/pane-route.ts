@@ -1,23 +1,58 @@
 /**
- * Pure codec for the `?pane=` query param (side-panes pass) — which view is
- * open in the side pane next to the route's primary view. Same
- * "extract the logic, no component render harness" convention as
- * `icm-route.ts`. Wire forms:
+ * Pure codec for the `?pane=` query params (composable views) — which views sit
+ * beside the route's primary view. The param REPEATS: one `?pane=` per side
+ * pane, in left-to-right order, capped at `PANE_CAP`. A single `?pane=` is the
+ * degenerate one-pane case, so old links keep working. Same "extract the logic,
+ * no component render harness" convention as `icm-route.ts`. Wire forms, with
+ * the mount key and each path segment independently `encodeURIComponent`-encoded
+ * (mirroring `knowledgeHref`):
  *
- *   file:<mountKey>/<relPath>   (mountKey and each path segment URL-encoded,
- *                                mirroring `knowledgeHref`)
+ *   files:<mountKey>                  (mount index, no tabs)
+ *   files:<mountKey>/<p1>             (one tab, active)
+ *   files:<mountKey>/<p1>|<p2>|<p3>@1 (three tabs, the second showing)
+ *   files:<mountKey>/<p1>|<p2>@0+1    (compare on: tabs 0 and 1 side by side)
  *   chat:<sessionId>
- *   chat:new:<mountKey>         (new-session composer scoped to that ICM;
- *                                rewritten to chat:<id> once the session starts)
+ *   chat:new:<mountKey>               (new-session composer scoped to that ICM;
+ *                                      rewritten to chat:<id> once it starts)
+ *   mail:<account>                    (mailbox list)
+ *   mail:<account>/<msgId>            (one message)
  *
- * Invalid input parses to null — the caller renders the primary alone.
+ * `|` is safe as the tab separator, and `@` as the cursor separator, because
+ * `encodeURIComponent` escapes both (`%7C`, `%40`) — so neither can appear
+ * inside an encoded path segment however a file is named.
+ *
+ * Invalid input parses to null — the caller renders what is left, never an error.
+ * Two Files cases deliberately REPAIR instead: more than `TAB_CAP` tabs
+ * truncates, and an out-of-range cursor index clamps. Both still describe
+ * perfectly good subjects, and dropping the whole pane over a number would cost
+ * the user every tab in it. Malformed cursor SYNTAX (`@x`, `@1+`) still fails
+ * closed: a number we cannot read is not a number we may guess at.
  */
-import { encodePath, knowledgeHref } from '$lib/shell/nav';
+import { encodePath } from '$lib/shell/nav';
+import { TAB_CAP, resolveTabs } from './files-pane-state';
+import { filesPrimaryHref } from './files-url';
 
-export type FilePaneDescriptor = { kind: 'file'; mountKey: string; path: string };
+/** How many side panes may sit beside the primary view. */
+export const PANE_CAP = 2;
+const TAB_SEP = '|';
+const CURSOR_SEP = '@';
+
+export type FilesPaneDescriptor = {
+  kind: 'files';
+  mountKey: string;
+  /** Open tabs in strip order — see `files-pane-state.ts`'s `TabState`. */
+  paths: string[];
+  active: number;
+  compare: number | null;
+};
 export type ChatPaneDescriptor = { kind: 'chat'; sessionId: string };
 export type ChatNewPaneDescriptor = { kind: 'chat-new'; mountKey: string };
-export type PaneDescriptor = FilePaneDescriptor | ChatPaneDescriptor | ChatNewPaneDescriptor;
+export type MailPaneDescriptor = { kind: 'mail'; account: string; msgId: string | null };
+export type PaneDescriptor =
+  | FilesPaneDescriptor
+  | ChatPaneDescriptor
+  | ChatNewPaneDescriptor
+  | MailPaneDescriptor;
 
 function tryDecode(segment: string): string | null {
   try {
@@ -27,6 +62,24 @@ function tryDecode(segment: string): string | null {
   }
 }
 
+/** Decodes one `/`-joined, per-segment-encoded path. `null` if any segment is empty or malformed. */
+function decodePath(raw: string): string | null {
+  if (raw === '') return null;
+  const segments = raw.split('/').map(tryDecode);
+  if (segments.some((s) => s === null || s === '')) return null;
+  return (segments as string[]).join('/');
+}
+
+/**
+ * The `@<i>` / `@<i>+<j>` cursor. `null` for anything that is not exactly one
+ * index, or an index and a compare partner — the whole descriptor fails on it.
+ */
+function parseCursor(raw: string): { active: number; compare: number | null } | null {
+  const match = /^(\d+)(?:\+(\d+))?$/.exec(raw);
+  if (!match) return null;
+  return { active: Number(match[1]), compare: match[2] === undefined ? null : Number(match[2]) };
+}
+
 export function parsePaneParam(raw: string | null): PaneDescriptor | null {
   if (!raw) return null;
   const colon = raw.indexOf(':');
@@ -34,14 +87,35 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
   const kind = raw.slice(0, colon);
   const rest = raw.slice(colon + 1);
 
-  if (kind === 'file') {
+  if (kind === 'files') {
     const slash = rest.indexOf('/');
-    if (slash <= 0 || slash === rest.length - 1) return null;
-    const mountKey = tryDecode(rest.slice(0, slash));
+    const mountRaw = slash === -1 ? rest : rest.slice(0, slash);
+    const mountKey = mountRaw ? tryDecode(mountRaw) : null;
     if (!mountKey) return null;
-    const segments = rest.slice(slash + 1).split('/').map(tryDecode);
-    if (segments.some((s) => s === null || s === '')) return null;
-    return { kind: 'file', mountKey, path: (segments as string[]).join('/') };
+    if (slash === -1) return { kind: 'files', mountKey, paths: [], active: 0, compare: null };
+
+    const tail = rest.slice(slash + 1);
+    if (tail === '') return null;
+    const parts = tail.split(CURSOR_SEP);
+    // A second `@` cannot come from an encoded path, so it is a malformed
+    // cursor rather than a filename — fail closed.
+    if (parts.length > 2) return null;
+    const cursor = parts.length === 2 ? parseCursor(parts[1]) : { active: 0, compare: null };
+    if (!cursor) return null;
+    const paths = parts[0].split(TAB_SEP).map(decodePath);
+    if (paths.some((p) => p === null)) return null;
+    // `resolveTabs` DEDUPES, and this is not tidiness. `FilesPane` keys its
+    // `{#each}` on the path, so `files:life/A.md|A.md` — reachable from any
+    // hand-written or shared link — is a duplicate key, which Svelte throws on
+    // during render: the whole app blanks, no nav, no bar, no error page. One
+    // file named twice is one file, so the honest reading is a single tab
+    // rather than a refusal that would drop a perfectly good subject. It also
+    // truncates past `TAB_CAP` and clamps the cursor, for the same reason.
+    return {
+      kind: 'files',
+      mountKey,
+      ...resolveTabs(paths as string[], cursor.active, cursor.compare)
+    };
   }
 
   if (kind === 'chat') {
@@ -53,90 +127,214 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
     return sessionId ? { kind: 'chat', sessionId } : null;
   }
 
+  if (kind === 'mail') {
+    const slash = rest.indexOf('/');
+    const accountRaw = slash === -1 ? rest : rest.slice(0, slash);
+    const account = accountRaw ? tryDecode(accountRaw) : null;
+    if (!account) return null;
+    if (slash === -1) return { kind: 'mail', account, msgId: null };
+    const msgId = tryDecode(rest.slice(slash + 1));
+    return msgId ? { kind: 'mail', account, msgId } : null;
+  }
+
   return null;
 }
 
 export function serializePaneParam(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return `file:${encodeURIComponent(d.mountKey)}/${encodePath(d.path)}`;
+    case 'files': {
+      const mount = encodeURIComponent(d.mountKey);
+      if (d.paths.length === 0) return `files:${mount}`;
+      // The cursor is omitted when it says nothing: `@0` with no compare is
+      // the default, and writing it would make every one-tab URL longer than
+      // the ones already in the wild for no gain.
+      const cursor =
+        d.compare !== null
+          ? `${CURSOR_SEP}${d.active}+${d.compare}`
+          : d.active === 0
+            ? ''
+            : `${CURSOR_SEP}${d.active}`;
+      return `files:${mount}/${d.paths.slice(0, TAB_CAP).map(encodePath).join(TAB_SEP)}${cursor}`;
+    }
     case 'chat':
       return `chat:${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
       return `chat:new:${encodeURIComponent(d.mountKey)}`;
+    case 'mail':
+      return d.msgId === null
+        ? `mail:${encodeURIComponent(d.account)}`
+        : `mail:${encodeURIComponent(d.account)}/${encodeURIComponent(d.msgId)}`;
   }
 }
 
-/** Identity comparison — used to reject a side pane duplicating the primary view. Null never equals anything (including null). */
+/**
+ * What makes a mounted pane THE SAME pane across a navigation — its SUBJECT,
+ * deliberately not its contents.
+ *
+ * `serializePaneParam` is the wire form and carries everything: which files a
+ * Files pane has open, which message a Mail pane is reading. Keying a mounted
+ * pane on that string made every tree click inside a Files pane an identity
+ * change, so Svelte tore the whole pane down and rebuilt it — the tree and its
+ * scroll position, both `FileView`s and the per-pane state `PaneHost` holds —
+ * in order to show one different file. It also made the assistant's auto-open
+ * claim, which is an index living in that state, impossible to keep for longer
+ * than a single open, so split recycling could never work in a pane at all.
+ *
+ * A different subject still is a different pane: another chat session, another
+ * mailbox, another ICM. And `chat-new` -> `chat:<id>` MUST stay a change —
+ * `ChatView` stashes the first prompt at mount and fires it once the session
+ * exists, so the started session has to arrive on a fresh component.
+ *
+ * Not a substitute for `panesEqual`, which asks whether two descriptors are
+ * the same thing; this asks whether one has become something else.
+ */
+export function paneIdentity(d: PaneDescriptor): string {
+  switch (d.kind) {
+    case 'files':
+      return `files:${d.mountKey}`;
+    case 'chat':
+      return `chat:${d.sessionId}`;
+    case 'chat-new':
+      return `chat-new:${d.mountKey}`;
+    case 'mail':
+      return `mail:${d.account}`;
+  }
+}
+
+/** Identity comparison. Null never equals anything, including null. */
 export function panesEqual(a: PaneDescriptor | null, b: PaneDescriptor | null): boolean {
   if (!a || !b || a.kind !== b.kind) return false;
-  switch (a.kind) {
-    case 'file':
-      return b.kind === 'file' && a.mountKey === b.mountKey && a.path === b.path;
-    case 'chat':
-      return b.kind === 'chat' && a.sessionId === b.sessionId;
-    case 'chat-new':
-      return b.kind === 'chat-new' && a.mountKey === b.mountKey;
+  return serializePaneParam(a) === serializePaneParam(b);
+}
+
+/**
+ * One surface per descriptor kind across `[primary, ...panes]`, regardless of
+ * subject. Coarser than `panesEqual` and wins where they disagree: `/knowledge`
+ * has a null primary descriptor, so identity alone would let a redundant Files
+ * pane through.
+ */
+export function dedupeSurfaces(
+  primary: PaneDescriptor | null,
+  panes: PaneDescriptor[]
+): PaneDescriptor[] {
+  const seen = new Set<string>(primary ? [primary.kind] : []);
+  const out: PaneDescriptor[] = [];
+  for (const pane of panes) {
+    if (seen.has(pane.kind)) continue;
+    seen.add(pane.kind);
+    out.push(pane);
   }
+  return out;
 }
 
-/** The `goto` target for the current URL with the pane param set (or removed when `d` is null). Preserves every other param. */
-export function withPaneParam(url: URL, d: PaneDescriptor | null): string {
+/** Every valid `pane` param, in document order, deduped and capped. Fails closed per entry. */
+export function parsePanes(searchParams: URLSearchParams): PaneDescriptor[] {
+  const parsed = searchParams
+    .getAll('pane')
+    .map(parsePaneParam)
+    .filter((d): d is PaneDescriptor => d !== null);
+  return dedupeSurfaces(null, parsed).slice(0, PANE_CAP);
+}
+
+/** `goto` target for `url` with its pane params replaced. Every other param survives. */
+export function withPanes(url: URL, panes: PaneDescriptor[]): string {
   const next = new URL(url);
-  if (d) next.searchParams.set('pane', serializePaneParam(d));
-  else next.searchParams.delete('pane');
+  next.searchParams.delete('pane');
+  for (const pane of panes.slice(0, PANE_CAP)) {
+    next.searchParams.append('pane', serializePaneParam(pane));
+  }
   return next.pathname + next.search;
 }
 
 /**
- * The `?pane=…` query string to append to a SIBLING link's href — the
- * knowledge tree's file rows (`IcmTree`'s `linkSearch`), so browsing files
- * with a chat pane open keeps the pane instead of silently closing it.
- * `''` when nothing valid is open.
+ * `href` with the panes currently in `url` re-attached — an IN-ROUTE move that
+ * keeps the composition. Renaming the page you are reading, or following a
+ * deleted file back to the index, must not close the chat sitting beside it.
  *
- * Rebuilt from the PARSED descriptor rather than copied raw: a garbage
- * `?pane=` in the current URL is dropped instead of propagated onto every
- * row. Safe to concatenate — `knowledgeHref` never carries a query of its own.
+ * Any params `href` carries of its own survive (`?tabs=`); any pane params it
+ * carries are replaced, since `url`'s are the live ones.
  */
-export function paneLinkSearch(url: URL): string {
-  const d = parsePaneParam(url.searchParams.get('pane'));
-  return d ? `?pane=${encodeURIComponent(serializePaneParam(d))}` : '';
+export function hrefWithPanes(href: string, url: URL): string {
+  return withPanes(new URL(href, url.origin), parsePanes(url.searchParams));
 }
 
 /**
- * `href` carrying the pane `url` currently has open — for a route-level
- * navigation that must KEEP the side pane: a chat pane opening a file in the
- * primary, or the knowledge index's last-opened restore. `href`'s own query
- * (e.g. `?icm=`) survives; an invalid `?pane=` is dropped, same as
- * `paneLinkSearch`.
+ * The `?pane=…&pane=…` suffix alone, for a component that appends a query to
+ * an href it does not own (`IcmTree`'s `linkSearch`). Empty string when there
+ * are no panes, so the bare href is left exactly as it was.
  */
-export function hrefWithPane(href: string, url: URL): string {
-  const next = new URL(href, url.origin);
-  const d = parsePaneParam(url.searchParams.get('pane'));
-  if (d) next.searchParams.set('pane', serializePaneParam(d));
-  return next.pathname + next.search;
+export function paneSearchSuffix(panes: PaneDescriptor[]): string {
+  const params = new URLSearchParams();
+  for (const pane of panes.slice(0, PANE_CAP)) {
+    params.append('pane', serializePaneParam(pane));
+  }
+  const search = params.toString();
+  return search ? `?${search}` : '';
+}
+
+/** Legacy `?all=1`: the chat primary's sessions navigator. */
+export function chatNavigatorFromUrl(url: URL): boolean {
+  return url.searchParams.get('all') === '1';
 }
 
 /** Pane-chrome title. Kept static/pure (no store lookups) — the view inside the pane carries its own richer header. */
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return d.path.split('/').pop() ?? d.path;
+    case 'files':
+      // The tab strip names every open file; the pane header names the one
+      // being read.
+      return d.paths.length ? (d.paths[d.active]?.split('/').pop() ?? 'Files') : 'Files';
     case 'chat':
       return 'Chat';
     case 'chat-new':
       return 'New session';
+    case 'mail':
+      return 'Mail';
   }
 }
 
-/** Where the pane-chrome "open as full view" button navigates. */
-export function promoteHref(d: PaneDescriptor): string {
+/**
+ * Where "open as full view" (⤢) navigates.
+ *
+ * Builds the target route with the promoted kind's OWN params, re-attaches the
+ * panes that survive, and re-runs surface dedup so the promoted kind cannot
+ * appear both as the new primary and beside it. The old primary's params are
+ * deliberately dropped — `?session=` means nothing on `/mail`.
+ */
+export function promoteTarget(
+  promoted: PaneDescriptor,
+  url: URL,
+  panes: PaneDescriptor[]
+): string {
+  const remaining = dedupeSurfaces(
+    promoted,
+    panes.filter((p) => !panesEqual(p, promoted))
+  );
+
+  const target = new URL(routeFor(promoted), url.origin);
+  for (const pane of remaining.slice(0, PANE_CAP)) {
+    target.searchParams.append('pane', serializePaneParam(pane));
+  }
+  return target.pathname + target.search;
+}
+
+function routeFor(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'file':
-      return knowledgeHref(d.mountKey, d.path);
+    case 'files':
+      // A pane with no tabs promotes to the mount INDEX rather than the mount
+      // root: `＋ Pane → Files` opens a browser with nothing picked, and
+      // landing on a bare folder route would be the same empty screen with the
+      // index's create and doctor actions taken away.
+      return d.paths.length === 0
+        ? `/knowledge?icm=${encodeURIComponent(d.mountKey)}`
+        : filesPrimaryHref(d.mountKey, d);
     case 'chat':
       return `/chat?session=${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
       return `/chat?icm=${encodeURIComponent(d.mountKey)}`;
+    case 'mail':
+      return d.msgId === null
+        ? `/mail?account=${encodeURIComponent(d.account)}`
+        : `/mail?account=${encodeURIComponent(d.account)}&message=${encodeURIComponent(d.msgId)}`;
   }
 }

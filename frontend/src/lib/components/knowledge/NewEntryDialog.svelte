@@ -19,7 +19,7 @@
   import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { hrefWithPane } from '$lib/panes/pane-route';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { templateGroups } from './template-options';
 
@@ -97,7 +97,7 @@
       // the button right next to the session picker must not close the
       // session you just opened beside it (same rule the routes' own tree
       // links and `openFileAsPrimary` follow).
-      void goto(hrefWithPane(knowledgeHref(mountKey, path), page.url));
+      void goto(hrefWithPanes(knowledgeHref(mountKey, path), page.url));
     }
   }
 

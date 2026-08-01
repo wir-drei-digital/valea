@@ -1,15 +1,21 @@
 <script lang="ts">
-  // The chat session's header line (extracted from the chat route,
-  // side-panes pass): which ICM the session works in, an archive affordance,
-  // and — when the host can open files — the folder name becomes a popover
-  // file tree for opening a file beside the chat.
+  // The chat session's header line: which ICM the session works in, an
+  // archive affordance, and the file-activity pill.
   //
   // Presentational: every piece of state (which ICM, whether the session
   // ended, whether an archive call is in flight) arrives as a prop, so the
-  // same header renders for a route primary and for a session inside a side
-  // pane. The popover half only exists when the host actually passes
-  // `onOpenFile` — a host with nowhere to put a file renders the plain
-  // static folder line the route always had.
+  // same header renders for a route primary and for a session inside a pane.
+  //
+  // It carried a popover FILE TREE here, on the folder name. That is retired,
+  // and `onOpenFiles` is its replacement: the tree is a PANE now (`FilesPane`),
+  // a real browser with tabs, rename, delete, compare and persistent expansion
+  // rather than a menu that closed on every click. Opening it from here is
+  // files-beside-chat, created from the chat side — the composition the bar's
+  // ＋ Pane → Files used to be the only route to.
+  //
+  // `filesRefusal` is the half that must not be lost with the bar: at the pane
+  // cap, at a narrow window, or with a file browser already on screen, the
+  // control says WHY rather than doing nothing.
   //
   // `onArchive` is the "there is a session here" signal (the route's old
   // `selectedId` gate): a host in new-session mode has no session yet and
@@ -30,33 +36,28 @@
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import PanelRight from '@lucide/svelte/icons/panel-right';
   import * as Popover from '$lib/components/ui/popover';
-  import { IcmTree } from '$lib/components/shell';
-  import { icmStore } from '$lib/stores/icm.svelte';
-  import { icmToNav } from '$lib/shell/nav';
 
   let {
     icmName,
-    mountKey,
     ended,
     archiving,
     deleting = false,
     onArchive,
     onDelete,
-    onOpenFile,
     filesCount = 0,
     onShowFiles,
-    filesPanel
+    filesPanel,
+    onOpenFiles,
+    filesRefusal = null
   }: {
     icmName: string | null;
-    mountKey: string | null;
     ended: boolean;
     archiving: boolean;
     deleting?: boolean;
     onArchive?: () => void;
     onDelete?: () => void;
-    onOpenFile?: (sel: { mountKey: string; path: string }) => void;
     filesCount?: number;
     onShowFiles?: () => void;
     /**
@@ -67,9 +68,20 @@
      * affordance never disappears with the layout; it defers.
      */
     filesPanel?: Snippet;
+    /**
+     * Open the file browser BESIDE this session. Absent on a host that cannot
+     * place a pane at all, in which case no control renders — an affordance
+     * that could never work is worse than none.
+     */
+    onOpenFiles?: () => void;
+    /**
+     * Why it cannot open right now, `null` when it can. Present with
+     * `onOpenFiles`, never instead of it: the control still renders, still
+     * takes focus, and says the reason. See `pane-offer.ts`.
+     */
+    filesRefusal?: string | null;
   } = $props();
 
-  let treeOpen = $state(false);
   let menuOpen = $state(false);
   // Delete is irreversible — the menu item arms a confirm row instead of
   // firing directly; closing the popover always disarms it.
@@ -78,48 +90,15 @@
   $effect(() => {
     if (!menuOpen) confirmingDelete = false;
   });
-  // `icmStore.groups` is keyed by `mount` (the stable mount key) — the same
-  // key sessions carry as `icmMount`. Folders inside the popover lazy-load
-  // through `IcmTree`'s own `loadDir` calls; the mount's ROOT level is the
-  // caller's concern (see `ChatView`'s tree-load effect).
-  const treeNav = $derived(icmToNav(icmStore.groups.find((g) => g.mount === mountKey)?.tree ?? []));
-  const canBrowse = $derived(Boolean(onOpenFile && mountKey));
 </script>
 
-{#if icmName || onArchive || onDelete}
+{#if icmName || onArchive || onDelete || onOpenFiles}
   <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
     {#if icmName}
-      {#if canBrowse}
-        <Popover.Root bind:open={treeOpen}>
-          <Popover.Trigger
-            class="hover:bg-paper-pill -mx-1 flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors"
-          >
-            <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-            <span class="text-ink-meta text-[12px]">
-              Working in <span class="text-ink-secondary font-medium">{icmName}</span>
-            </span>
-            <ChevronDown class="text-ink-meta size-3 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-          </Popover.Trigger>
-          <Popover.Content class="max-h-96 overflow-y-auto p-2">
-            {#if treeNav.length}
-              <IcmTree
-                nodes={treeNav}
-                onSelect={(sel) => {
-                  treeOpen = false;
-                  onOpenFile?.(sel);
-                }}
-              />
-            {:else}
-              <p class="text-ink-meta px-2 py-1 text-[12px]">No files yet.</p>
-            {/if}
-          </Popover.Content>
-        </Popover.Root>
-      {:else}
-        <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-        <span class="text-ink-meta text-[12px]">
-          Working in <span class="text-ink-secondary font-medium">{icmName}</span>
-        </span>
-      {/if}
+      <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+      <span class="text-ink-meta text-[12px]">
+        Working in <span class="text-ink-secondary font-medium">{icmName}</span>
+      </span>
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
     {#if filesCount > 0 && (onShowFiles || filesPanel)}
@@ -150,6 +129,30 @@
           Context · {filesCount}
         </button>
       {/if}
+    {/if}
+    {#if onOpenFiles}
+      <!-- `aria-disabled`, not the `disabled` attribute: a truly disabled
+           button takes no pointer events, so its `title` never appears, and it
+           leaves the tab order, so a keyboard user could never reach the reason
+           either. The same shape `IcmTree`'s row affordance takes. `refusable`
+           (layout.css) is what makes the refusal VISIBLE without hovering —
+           this is a fact about the session, not a consequence, so no accent
+           colour and no alarm. -->
+      <button
+        type="button"
+        title={filesRefusal ?? 'Open files beside this session'}
+        aria-label={filesRefusal
+          ? `Open files beside this session — unavailable: ${filesRefusal.toLowerCase()}`
+          : 'Open files beside this session'}
+        aria-disabled={filesRefusal ? 'true' : undefined}
+        onclick={() => {
+          if (filesRefusal) return;
+          onOpenFiles();
+        }}
+        class="refusable text-ink-meta hover:bg-paper-pill hover:text-ink-heading -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+      >
+        <PanelRight class="size-4" strokeWidth={1.5} aria-hidden="true" />
+      </button>
     {/if}
     {#if onArchive || onDelete}
       <Popover.Root bind:open={menuOpen}>

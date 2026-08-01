@@ -17,6 +17,8 @@
   // one, and starts one otherwise — see `api.reviseMailDraft`.
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
   import { icmStore } from '$lib/stores/icm.svelte';
@@ -276,7 +278,7 @@
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                onclick={() => void goto(composeHref(draft.account, draft.name))}
+                onclick={() => void goto(hrefWithPanes(composeHref(draft.account, draft.name), page.url))}
               >
                 Edit
               </Button>

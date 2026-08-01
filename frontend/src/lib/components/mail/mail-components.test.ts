@@ -535,6 +535,23 @@ describe('accountSwitchHref', () => {
   it('keeps the drafts panel open across the switch', () => {
     expect(accountSwitchHref(new URL('http://app/mail?drafts=1'), 'zoe')).toBe('/mail?account=zoe&drafts=1');
   });
+
+  it('keeps the pane composition across the switch', () => {
+    // Switching mailbox is an IN-ROUTE move: whatever sits beside the reader
+    // has nothing to do with which account is open, and rebuilding the URL
+    // from scratch silently closed it.
+    const url = new URL('http://app/mail?account=mara&pane=chat%3Anew%3Alife');
+    expect(
+      new URL(accountSwitchHref(url, 'zoe'), 'http://app').searchParams.getAll('pane')
+    ).toEqual(['chat:new:life']);
+  });
+
+  it('keeps both panes, in order', () => {
+    const url = new URL('http://app/mail?pane=chat%3As1&pane=files%3Alife');
+    expect(
+      new URL(accountSwitchHref(url, 'zoe'), 'http://app').searchParams.getAll('pane')
+    ).toEqual(['chat:s1', 'files:life']);
+  });
 });
 
 describe('targetAccount', () => {

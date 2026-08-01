@@ -72,11 +72,6 @@
 
   const targetKey = $derived(`${mountKey}/${path}`);
 
-  // Overline above the page title — a constant section label; the mono path
-  // line right under it already names the parent folder, so repeating it
-  // here read as a second, shifting title.
-  const parentLabel = 'Files';
-
   // Dangling-link set (Task C9) — resolved page-kind link targets on THIS
   // page that don't exist on disk. Recomputed below on load/reload (the
   // `content`-watching effect) and after each save (the `store.savedAt`-
@@ -354,11 +349,44 @@
   <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">This page doesn't exist anymore.</p>
 {:else}
   <article class="flex flex-col gap-4">
-    <header class="mx-auto flex w-full max-w-[596px] flex-col gap-1.5">
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-overline">{parentLabel}</p>
+    <!-- No "FILES" overline. It named the section of the app you were in,
+         and the tab strip above this now names the file itself — the outer
+         of two labels for one fact, and the less useful one. Everything that
+         says something about THIS page stays: the view toggle, the save
+         state, the token estimate and the path.
+
+         All of it on ONE row. Two rows of furniture above a document is one
+         row too many, and the halves were never independent: the meta line
+         says what this file is, the toggle says how you are reading it. The
+         toggle is `size="sm"` so it sits at the row's weight rather than
+         above it — same 11.5px as the path beside it.
+
+         No repeated title here either — the document's own `# h1` renders in
+         the editor below, in the same display-font style (tiptap.css). -->
+    <header class="mx-auto flex w-full max-w-[596px] items-center gap-3">
+      <!-- One row means someone has to give ground, and the path is elected:
+           it is the only unbounded thing here, and the tab strip directly
+           above already names the file, so a deep ICM path can truncate all
+           the way to nothing and cost the reader little.
+           The meta is `shrink-0` rather than merely last to shrink. Any
+           nonzero share of the deficit — even the 0.4px a weighted `shrink-`
+           leaves it — is enough to trip `text-overflow`, and "~52 toke…" on a
+           600px-wide row is a worse bug than the one being avoided. So it
+           never shrinks, and `overflow-hidden` on the group is the backstop:
+           in the one case where the meta alone outgrows the row (a saved page
+           in the narrowest side pane, where "Saved · 14:23 · ~52 tokens" is
+           most of 266px) its tail is clipped rather than painted over the
+           toggle. -->
+      <div class="flex min-w-0 flex-1 items-center gap-x-2.5 overflow-hidden">
+        <div class="shrink-0 whitespace-nowrap">
+          <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
+        </div>
+        <span class="text-ink-meta truncate font-mono text-[11.5px]" title={path}>{path}</span>
+      </div>
+      <div class="shrink-0">
         <SegmentedControl
           label="View"
+          size="sm"
           value={viewMode}
           options={[
             { value: 'friendly', label: 'Friendly view' },
@@ -366,12 +394,6 @@
           ]}
           onChange={(v) => toggleView(v as 'friendly' | 'raw')}
         />
-      </div>
-      <!-- No repeated title here — the document's own `# h1` renders in
-           the editor below, in the same display-font style (tiptap.css). -->
-      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <PageMeta state={store.state} savedAt={store.savedAt} tokens={tokenEstimate} />
-        <span class="text-ink-meta font-mono text-[11.5px]">{path}</span>
       </div>
     </header>
 

@@ -4,29 +4,41 @@
   import { page } from '$app/state';
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
+  import { mountsStore } from '$lib/stores/mounts.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { resolveActiveMountKey } from '$lib/shell/icm-route';
 
   // Thin per-page composition of AppShell + Sidebar, shared by every route
   // beyond Today (which still wires this inline — see +page.svelte). Each
-  // route just supplies `list` (optional) and `main`; the sidebar's ICM
-  // project groups + active-mount highlighting are wired once here since
-  // every route needs them.
+  // route supplies `main`; the sidebar's ICM project groups + active-mount
+  // highlighting are wired once here since every route needs them.
+  //
+  // `list` and `rail` are gone — see `AppShell`'s header. A route that wants
+  // a fixed navigator column renders it inside its own `main` snippet.
+  //
+  // `primaryDescriptor` is gone with the ＋ Pane menu, which was the only
+  // thing the shell ever did with it — every route still computes its own and
+  // hands it to `PaneHost`, where it belongs.
   let {
-    list,
     main,
-    rail,
     onBeforeMutateActive
   }: {
-    list?: Snippet;
     main: Snippet;
-    rail?: Snippet;
     /** Forwarded to `Sidebar` — see `WorkspaceSwitcher`'s doc comment. */
     onBeforeMutateActive?: () => Promise<void>;
   } = $props();
 
   onMount(() => {
     void icmStore.refetch();
+    // A mounted `ChatView` names the ICM a session runs in out of
+    // `mountsStore`, on any route that can host one, so the cold fetch stays
+    // here rather than in the two routes that own the store. One-shot: those
+    // routes refresh unconditionally on their own mount.
+    //
+    // The mail-status cold fetch that used to sit beside it went with the
+    // ＋ Pane menu — the only consumer that needed mail loaded on routes that
+    // show no mail. `MailPane` and `/mail` each ask for themselves.
+    if (!mountsStore.loaded) void mountsStore.refresh();
   });
 
   // Task 9.3: the sidebar no longer renders a file tree (Knowledge owns
@@ -41,7 +53,7 @@
   );
 </script>
 
-<AppShell {list} {main} {rail}>
+<AppShell {main}>
   {#snippet sidebar()}
     <Sidebar {activeMountKey} {onBeforeMutateActive} />
   {/snippet}

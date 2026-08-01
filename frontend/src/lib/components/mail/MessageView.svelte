@@ -73,7 +73,26 @@
   import { composeHref, replyPrefill, setComposePrefill, type ComposeMode } from './compose';
   import type { MailMessageDetail } from '$lib/stores/mail.svelte';
 
-  let { message }: { message: MailMessageDetail } = $props();
+  let {
+    message,
+    onSessionBeside,
+    sessionBesideRefusal = null
+  }: {
+    message: MailMessageDetail;
+    /**
+     * Where the session this message starts goes: BESIDE the message, as a
+     * chat pane, rather than a navigation to `/chat` that takes the message
+     * off screen. The host owns the placement (a route appends to `?pane=`, a
+     * pane asks its own host to), which is why this is a callback.
+     */
+    onSessionBeside: (sessionId: string) => void;
+    /**
+     * Why no session can open beside this message right now — the row is full,
+     * the window is too narrow, or one is already open. Rendered on the button
+     * rather than discovered by clicking it; `pane-offer.ts` writes the words.
+     */
+    sessionBesideRefusal?: string | null;
+  } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
   const subject = $derived(subjectLabel(typeof frontmatter.subject === 'string' ? frontmatter.subject : null));
@@ -454,18 +473,32 @@
   }
 
   /**
+   * Why the button cannot start a session, in the order the user can act on.
+   * A message with no file on disk was already refused — silently, by a bare
+   * `disabled` — so it joins the reasons rather than staying a mystery.
+   */
+  const sessionRefusal = $derived(
+    !message.path ? 'This message has no file on disk to open a session about' : sessionBesideRefusal
+  );
+
+  /**
    * "Start a session about this message" (Spec D §B/§E) — mints a session
    * granted read access to exactly this message file (`opts.input`, a
    * workspace locator — mail messages live under `sources/mail/`, outside
    * any ICM's own tree, unlike Knowledge's `contextDoc` grant), stashes the
-   * opening prompt under the new session id, and navigates there. Mount
-   * selection mirrors `routes/chat/+page.svelte`'s `primaryMountKey()`
-   * fallback: the first enabled, non-degraded mount (`icmStore.groups` is
-   * already filtered to exactly that set — see `icm.svelte.ts`).
+   * opening prompt under the new session id, and hands the id to the host,
+   * which opens it BESIDE this message. Mount selection mirrors
+   * `routes/chat/+page.svelte`'s `primaryMountKey()` fallback: the first
+   * enabled, non-degraded mount (`icmStore.groups` is already filtered to
+   * exactly that set — see `icm.svelte.ts`).
+   *
+   * The refusal is re-checked here and not merely rendered: the button is
+   * `aria-disabled`, which leaves it clickable on purpose, and a session
+   * created for a pane that cannot open is a real session left nowhere.
    */
   async function startSession(): Promise<void> {
     const account = mailStore.selectedAccount;
-    if (!message.path || !account) return;
+    if (sessionRefusal || !message.path || !account) return;
     starting = true;
     sessionError = null;
     try {
@@ -493,7 +526,7 @@
       }
       const data = result.data as { id: string; inputPath: string | null };
       setInitialPrompt(data.id, messageSessionPrompt(data.inputPath ?? message.path, mailMountKey));
-      void goto(`/chat?session=${data.id}`);
+      onSessionBeside(data.id);
     } finally {
       starting = false;
     }
@@ -877,12 +910,21 @@
       >
         {composing === 'forward' ? 'Opening…' : 'Forward'}
       </Button>
+<!-- `aria-disabled`, not `disabled`, whenever there is a REASON: a truly
+           disabled button takes no pointer events, so its `title` never
+           appears, and it leaves the tab order, so a keyboard user can never
+           reach the reason either. `disabled` is kept for `starting`, which is
+           transient and says so in the label. -->
       <Button
         type="button"
         variant="outline"
-        class="ms-auto"
-        disabled={starting || !message.path}
-        title="Start a session about this message"
+        class="refusable ms-auto"
+        disabled={starting}
+        aria-disabled={sessionRefusal ? 'true' : undefined}
+        title={sessionRefusal ?? 'Start a session beside this message'}
+        aria-label={sessionRefusal
+          ? `Start a session beside this message — unavailable: ${sessionRefusal.toLowerCase()}`
+          : 'Start a session beside this message'}
         onclick={() => void startSession()}
       >
         <MessageSquarePlus class="size-3.5" strokeWidth={1.5} aria-hidden="true" />

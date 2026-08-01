@@ -42,6 +42,7 @@
     threadCountBadge,
     threadUnread
   } from './mail-shapes';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
   let {
@@ -49,7 +50,9 @@
     selectedId,
     account,
     density = 'comfortable',
-    showSnippets = true
+    showSnippets = true,
+    onSelect,
+    linkUrl
   }: {
     messages: (MailMessageSummary & { snippet?: string })[];
     selectedId: string | null;
@@ -58,49 +61,102 @@
     density?: 'comfortable' | 'compact';
     /** Whether a row that carries a `snippet` renders its snippet line. */
     showSnippets?: boolean;
+    /**
+     * Selection mode (composable views): when set, rows call this instead of
+     * linking to `messageHref`. A row inside a PANE has to rewrite that
+     * pane's descriptor — following the href would navigate the whole app to
+     * `/mail` and throw away whatever the pane was sitting beside. Same shape
+     * `IcmTree`'s own `onSelect` uses. Absent, the href behaviour is
+     * unchanged, so `/mail` keeps real links (middle-click, copy link).
+     *
+     * It carries the `account` as well as the id because a `msgId` is only
+     * unique WITHIN an account — the same reason the href is qualified.
+     */
+    onSelect?: (account: string, msgId: string) => void;
+    /**
+     * The host route's current URL, so a row link keeps whatever panes are
+     * open. `messageHref` builds `/mail?account=…&message=…` from nothing, so
+     * without this every click on a message silently closed the chat sitting
+     * beside it — reading a message is an in-route move.
+     *
+     * Omitted by hosts that pass `onSelect` instead of navigating (the Mail
+     * pane), where there is no href to carry anything.
+     */
+    linkUrl?: URL;
   } = $props();
+
+  function rowHref(msgId: string): string {
+    const href = messageHref(account, msgId);
+    return linkUrl ? hrefWithPanes(href, linkUrl) : href;
+  }
 </script>
+
+<!-- The row's interior is a snippet so the link and the button forms cannot
+     drift apart: only the wrapper element and how it responds to a click
+     differ. Every element inside is a <span>, which is what lets the same
+     markup sit inside a <button> as legally as inside an <a>. -->
+{#snippet rowBody(message: MailMessageSummary & { snippet?: string }, threadCount: string | null)}
+  <span class="flex items-baseline justify-between gap-3">
+    <span class="flex min-w-0 items-baseline gap-1.5">
+      {#if threadUnread(message)}
+        <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"></span>
+      {/if}
+      <span class="text-ink-heading min-w-0 truncate text-[13.5px] [font-weight:650]">{fromLabel(message)}</span>
+    </span>
+    <span class="flex shrink-0 items-baseline gap-1.5">
+      {#if threadCount}
+        <span
+          class="bg-paper-track text-ink-meta rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums"
+          title="Conversation: {threadCount} messages in this folder"
+          aria-label="Conversation: {threadCount} messages in this folder"
+        >
+          {threadCount}
+        </span>
+      {/if}
+      <span class="text-ink-meta text-[11.5px]">{relativeTime(message.date)}</span>
+    </span>
+  </span>
+  <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>
+  {#if showSnippets && message.snippet}
+    <span class="text-ink-meta mt-0.5 block truncate text-[12px]">{message.snippet}</span>
+  {/if}
+{/snippet}
 
 <ul class="divide-paper-hairline flex flex-col divide-y">
   {#each messages as message (listRowKey(message))}
     {@const selected = message.msgId === selectedId}
     {@const threadCount = threadCountBadge(message)}
     <li>
-      <a
-        href={messageHref(account, message.msgId)}
-        class="block border-l-[3px] pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
-        class:py-3={density === 'comfortable'}
-        class:py-2={density === 'compact'}
-        class:border-act={selected}
-        class:border-transparent={!selected}
-        class:bg-paper-card={selected}
-      >
-        <span class="flex items-baseline justify-between gap-3">
-          <span class="flex min-w-0 items-baseline gap-1.5">
-            {#if threadUnread(message)}
-              <span class="bg-act size-1.5 shrink-0 self-center rounded-full" title="Unread" aria-label="Unread"
-              ></span>
-            {/if}
-            <span class="text-ink-heading min-w-0 truncate text-[13.5px] [font-weight:650]">{fromLabel(message)}</span>
-          </span>
-          <span class="flex shrink-0 items-baseline gap-1.5">
-            {#if threadCount}
-              <span
-                class="bg-paper-track text-ink-meta rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums"
-                title="Conversation: {threadCount} messages in this folder"
-                aria-label="Conversation: {threadCount} messages in this folder"
-              >
-                {threadCount}
-              </span>
-            {/if}
-            <span class="text-ink-meta text-[11.5px]">{relativeTime(message.date)}</span>
-          </span>
-        </span>
-        <span class="text-ink-body mt-0.5 block truncate text-[13px]">{subjectLabel(message.subject)}</span>
-        {#if showSnippets && message.snippet}
-          <span class="text-ink-meta mt-0.5 block truncate text-[12px]">{message.snippet}</span>
-        {/if}
-      </a>
+      {#if onSelect}
+        <!-- `w-full text-left` are the only additions to the link's classes:
+             a button is neither full-bleed nor left-aligned by default, and
+             without them the row would visibly differ between the two hosts. -->
+        <button
+          type="button"
+          onclick={() => onSelect?.(account, message.msgId)}
+          aria-current={selected ? 'true' : undefined}
+          class="block w-full border-l-[3px] pr-4 pl-3.5 text-left transition-colors hover:bg-paper-pill"
+          class:py-3={density === 'comfortable'}
+          class:py-2={density === 'compact'}
+          class:border-act={selected}
+          class:border-transparent={!selected}
+          class:bg-paper-card={selected}
+        >
+          {@render rowBody(message, threadCount)}
+        </button>
+      {:else}
+        <a
+          href={rowHref(message.msgId)}
+          class="block border-l-[3px] pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
+          class:py-3={density === 'comfortable'}
+          class:py-2={density === 'compact'}
+          class:border-act={selected}
+          class:border-transparent={!selected}
+          class:bg-paper-card={selected}
+        >
+          {@render rowBody(message, threadCount)}
+        </a>
+      {/if}
     </li>
   {/each}
 </ul>

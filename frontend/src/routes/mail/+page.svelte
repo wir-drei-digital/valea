@@ -1,14 +1,25 @@
 <script lang="ts">
   // Mail route (mail design spec E §UI): account switcher + folder list +
-  // the selected folder's messages in the list pane, read pane in main.
-  // Composed the same way as `/chat` (AppFrame + ListPane), with
-  // `?message=<msg_id>` selection instead of `?session=<id>` — mail
-  // messages aren't part of the ICM file tree either, so a query param
-  // (not a path segment) is the right selection mechanism here too.
+  // the selected folder's messages in a list column, read pane beside it,
+  // with `?message=<msg_id>` selection qualified by `?account=` — mail
+  // messages aren't part of the ICM file tree, so a query param (not a path
+  // segment) is the right selection mechanism here.
+  //
+  // Composable views: the whole thing is this route's PRIMARY pane, and
+  // `?pane=` panes sit to the right of it. The list column moved inside the
+  // primary when the shell's `list` slot went away — it is the route's own
+  // navigator, and it carries the account switcher, search, folder picker,
+  // read filter, pagination and sync footer, none of which belong in a pane.
+  // What a pane gets is `MailPane`, the read surface alone.
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
   import { AppFrame, ListPane, EmptyState, MainColumn, SegmentedControl } from '$lib/components/shell';
+  import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import { dedupeSurfaces, parsePanes, type PaneDescriptor } from '$lib/panes/pane-route';
+  import { paneWiring } from '$lib/panes/pane-wiring';
+  import { paneRoom } from '$lib/shell/pane-room.svelte';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -27,10 +38,11 @@
     cleanupPrompt,
     filterMessagesByRead,
     syncNowErrorMessage,
-    targetAccount,
     type ReadFilter
   } from '$lib/components/mail/mail-shapes';
-  import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
+  import { watchMailSelection } from '$lib/components/mail/mail-selection.svelte';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
+  import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { composeHref } from '$lib/components/mail/compose';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
@@ -76,90 +88,69 @@
   // state.
   let showSetup = $state(page.url.searchParams.get('setup') === '1');
 
-  // Race-safe selection load: `MailStore.select` writes into the shared
-  // `mailStore.selected` singleton with no per-call id tag, so two
-  // in-flight `select()` calls (rapid clicking between messages) could
-  // otherwise resolve out of order. `activeId`/`activeDetail` are this
-  // route's own local capture of "the detail that belongs to the
-  // currently-selected id" — read synchronously off `mailStore.selected`
-  // the instant THIS call's own `select()` resolves, and only committed if
-  // a newer selection hasn't superseded it (`cancelled`) — a stale, slower
-  // response for a message the user has since navigated away from is
-  // silently dropped rather than flashing the wrong content.
+  // Race-safe selection load, shared with `MailPane` — one implementation, in
+  // `mail-selection.svelte.ts`. It used to live here and was copied into the
+  // pane near-verbatim; the copy is gone, because the comments in it record a
+  // race that was already caught live once and two copies of that reasoning
+  // drift. This route's half is only WHERE the selection comes from: the URL.
   //
-  // `mailStore.selected !== before` distinguishes "the fetch actually
-  // updated `selected`" from "it failed and left the old value alone" (see
-  // `MailStore.select`'s `if (!result.ok) return;` early exit) — `select()`
-  // returns `Promise<void>`, so reference identity is the only signal
-  // available for that distinction without changing the store's contract.
-  //
-  // `untrack` around both `mailStore.selected` reads is load-bearing, not
-  // decorative: this effect's own `select()` call is what LATER mutates
-  // `mailStore.selected`. Reading it tracked inside the effect body would
-  // register it as a dependency, so that later mutation would re-trigger
-  // this same effect — an infinite `get_mail_message` loop keyed on nothing
-  // the user did (caught live on an earlier revision).
-  //
-  // `selectedAccount` and the ARRIVAL of accounts ARE tracked, though (the
-  // untracked read they replace latched this effect to whatever was known on
-  // its first run): a deep link arriving before `refreshStatus` resolves has
-  // no account yet, and "no account YET" must not be treated as "no
-  // account" — it waits, and the effect re-runs when the accounts land.
-  //
-  // What is NOT tracked is `targetAccount`'s membership SCAN. It reads
-  // `accounts[i].account` for every row, and `handleMailStatus` REPLACES a
-  // row object on every `mail_status` push — several per poll cycle, none of
-  // which change which accounts exist. Tracking that scan re-ran this whole
-  // effect (clearing `activeDetail`, re-fetching the open message) roughly
-  // twice per poll: a visible read-pane flicker and redundant RPCs on a
-  // screen the user wasn't touching. `accounts.length` stays the
-  // arrived-signal; the scan itself is untracked.
-  //
-  // This effect is also the ONLY thing that switches accounts (`?account=`
-  // is the source of truth — `AccountSwitcher` navigates rather than writing
-  // the store, or its write would race the URL and be reverted here), so the
-  // account switch runs before the `!id` bail-out: switching accounts with
-  // no message open is exactly that case.
-  let activeId: string | null = $state(null);
-  let activeDetail: MailMessageDetail | null = $state(null);
-  let loadError = $state(false);
+  // `?account=` is the source of truth for which mailbox is open —
+  // `AccountSwitcher` navigates rather than writing the store, or its write
+  // would race the URL and be reverted by the effect — and the effect switches
+  // accounts before it looks at the message id, so switching accounts with no
+  // message open is handled by the same pass.
+  const selection = watchMailSelection(() => ({
+    msgId: selectedId,
+    account: selectedAccountParam
+  }));
 
-  $effect(() => {
-    const id = selectedId;
-    const accParam = selectedAccountParam;
-    const storeAccount = mailStore.selectedAccount;
-    const accountsReady = mailStore.accounts.length > 0;
-    const target = untrack(() => targetAccount(accParam, storeAccount, mailStore.accounts));
-    activeId = null;
-    activeDetail = null;
-    loadError = false;
+  // --- Panes (`?pane=`) ------------------------------------------------------
+  //
+  // The URL is the ONE source of truth for what sits beside the mail reader,
+  // so a composition is linkable, survives reload, and Back closes a pane.
+  // The route's own primary is the mail READ surface, which is why it names a
+  // `mail:` descriptor: `dedupeSurfaces` uses it to drop a Mail pane that
+  // would duplicate it, and the ＋ Pane menu uses it to show Mail as already
+  // open. It also ALLOCATES, which is what keeps `PaneHost` re-deriving its
+  // row layout instead of writing stale sizes back over a dragged ratio.
+  //
+  // Compose, drafts and setup are deliberately outside this: they are
+  // full-screen tasks, and the pane registry's `MailPane` is the read surface
+  // only.
+  const primaryAccount = $derived(selectedAccountParam ?? mailStore.selectedAccount);
+  const primaryDescriptor = $derived<PaneDescriptor | null>(
+    primaryAccount ? { kind: 'mail', account: primaryAccount, msgId: selectedId } : null
+  );
+  const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 
-    let cancelled = false;
-    void (async () => {
-      if (target && target !== storeAccount) {
-        await mailStore.selectAccount(target);
-        if (cancelled) return;
-      }
-      if (!id) return;
-      if (!target) {
-        if (accountsReady) loadError = true; // accounts loaded, none selectable
-        return; // otherwise wait — effect re-runs when accounts arrive
-      }
-      const before = untrack(() => mailStore.selected);
-      await mailStore.select(id);
-      if (cancelled) return;
-      const selected = untrack(() => mailStore.selected);
-      if (selected !== before) {
-        activeId = id;
-        activeDetail = selected;
-      } else {
-        loadError = true;
-      }
-    })();
+  // No `openInPrimary`: this route has no Files surface of its own, so a file
+  // opened from a chat pane beside the reader lands in a Files pane.
+  // `primary` and `slots` are what let a message's "Start a session" refuse
+  // visibly: the first tells `besideRefusal` this route's own surface counts
+  // toward `dedupeSurfaces`, the second gives it the window's width.
+  const wiring = paneWiring({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor,
+    slots: () => paneRoom.slots
+  });
 
-    return () => {
-      cancelled = true;
-    };
+  // A message starts its session BESIDE itself now — chat-beside-mail, created
+  // from the mail side, which is what replaced the bar's ＋ Pane → Chat. Read
+  // at render time so it tracks both the row and the window.
+  const sessionBesideRefusal = $derived(wiring.besideRefusal('chat'));
+
+  // Reopen whatever was last beside the reader, but only when the URL names
+  // nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor,
+    // `primaryAccount` falls back to `mailStore.selectedAccount`, which is
+    // null until the status fetch lands. Acting on that null writes an emptied
+    // row over a composition nobody touched. Set on a FAILED fetch too, so a
+    // workspace with no mail still settles rather than freezing memory.
+    ready: () => mailStore.statusLoaded
   });
 
   // The drafts list is workspace-wide (every account's), the pane's count is
@@ -299,231 +290,260 @@
 </script>
 
 <AppFrame>
-  {#snippet list()}
-    <ListPane title="Mail">
-      {#snippet action()}
-        <div class="flex items-center gap-1">
-          {#if mailStore.selectedAccount}
-            <Button
-              type="button"
-              size="sm"
-              onclick={() => void goto(composeHref(mailStore.selectedAccount, null))}
-            >
-              Compose
-            </Button>
-          {/if}
-          <!-- One overflow menu instead of the old scattered controls
-               (Sync-now button, settings icon, Drafts/Clean-up pill row) —
-               the header stays a single calm row. -->
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              {#snippet child({ props })}
-                <button
-                  type="button"
-                  {...props}
-                  aria-label="More mail actions"
-                  title="More mail actions"
-                  class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill data-[state=open]:bg-paper-pill data-[state=open]:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
-                >
-                  <Ellipsis class="size-4" strokeWidth={1.5} />
-                </button>
-              {/snippet}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content align="end" class="w-52">
-              {#if mailStore.selectedAccount}
-                <DropdownMenu.Item onSelect={() => void goto('/mail?drafts=1')}>
-                  <FileText class="size-3.5" strokeWidth={1.5} />
-                  Drafts
-                  {#if draftsCount > 0}
-                    <span class="bg-paper-track text-ink-meta ms-auto rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums">
-                      {draftsCount}
-                    </span>
-                  {/if}
-                </DropdownMenu.Item>
-                <DropdownMenu.Item disabled={cleanupStarting} onSelect={() => void handleCleanup()}>
-                  <ListChecks class="size-3.5" strokeWidth={1.5} />
-                  Clean up inbox
-                </DropdownMenu.Item>
-                <DropdownMenu.Separator />
-                <DropdownMenu.Item disabled={syncBusy} onSelect={() => void handleSyncNow()}>
-                  <RefreshCw class="size-3.5" strokeWidth={1.5} />
-                  {syncBusy ? 'Syncing…' : 'Sync now'}
-                </DropdownMenu.Item>
-              {/if}
-              <DropdownMenu.Item onSelect={() => (showSetup = true)}>
-                <Settings class="size-3.5" strokeWidth={1.5} />
-                Mail settings
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-        </div>
-      {/snippet}
-      {#snippet filter()}
-        <div class="flex w-full flex-col gap-2">
-          <AccountSwitcher onAddAccount={() => (showSetup = true)} />
-          {#if mailStore.selectedAccount}
-            <div class="border-paper-border bg-paper-card flex h-9 items-center gap-1.5 rounded-lg border px-2.5">
-              <SearchIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-              <Input
-                value={searchInput}
-                oninput={(event) => onSearchInput((event.currentTarget as HTMLInputElement).value)}
-                onkeydown={(event) => {
-                  if (event.key === 'Escape') resetSearch();
-                }}
-                placeholder="Search this mailbox…"
-                aria-label="Search mail"
-                class="h-8 border-none bg-transparent px-0 shadow-none focus-visible:ring-0"
-              />
-              {#if searchInput !== ''}
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  title="Clear search"
-                  onclick={resetSearch}
-                  class="text-ink-meta hover:text-ink-heading shrink-0 rounded-md p-0.5 transition-colors"
-                >
-                  <X class="size-3.5" strokeWidth={1.5} />
-                </button>
-              {/if}
-            </div>
-            <!-- Both of these narrow the FOLDER list, which isn't what's on
-                 screen during a search: a hit can come from any folder, and
-                 a read filter over it would silently hide matches. -->
-            {#if !searchActive}
-              <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-                <FolderPicker />
-                <SegmentedControl
-                  label="Read filter"
-                  value={readFilter}
-                  options={[
-                    { value: 'all', label: 'All' },
-                    { value: 'unread', label: 'Unread' },
-                    { value: 'read', label: 'Read' }
-                  ]}
-                  onChange={(v) => (readFilter = v as ReadFilter)}
-                />
-              </div>
-            {/if}
-            {#if cleanupError}
-              <p class="text-warn-ink text-[12px]" role="alert">{cleanupError}</p>
-            {/if}
-          {/if}
-        </div>
-      {/snippet}
-      {#snippet children()}
-        <!-- Search replaces what the list SHOWS, never what it holds: the
-             folder rows stay loaded underneath (`mailStore.messages`), so
-             clearing the box puts them straight back with no refetch.
-             Pagination belongs to the folder listing alone — `search_mail`
-             answers one bounded set, so there is no older page to ask for.
-
-             The two lists also differ in SHAPE, which is why one component
-             renders both without a mode flag: folder rows are collapsed by
-             conversation (a count badge on the multi-message ones), search
-             hits are per-message and carry a snippet instead. `MessageList`
-             renders whichever fields a row actually has. -->
-        {#if searchActive}
-          <MessageList
-            messages={mailStore.searchResults}
-            {selectedId}
-            account={mailStore.selectedAccount ?? ''}
-          />
-          {#if mailStore.searchResults.length === 0}
-            <!-- A search that FAILED and one that found nothing look
-                 identical from here (no hits, no query loaded) — so the
-                 failure says so rather than reporting an empty mailbox the
-                 app never actually got an answer about. -->
-            <p class="text-ink-meta px-3.5 py-3 text-[12.5px]" role={mailStore.searchFailed ? 'alert' : undefined}>
-              {#if searchBusy}
-                Searching…
-              {:else if mailStore.searchFailed}
-                The search couldn't be run. Try again.
-              {:else}
-                No messages match “{searchTerm}”.
-              {/if}
-            </p>
-          {/if}
-        {:else}
-          <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
-          <!-- The filtered-empty note and the "Load older" row are exclusive:
-               under a note explaining that the filter hid everything, a "Load
-               older" button reads as the way to get those messages back, which
-               it is not (it fetches an older page, which the same filter then
-               hides too). The store's own guards make the row a no-op when
-               there's nothing behind the oldest loaded message. -->
-          {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
-            <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
-              No {readFilter} messages in this folder.
-            </p>
-          {:else if mailStore.lastPageFull}
-            <div class="flex justify-center px-3.5 py-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={mailStore.loadingOlder}
-                onclick={() => void mailStore.loadOlder()}
-              >
-                {mailStore.loadingOlder ? 'Loading…' : 'Load older'}
-              </Button>
-            </div>
-          {/if}
-        {/if}
-      {/snippet}
-      {#snippet footer()}
-        <SyncStatusLine status={mailStore.selectedStatus} requestError={syncRequestError} />
-      {/snippet}
-    </ListPane>
-  {/snippet}
-
   {#snippet main()}
-    <MainColumn>
-      {#if composeParam}
-        {#if mailStore.selectedAccount}
-          <ComposeView
-            account={mailStore.selectedAccount}
-            draftName={composeParam === 'new' ? null : composeParam}
-          />
-        {:else if mailStore.accounts.length === 0}
-          <EmptyState
-            icon={MailIcon}
-            title="No mailbox connected yet."
-            body="Connect a mailbox before writing mail — Valea sends only from an account you've set up."
+    <PaneHost
+      {primaryDescriptor}
+      {panes}
+      paneContext={wiring.paneContext}
+      onClose={wiring.closePane}
+      onPromote={wiring.promotePane}
+    >
+      {#snippet primary()}
+        <!-- The list column lives INSIDE the primary now that the shell has no
+             `list` slot: it is this route's own navigator, not the shell's, and
+             a pane opened beside the reader sits to the right of both. -->
+        <div class="flex min-h-0 min-w-0 flex-1">
+          <section
+            class="border-paper-hairline bg-paper-panel w-[300px] max-w-[340px] min-w-[250px] shrink-0 overflow-y-auto border-r"
           >
-            {#snippet actions()}
-              <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
-            {/snippet}
-          </EmptyState>
-        {:else}
-          <p class="text-ink-meta text-[13px]">Loading…</p>
-        {/if}
-      {:else if draftsRequested}
-        <DraftsPanel />
-      {:else if !selectedId}
-        {#if mailStore.accounts.length === 0}
-          <!-- No mailbox yet — the welcoming path into the setup modal. -->
-          <div class="mx-auto w-full max-w-[560px] px-8 py-8">
-            <EmptyState
-              icon={MailIcon}
-              title="No mailbox connected yet."
-              body="Valea mirrors your inbox into plain files on this Mac. Your assistant reads them, prepares replies as drafts, and nothing is ever sent without you."
-            >
-              {#snippet actions()}
-                <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+            <ListPane title="Mail">
+              {#snippet action()}
+                <div class="flex items-center gap-1">
+                  {#if mailStore.selectedAccount}
+                    <Button
+                      type="button"
+                      size="sm"
+                      onclick={() =>
+                        void goto(hrefWithPanes(composeHref(mailStore.selectedAccount, null), page.url))}
+                    >
+                      Compose
+                    </Button>
+                  {/if}
+                  <!-- One overflow menu instead of the old scattered controls
+                       (Sync-now button, settings icon, Drafts/Clean-up pill row) —
+                       the header stays a single calm row. -->
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger>
+                      {#snippet child({ props })}
+                        <button
+                          type="button"
+                          {...props}
+                          aria-label="More mail actions"
+                          title="More mail actions"
+                          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill data-[state=open]:bg-paper-pill data-[state=open]:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+                        >
+                          <Ellipsis class="size-4" strokeWidth={1.5} />
+                        </button>
+                      {/snippet}
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Content align="end" class="w-52">
+                      {#if mailStore.selectedAccount}
+                        <DropdownMenu.Item
+                          onSelect={() => void goto(hrefWithPanes('/mail?drafts=1', page.url))}
+                        >
+                          <FileText class="size-3.5" strokeWidth={1.5} />
+                          Drafts
+                          {#if draftsCount > 0}
+                            <span class="bg-paper-track text-ink-meta ms-auto rounded-full px-1.5 text-[10.5px] [font-weight:650] tabular-nums">
+                              {draftsCount}
+                            </span>
+                          {/if}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item disabled={cleanupStarting} onSelect={() => void handleCleanup()}>
+                          <ListChecks class="size-3.5" strokeWidth={1.5} />
+                          Clean up inbox
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator />
+                        <DropdownMenu.Item disabled={syncBusy} onSelect={() => void handleSyncNow()}>
+                          <RefreshCw class="size-3.5" strokeWidth={1.5} />
+                          {syncBusy ? 'Syncing…' : 'Sync now'}
+                        </DropdownMenu.Item>
+                      {/if}
+                      <DropdownMenu.Item onSelect={() => (showSetup = true)}>
+                        <Settings class="size-3.5" strokeWidth={1.5} />
+                        Mail settings
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Root>
+                </div>
               {/snippet}
-            </EmptyState>
-          </div>
-        {:else}
-          <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
-        {/if}
-      {:else if activeId === selectedId && activeDetail}
-        <MessageView message={activeDetail} />
-      {:else if loadError}
-        <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
-      {:else}
-        <p class="text-ink-meta text-[13px]">Loading…</p>
-      {/if}
-    </MainColumn>
+              {#snippet filter()}
+                <div class="flex w-full flex-col gap-2">
+                  <AccountSwitcher onAddAccount={() => (showSetup = true)} />
+                  {#if mailStore.selectedAccount}
+                    <div class="border-paper-border bg-paper-card flex h-9 items-center gap-1.5 rounded-lg border px-2.5">
+                      <SearchIcon class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                      <Input
+                        value={searchInput}
+                        oninput={(event) => onSearchInput((event.currentTarget as HTMLInputElement).value)}
+                        onkeydown={(event) => {
+                          if (event.key === 'Escape') resetSearch();
+                        }}
+                        placeholder="Search this mailbox…"
+                        aria-label="Search mail"
+                        class="h-8 border-none bg-transparent px-0 shadow-none focus-visible:ring-0"
+                      />
+                      {#if searchInput !== ''}
+                        <button
+                          type="button"
+                          aria-label="Clear search"
+                          title="Clear search"
+                          onclick={resetSearch}
+                          class="text-ink-meta hover:text-ink-heading shrink-0 rounded-md p-0.5 transition-colors"
+                        >
+                          <X class="size-3.5" strokeWidth={1.5} />
+                        </button>
+                      {/if}
+                    </div>
+                    <!-- Both of these narrow the FOLDER list, which isn't what's on
+                         screen during a search: a hit can come from any folder, and
+                         a read filter over it would silently hide matches. -->
+                    {#if !searchActive}
+                      <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+                        <FolderPicker />
+                        <SegmentedControl
+                          label="Read filter"
+                          value={readFilter}
+                          options={[
+                            { value: 'all', label: 'All' },
+                            { value: 'unread', label: 'Unread' },
+                            { value: 'read', label: 'Read' }
+                          ]}
+                          onChange={(v) => (readFilter = v as ReadFilter)}
+                        />
+                      </div>
+                    {/if}
+                    {#if cleanupError}
+                      <p class="text-warn-ink text-[12px]" role="alert">{cleanupError}</p>
+                    {/if}
+                  {/if}
+                </div>
+              {/snippet}
+              {#snippet children()}
+                <!-- Search replaces what the list SHOWS, never what it holds: the
+                     folder rows stay loaded underneath (`mailStore.messages`), so
+                     clearing the box puts them straight back with no refetch.
+                     Pagination belongs to the folder listing alone — `search_mail`
+                     answers one bounded set, so there is no older page to ask for.
+
+                     The two lists also differ in SHAPE, which is why one component
+                     renders both without a mode flag: folder rows are collapsed by
+                     conversation (a count badge on the multi-message ones), search
+                     hits are per-message and carry a snippet instead. `MessageList`
+                     renders whichever fields a row actually has. -->
+                {#if searchActive}
+                  <MessageList
+                    messages={mailStore.searchResults}
+                    {selectedId}
+                    account={mailStore.selectedAccount ?? ''}
+                    linkUrl={page.url}
+                  />
+                  {#if mailStore.searchResults.length === 0}
+                    <!-- A search that FAILED and one that found nothing look
+                         identical from here (no hits, no query loaded) — so the
+                         failure says so rather than reporting an empty mailbox the
+                         app never actually got an answer about. -->
+                    <p class="text-ink-meta px-3.5 py-3 text-[12.5px]" role={mailStore.searchFailed ? 'alert' : undefined}>
+                      {#if searchBusy}
+                        Searching…
+                      {:else if mailStore.searchFailed}
+                        The search couldn't be run. Try again.
+                      {:else}
+                        No messages match “{searchTerm}”.
+                      {/if}
+                    </p>
+                  {/if}
+                {:else}
+                  <MessageList
+                    messages={visibleMessages}
+                    {selectedId}
+                    account={mailStore.selectedAccount ?? ''}
+                    linkUrl={page.url}
+                  />
+                  <!-- The filtered-empty note and the "Load older" row are exclusive:
+                       under a note explaining that the filter hid everything, a "Load
+                       older" button reads as the way to get those messages back, which
+                       it is not (it fetches an older page, which the same filter then
+                       hides too). The store's own guards make the row a no-op when
+                       there's nothing behind the oldest loaded message. -->
+                  {#if visibleMessages.length === 0 && mailStore.messages.length > 0}
+                    <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
+                      No {readFilter} messages in this folder.
+                    </p>
+                  {:else if mailStore.lastPageFull}
+                    <div class="flex justify-center px-3.5 py-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={mailStore.loadingOlder}
+                        onclick={() => void mailStore.loadOlder()}
+                      >
+                        {mailStore.loadingOlder ? 'Loading…' : 'Load older'}
+                      </Button>
+                    </div>
+                  {/if}
+                {/if}
+              {/snippet}
+              {#snippet footer()}
+                <SyncStatusLine status={mailStore.selectedStatus} requestError={syncRequestError} />
+              {/snippet}
+            </ListPane>
+          </section>
+          <MainColumn>
+            {#if composeParam}
+              {#if mailStore.selectedAccount}
+                <ComposeView
+                  account={mailStore.selectedAccount}
+                  draftName={composeParam === 'new' ? null : composeParam}
+                />
+              {:else if mailStore.accounts.length === 0}
+                <EmptyState
+                  icon={MailIcon}
+                  title="No mailbox connected yet."
+                  body="Connect a mailbox before writing mail — Valea sends only from an account you've set up."
+                >
+                  {#snippet actions()}
+                    <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+                  {/snippet}
+                </EmptyState>
+              {:else}
+                <p class="text-ink-meta text-[13px]">Loading…</p>
+              {/if}
+            {:else if draftsRequested}
+              <DraftsPanel />
+            {:else if !selectedId}
+              {#if mailStore.accounts.length === 0}
+                <!-- No mailbox yet — the welcoming path into the setup modal. -->
+                <div class="mx-auto w-full max-w-[560px] px-8 py-8">
+                  <EmptyState
+                    icon={MailIcon}
+                    title="No mailbox connected yet."
+                    body="Valea mirrors your inbox into plain files on this Mac. Your assistant reads them, prepares replies as drafts, and nothing is ever sent without you."
+                  >
+                    {#snippet actions()}
+                      <Button type="button" onclick={() => (showSetup = true)}>Connect a mailbox</Button>
+                    {/snippet}
+                  </EmptyState>
+                </div>
+              {:else}
+                <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
+              {/if}
+            {:else if selection.activeId === selectedId && selection.detail}
+              <MessageView
+                message={selection.detail}
+                onSessionBeside={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
+                sessionBesideRefusal={sessionBesideRefusal}
+              />
+            {:else if selection.failed}
+              <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
+            {:else}
+              <p class="text-ink-meta text-[13px]">Loading…</p>
+            {/if}
+          </MainColumn>
+        </div>
+      {/snippet}
+    </PaneHost>
   {/snippet}
 </AppFrame>
 

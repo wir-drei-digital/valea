@@ -8,8 +8,6 @@ export { default as IcmProjects } from './IcmProjects.svelte';
 export { default as ListPane } from './ListPane.svelte';
 export { default as SegmentedControl } from './SegmentedControl.svelte';
 export { default as PageHeader } from './PageHeader.svelte';
-export { default as RailCard } from './RailCard.svelte';
-export { default as Rail } from './Rail.svelte';
 export { default as StatusPill } from './StatusPill.svelte';
 export { default as WorkspaceSwitcher } from './WorkspaceSwitcher.svelte';
 export { default as SectionOverline } from './SectionOverline.svelte';

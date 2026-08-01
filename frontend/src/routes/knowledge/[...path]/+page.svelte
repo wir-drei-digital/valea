@@ -1,32 +1,49 @@
 <script lang="ts">
-  // Route responsibilities only (side-panes pass): URL params, the lazy
-  // tree's ensure/expand effects, the list pane, and the new-entry dialog.
-  // Everything about the OPEN FILE — load, editor, save/conflict, per-format
-  // viewers — lives in `FileView` now, so a side pane can mount the same
-  // thing without a route.
+  // The knowledge FILE route. Its primary pane is the Files surface itself —
+  // `FilesPane`, a tab strip plus the tree — rather than a shell list column
+  // beside a single `FileView`. The pathname is the ACTIVE tab and `?tabs=`
+  // carries the strip, so every tab this route has open is addressable,
+  // shareable and survives promotion (`files-url.ts`).
+  //
+  // What is left in the route is URL parsing, the lazy tree's ensure effect,
+  // the create dialog, and the pane row. Everything about an OPEN FILE lives
+  // in `FileView` inside the pane; everything about the tree lives in
+  // `FilesPane`, including the ancestor reveal this route used to inline.
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { AppFrame, ListPane, MainColumn, PageHeader, IcmTree } from '$lib/components/shell';
+  import { AppFrame } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
-  import { findIcmNode, icmToNav, knowledgeHref, type IcmNode } from '$lib/shell/nav';
+  import { findIcmNode, knowledgeHref } from '$lib/shell/nav';
+  import { ancestorHrefs } from '$lib/shell/reveal-path';
   import { parentPath } from './parent-path';
   import { treeFallback } from './tree-fallback';
-  import { Skeleton } from '$lib/components/ui/skeleton';
-  import { Button } from '$lib/components/ui/button/index.js';
-  import FileView from '$lib/components/views/FileView.svelte';
+  import FilesPane from '$lib/components/panes/FilesPane.svelte';
+  import FilesPaneControls from '$lib/components/panes/FilesPaneControls.svelte';
+  import PaneHost from '$lib/components/panes/PaneHost.svelte';
   import NewEntryDialog from '$lib/components/knowledge/NewEntryDialog.svelte';
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import SessionPickerPopover from '$lib/components/knowledge/SessionPickerPopover.svelte';
-  import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import { FilesPaneState } from '$lib/panes/files-pane-runtime.svelte';
   import {
-    parsePaneParam,
-    paneLinkSearch,
-    hrefWithPane,
-    withPaneParam,
-    promoteHref,
+    TAB_CAP,
+    closeTabPath,
+    resolveTabs,
+    type TabState
+  } from '$lib/panes/files-pane-state';
+  import { filesPrimaryHref, parseFilesPrimary } from '$lib/panes/files-url';
+  import { autoOpen } from '$lib/panes/auto-open';
+  import {
+    dedupeSurfaces,
+    hrefWithPanes,
+    parsePanes,
     type PaneDescriptor
   } from '$lib/panes/pane-route';
+  import { paneWiring, type FileSelection } from '$lib/panes/pane-wiring';
+  import { paneRoom } from '$lib/shell/pane-room.svelte';
+  import { roomRefusal } from '$lib/panes/pane-offer';
+  import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
+  import type { PaneContext } from '$lib/panes/context';
 
   let newEntryMode: 'page' | 'folder' = $state('page');
   let newEntryOpen = $state(false);
@@ -52,17 +69,14 @@
   // so searching every mount's tree for it could find the wrong page).
   const mountTree = $derived(icmStore.groups.find((g) => g.mount === mountKey)?.tree ?? []);
 
-  // Lazy tree (file-browser performance pass): the store only holds levels
-  // that have been fetched, so a deep link must ask for its ancestors
-  // explicitly. `ensured` records which (mount, path) has a COMPLETED ensure
-  // AND what it concluded — until then, a missing node means "still
-  // loading", not "doesn't exist"; and only a `'missing'` conclusion may
-  // ever render as non-existence (issue #2 — a failed listing concludes
-  // `'unavailable'` instead, see `treeFallback`). Re-runs whenever the
-  // groups reference changes (any icm_changed refetch) so a graft the
-  // refetch dropped (see IcmStore.refetch's reconcile step) heals itself; in
-  // the steady state every `loadDir` inside no-ops, so this settles
-  // immediately.
+  // Lazy tree: the store only holds levels that have been fetched, so a deep
+  // link must ask for its ancestors explicitly. `ensured` records which
+  // (mount, path) has a COMPLETED ensure AND what it concluded — until then,
+  // a missing node means "still loading", not "doesn't exist"; and only a
+  // `'missing'` conclusion may ever render as non-existence (issue #2 — a
+  // failed listing concludes `'unavailable'`). Re-runs whenever the groups
+  // reference changes (any icm_changed refetch) so a graft the refetch
+  // dropped heals itself; in the steady state every `loadDir` inside no-ops.
   let ensured = $state<{ key: string; status: 'found' | 'missing' | 'unavailable' } | null>(null);
 
   $effect(() => {
@@ -79,11 +93,11 @@
 
   const ensureStatus = $derived(ensured?.key === `${mountKey}\0${decodedPath}` ? ensured.status : null);
 
-  // The one decision issue #2 is about: what the main pane claims when there
-  // is no node to render. `'missing'` (→ "doesn't exist anymore") only on a
-  // definitive miss; every failure path lands on `'unavailable'` (→ error +
-  // retry) — including a failed mount list, which previously left the
-  // skeleton up forever.
+  // Issue #2's one decision, now scoped to the TREE alone: an empty tree
+  // because a fetch failed must not read as "no files". What the open file
+  // itself claims is `FileView`'s business — the markdown view distinguishes
+  // `not_found` from a failed load on its own, and every other format
+  // reports its own load failure.
   const fallback = $derived(
     treeFallback({
       ensureStatus,
@@ -92,270 +106,260 @@
     })
   );
 
-  // Retry re-runs the whole chain: `refetch` re-lists the mounts and every
-  // loaded level, and its groups reassignment re-fires the ensure effect
-  // above (a failed dir was left unmarked, so the ensure genuinely
-  // re-fetches it).
   function retryTree(): void {
     void icmStore.refetch();
   }
 
-  // Keep the active path's ancestors expanded in the tree — a deep link (or
-  // the index route's last-opened restore) should land with its location
-  // visible, not hidden behind closed folders. The opened folder itself
-  // (folder routes) is expanded too.
-  $effect(() => {
-    if (!mountKey || !decodedPath) return;
-    const segments = decodedPath.split('/');
-    for (let i = 0; i < segments.length - 1; i++) {
-      treeOpenState.open(knowledgeHref(mountKey, segments.slice(0, i + 1).join('/')));
-    }
-    if (node?.type === 'folder') {
-      treeOpenState.open(knowledgeHref(mountKey, node.path));
-    }
-  });
-
-  // Task 9.3: the list pane renders this mount's FULL recursive tree
-  // (`IcmTree`, relocated from the old sidebar) rather than just the
-  // open folder's direct children — `activePath` (below) still highlights
-  // where you are within it. `?icm=` is deliberately never read on this
-  // route (ambiguity resolution, Task 9.4): the mount key rides the PATH
-  // here, and the path always wins over any `?icm=` a stale link might
-  // carry.
-  // Side-panes pass: `icmToNav` emits file leaves now, so the tree itself
-  // carries every entry — the separate non-clickable file rows this pane
-  // used to render below it are gone.
-  const treeNav = $derived(icmToNav(mountTree));
-
   const node = $derived(findIcmNode(mountTree, decodedPath));
-  // Optimistic while the lazy tree is still ensuring: a URL that names a
-  // FILE (anything with an extension on its last segment) goes straight to
-  // `FileView`, which starts its own fetch rather than serializing behind
-  // the ancestor-listing round trips. A stale link that turns out missing
-  // lands in the view's own "doesn't exist anymore" state, same as before.
+  // Optimistic while the lazy tree is still ensuring: a URL naming a FILE
+  // (anything with an extension on its last segment) goes straight to the
+  // split, which starts its own fetch rather than serializing behind the
+  // ancestor-listing round trips.
   const hasExtension = $derived(/\.[^/]+$/.test(decodedPath.split('/').pop() ?? ''));
-
-  // The list pane always shows a folder's entries — the open folder itself,
-  // or (on a page route) the folder CONTAINING the page, with the open page
-  // highlighted like mail/chat's selected rows. Before this, page routes
-  // rendered an empty pane. New entries created from the pane header land in
-  // this listed folder (`path`), which for page routes is the parent — not
-  // the page's own path.
-  const listContext = $derived.by((): { path: string; entries: IcmNode[] } => {
-    if (node?.type === 'folder') {
-      return { path: node.path, entries: node.children ?? [] };
-    }
-    const parentDir = parentPath(decodedPath);
-    const parent = parentDir ? findIcmNode(mountTree, parentDir) : undefined;
-    if (parent?.type === 'folder') {
-      return { path: parent.path, entries: parent.children ?? [] };
-    }
-    return { path: '', entries: mountTree };
-  });
+  // Folders EXPAND, they do not open — only files are valid split subjects.
+  // A folder route is therefore the tree with an empty content area, which is
+  // exactly `files:<mount>` with no path.
+  const isFolder = $derived(!decodedPath || (node ? node.type === 'folder' : !hasExtension));
 
   /**
-   * Flushes the open file's pending edit before a mutation that would
-   * otherwise lose it — passed to `AppFrame` (workspace switch,
-   * `WorkspaceSwitcher`'s doc comment) AND to `IcmTree` below (rename/delete
-   * on the tree row matching this file's own path — `IcmTree` only ever
-   * forwards it to the row whose `href` equals `activePath`, so every other
-   * row's rename/delete skips straight to the mutate call with nothing to
-   * flush). Same shape `RenameDialog`/`DeleteDialog` expect via
-   * `before-mutate.ts`'s `withBeforeMutate`. `FileView` resolves it
-   * immediately for every read-only format; only the markdown editor has
-   * anything to save (and it throws `unsaved_changes` when a flush fails,
-   * which aborts the mutation).
+   * The primary's whole tab strip. The pathname is the ACTIVE tab and `?tabs=`
+   * is the strip it sits in; `files-url.ts` owns both directions of that, and
+   * `resolveTabs` inside it dedupes — the same guard `parsePaneParam` applies
+   * to the `|` wire form, because `FilesPane` keys its `{#each}` on the path
+   * and a duplicate key is a render throw that blanks the whole app.
+   *
+   * Folders open nothing: a folder route is the tree with an empty content
+   * area, which is `files:<mount>` with no tabs.
    */
-  let fileViewRef: FileView | null = $state(null);
-
-  async function flushBeforeMutate(): Promise<void> {
-    await fileViewRef?.flushPending();
-  }
-
-  // --- Side pane (`?pane=`) — the reverse combo ---
-  //
-  // A chat session opens BESIDE the file you're reading (the session picker
-  // in the list-pane header), mirroring `/chat`'s file panes. Same contract
-  // as there: the URL is the one source of truth, so a split is linkable and
-  // survives reload; `parsePaneParam` fails closed; `PaneHost` additionally
-  // drops a pane duplicating the primary. Every navigation keeps focus and
-  // scroll — opening a session must not blur the editor or jump the page.
-  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
-  const primaryDescriptor = $derived<PaneDescriptor | null>(
-    decodedPath ? { kind: 'file', mountKey, path: decodedPath } : null
+  const primaryTabs = $derived(
+    parseFilesPrimary(isFolder ? '' : decodedPath, page.url.searchParams)
   );
 
-  // Suffix for the list-pane tree's own links (see `IcmTree`'s `linkSearch`):
-  // browsing files with a chat pane open keeps the pane.
-  const paneSearch = $derived(paneLinkSearch(page.url));
+  // Keep the open path's ancestors expanded — a deep link should land with
+  // its location visible, not hidden behind closed folders. `FilesPane` does
+  // this for the file it opens; the FOLDER route has no file, so the route
+  // still owns that one case. The loop this replaces is now `ancestorHrefs`.
+  $effect(() => {
+    if (!mountKey || !decodedPath) return;
+    for (const href of ancestorHrefs(mountKey, decodedPath)) treeOpenState.open(href);
+    if (isFolder) treeOpenState.open(knowledgeHref(mountKey, decodedPath));
+  });
 
-  function openSessionPane(id: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
+  // New entries land in the folder being shown — the open folder itself, or
+  // the folder CONTAINING the open page, never the page's own path.
+  const newEntryParent = $derived.by((): string => {
+    if (node?.type === 'folder') return node.path;
+    const parentDir = parentPath(decodedPath);
+    const parent = parentDir ? findIcmNode(mountTree, parentDir) : undefined;
+    return parent?.type === 'folder' ? parent.path : '';
+  });
+
+  // --- The primary Files surface ---------------------------------------------
+  //
+  // Chrome state is created here rather than by `PaneHost`, which only builds
+  // it for SIDE panes: the primary has no host-rendered header, so the route
+  // renders `FilesPaneControls` itself and owns the state both halves read.
+  // Constructed directly rather than through `createFilesPaneState`, which
+  // takes a descriptor it does not read: passing one here would capture
+  // `mountKey`'s initial value for no purpose.
+  const primaryFilesState = new FilesPaneState();
+
+  /**
+   * Where the pane's own descriptor rewrites land: this route's URL. Every tab
+   * open, close, switch and compare toggle in the primary is a navigation,
+   * because on this route the tab strip IS the address bar.
+   */
+  function setPrimaryTabs(tabs: TabState, replace = false): void {
+    void goto(hrefWithPanes(filesPrimaryHref(mountKey, tabs), page.url), {
       keepFocus: true,
-      noScroll: true
+      noScroll: true,
+      replaceState: replace
     });
-  }
-
-  function openNewSessionPane(): void {
-    void goto(withPaneParam(page.url, { kind: 'chat-new', mountKey }), {
-      keepFocus: true,
-      noScroll: true
-    });
-  }
-
-  function closePane(): void {
-    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
-  }
-
-  /** "Open as full view" — the pane's subject becomes a route of its own. */
-  function promotePane(d: PaneDescriptor): void {
-    void goto(promoteHref(d));
   }
 
   /**
-   * A chat pane opening a file navigates the PRIMARY (the pane stays) — the
-   * mirror image of `/chat`, where the same click opens a side pane. Tool
-   * chips and the session header's tree both land here.
+   * Where an assistant-opened file lands, announced by the primary `FilesPane`
+   * itself. Only it can see the claim on the split auto-open created and how
+   * wide it is, so the file is handed over rather than placed from here — the
+   * same handover a SIDE Files pane makes through `pane-wiring.ts`.
    */
-  function openFileAsPrimary(sel: { mountKey: string; path: string }): void {
-    void goto(hrefWithPane(knowledgeHref(sel.mountKey, sel.path), page.url), { keepFocus: true, noScroll: true });
+  let primaryFileTarget: ((path: string) => void) | null = null;
+  /**
+   * A file the assistant opened in ANOTHER ICM. That leaves this route rather
+   * than rewriting the surface in place, so the landing happens across a
+   * navigation and the pane cannot record the claim as it makes it — it picks
+   * this up on the other side instead. Same one-shot as a pane the host
+   * created, for the same reason.
+   */
+  let primaryAutoCreatedPath: string | null = null;
+
+  /**
+   * A file opened from inside a pane (a chat tool chip) targets the single
+   * Files surface — which on this route is the PRIMARY.
+   */
+  function openFileInPrimary(sel: FileSelection): void {
+    if (sel.mountKey !== mountKey) {
+      // Another mount is a different Files surface; go there.
+      primaryAutoCreatedPath = sel.path;
+      void goto(hrefWithPanes(knowledgeHref(sel.mountKey, sel.path), page.url), {
+        keepFocus: true,
+        noScroll: true
+      });
+      return;
+    }
+    if (primaryFileTarget) {
+      primaryFileTarget(sel.path);
+      return;
+    }
+    // The pane has not announced itself yet — `auto-open.ts`'s claimless
+    // floor: the first file always lands, a free tab is taken, and a surface
+    // whose tabs are all the user's is left alone. The file the assistant
+    // opened becomes the showing tab; a citation that arrives behind the tab
+    // you are reading is one you never see.
+    const next = autoOpen(primaryTabs.paths, null, sel.path, TAB_CAP);
+    if (next.paths === primaryTabs.paths) return;
+    setPrimaryTabs(
+      resolveTabs(next.paths, next.paths.indexOf(sel.path), primaryTabs.compare)
+    );
   }
 
   /**
-   * The `chat-new` pane created its session — re-point the pane at
-   * `chat:<id>` so the remounted view fires the message that was just typed
-   * (`ChatView` stashes it via `setInitialPrompt` and hands the id back).
-   * `replaceState` so Back doesn't step through the dead composer state.
+   * Flushes any pending edit in EITHER split before a mutation that would
+   * lose it — the workspace switch (`WorkspaceSwitcher`'s doc comment). The
+   * per-file half, for rename and delete on one tree row, is `FilesPane`'s
+   * own `onBeforeMutate(href)` over its split→ref map.
    */
-  function paneSessionCreated(id: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
-      replaceState: true,
-      keepFocus: true,
-      noScroll: true
-    });
+  let filesPaneRef: FilesPane | null = $state(null);
+
+  async function flushBeforeMutate(): Promise<void> {
+    await filesPaneRef?.flushAll();
   }
+
+  // --- Panes (`?pane=`) ------------------------------------------------------
+  const primaryDescriptor = $derived<PaneDescriptor | null>(
+    mountKey ? { kind: 'files', mountKey, ...primaryTabs } : null
+  );
+  const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
+
+  const wiring = paneWiring({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor,
+    openInPrimary: openFileInPrimary,
+    slots: () => paneRoom.slots
+  });
+
+  // The session picker opens a PANE, so it answers to the same gate every
+  // other pane-opening control does — see `pane-offer.ts`. Room only, not
+  // `wiring.besideRefusal`: the popover offers a NEW session and any recent
+  // one, two different descriptor kinds, so no single kind answers for the
+  // trigger.
+  const pickerDisabled = $derived(roomRefusal(panes.length, paneRoom.slots));
+
+  // The rows answer for their OWN kind. The trigger cannot: `chat-new` and
+  // `chat` are different kinds to `dedupeSurfaces`, so with a new-session pane
+  // already open "New session" is refused while any recent session is not.
+  // Until these existed the popover carried the cap and the width but not
+  // "already open", and picking a row left the URL byte-identical.
+  const newSessionRefusal = $derived(wiring.besideRefusal('chat-new'));
+  const openSessionRefusal = $derived(wiring.besideRefusal('chat'));
+
+  // Reopen whatever was last beside the file browser, but only when the URL
+  // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
+  watchPaneMemory({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor
+  });
+
+  const primaryFilesContext: PaneContext = {
+    placement: 'primary',
+    registerFileTarget: (open) => {
+      primaryFileTarget = open;
+    },
+    takeAutoCreatedPath: () => {
+      const path = primaryAutoCreatedPath;
+      primaryAutoCreatedPath = null;
+      return path;
+    },
+    // The pane REWRITES its own descriptor on a tree click, a tab switch or a
+    // compare toggle; for the primary that means navigating this route.
+    openPane: (d) => {
+      if (d.kind === 'files') setPrimaryTabs(d);
+    },
+    openFile: openFileInPrimary,
+    // One tab's file was deleted underneath it. Per the per-subject rule, the
+    // siblings stay; `replaceState` so Back never steps through it. The
+    // assistant's claim on a tab is re-mapped by `FilesPane` before it calls
+    // this — see its `fileVanished`.
+    onVanished: (subject) => setPrimaryTabs(closeTabPath(primaryTabs, subject), true)
+  };
 </script>
 
 <AppFrame onBeforeMutateActive={flushBeforeMutate}>
-  {#snippet list()}
-    <!-- Always "Files", never the open folder's name: the pane is the file
-         NAVIGATOR, and a header that renamed itself per folder read as a
-         second, competing title beside the open document's own. Where you
-         are is what the tree's selection shows. -->
-    <ListPane title="Files">
-      {#snippet action()}
-        <div class="flex items-center gap-1">
-          <!-- The one header slot every knowledge route state has (file,
-               folder, index) — see the task brief's note on why the picker
-               lives here rather than in `PageHeader`. -->
-          {#if mountKey}
-            <SessionPickerPopover {mountKey} onOpenSession={openSessionPane} onNewSession={openNewSessionPane} />
-          {/if}
-          <NewEntryButton onNew={openNew} />
-        </div>
-      {/snippet}
-      {#snippet children()}
-        {#if fallback === 'unavailable'}
-          <!-- The tree here is empty or stale because a fetch FAILED — without
-               this line the pane silently renders as "no files" (issue #2's
-               screenshot: an empty list pane beside a false "doesn't exist"). -->
-          <p class="text-warn-ink px-3 pt-2 text-[12px]" role="alert" data-testid="knowledge-list-error">
-            Couldn't load files.
-            <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
-          </p>
-        {/if}
-        <div class="px-1 pt-1">
-          <IcmTree
-            nodes={treeNav}
-            activePath={page.url.pathname}
-            linkSearch={paneSearch}
-            onBeforeMutate={flushBeforeMutate}
-          />
-        </div>
-      {/snippet}
-    </ListPane>
-  {/snippet}
-
   {#snippet main()}
-    <!-- `MainColumn` sits INSIDE the primary snippet, never around
-         `PaneHost`: the host keeps its primary pane mounted across pane
-         open/close (see its own comment), and wrapping it in something that
-         flips with pane state would hand back the teardown that structure
-         exists to prevent — here that would mean losing the open editor's
-         unsaved keystrokes. -->
     <PaneHost
       {primaryDescriptor}
-      pane={paneDescriptor}
-      paneContext={{
-        placement: 'pane',
-        openFile: openFileAsPrimary,
-        sessionCreated: paneSessionCreated,
-        onArchived: closePane
-      }}
-      onClose={closePane}
-      onPromote={promotePane}
+      {panes}
+      paneContext={wiring.paneContext}
+      onClose={wiring.closePane}
+      onPromote={wiring.promotePane}
     >
       {#snippet primary()}
-        <!-- `wide` (file-browser pass): the editor container spans the full
-             main pane so TABLES can grow to it; every other section (and every
-             editor text block, via tiptap.css's `.page-editor` per-block caps)
-             re-caps itself to the classic 596px prose column — the same content
-             width the default prose column produces (660px minus its px-8). -->
-        <MainColumn wide>
-          {#if node?.type === 'folder'}
-            <div class="mx-auto w-full max-w-[596px]">
-              <PageHeader title={node.name} subtitle="Pick a page from the list to read it." />
-            </div>
-          {:else if node || hasExtension}
-            <!-- File routes render off `FileView`'s own fetch (kicked off
-                 optimistically for any path with an extension, see
-                 `hasExtension`) — never gated on the lazy tree. -->
-            <!-- The file vanished under us (deleted/renamed — possibly BY the
-                 session in the side pane): fall back to the index, keeping
-                 whatever is open beside it. -->
-            <FileView
-              bind:this={fileViewRef}
-              {mountKey}
-              path={decodedPath}
-              onVanished={() => void goto(hrefWithPane('/knowledge', page.url))}
-            />
-          {:else if fallback === 'unavailable'}
-            <!-- A listing failed somewhere (tree walk, mount list, or this
-                 mount's root) — nothing is known about this page's existence,
-                 so say the LOAD failed and offer a retry (issue #2). -->
-            <div
-              class="mx-auto flex w-full max-w-[596px] flex-col items-start gap-3"
-              data-testid="knowledge-tree-error"
+        <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+          <!-- The primary's own header band. `PaneHost` renders one around
+               every SIDE pane; the primary has none, so the tab strip, the two
+               toggles and the two route actions sit here instead. Same
+               vertical band as the pane headers, so every header rule across
+               the row reads as one line — and no title, for the same reason
+               `ownsTitle` suppresses it in the host: the strip names the file.
+               The controls carry the "Files" label themselves when nothing is
+               open, so the pane is never nameless. -->
+          <div
+            class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
+          >
+            {#if primaryDescriptor?.kind === 'files'}
+              <FilesPaneControls descriptor={primaryDescriptor} state={primaryFilesState} />
+            {/if}
+            {#if mountKey}
+              <SessionPickerPopover
+                {mountKey}
+                onOpenSession={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
+                onNewSession={() => wiring.openBeside({ kind: 'chat-new', mountKey })}
+                disabledReason={pickerDisabled}
+                {newSessionRefusal}
+                {openSessionRefusal}
+              />
+            {/if}
+            <NewEntryButton onNew={openNew} />
+          </div>
+
+          {#if fallback === 'unavailable'}
+            <!-- The tree is empty or stale because a fetch FAILED, not
+                 because the mount has no files (issue #2) — say so and offer
+                 a retry, rather than rendering silently as "no files". -->
+            <p
+              class="text-warn-ink border-paper-hairline shrink-0 border-b px-3 py-2 text-[12px]"
+              role="alert"
+              data-testid="knowledge-list-error"
             >
-              <p class="text-ink-body text-[13.5px]">
-                Couldn't load the file list, so this page can't be shown right now. It hasn't been
-                deleted — loading it just failed.
-              </p>
-              <Button type="button" variant="outline" size="sm" onclick={retryTree}>Retry</Button>
-            </div>
-          {:else if fallback === 'loading'}
-            <!-- Lazy tree still ensuring this path's ancestors — a missing node
-                 is "still loading" here, NOT "doesn't exist". -->
-            <div
-              class="mx-auto flex w-full max-w-[596px] flex-col gap-3"
-              data-testid="knowledge-loading-skeleton"
-            >
-              <Skeleton class="h-6 w-1/3" />
-              <Skeleton class="h-4 w-2/3" />
-              <Skeleton class="h-4 w-1/2" />
-            </div>
-          {:else}
-            <!-- `fallback === 'missing'` — the ensure walk COMPLETED and every
-                 listing succeeded, so this is a definitive answer, the only
-                 state allowed to claim non-existence. -->
-            <p class="mx-auto w-full max-w-[596px] text-ink-body text-[13.5px]">
-              This page doesn't exist anymore.
+              Couldn't load files.
+              <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
             </p>
           {/if}
-        </MainColumn>
+
+          {#if primaryDescriptor?.kind === 'files'}
+            <FilesPane
+              bind:this={filesPaneRef}
+              descriptor={primaryDescriptor}
+              context={primaryFilesContext}
+              state={primaryFilesState}
+            />
+          {/if}
+        </div>
       {/snippet}
     </PaneHost>
   {/snippet}
 </AppFrame>
 
-<NewEntryDialog mode={newEntryMode} {mountKey} parentPath={listContext.path} bind:open={newEntryOpen} />
+<NewEntryDialog mode={newEntryMode} {mountKey} parentPath={newEntryParent} bind:open={newEntryOpen} />

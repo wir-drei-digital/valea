@@ -70,8 +70,11 @@
     <!-- The header shares its block's width, so it lines up with whatever is
          below it — the reading column for a document, the pane's full width
          for a table. -->
+    <!-- No overline. A "FILES" label above the path told you which section of
+         the app you were in, and the tab strip above this now names the file
+         itself — two labels for one fact, the outer one the less useful. The
+         path stays: it is the only thing here that says WHICH file. -->
     <header class={['flex w-full flex-col gap-1.5', format === 'csv' ? '' : 'mx-auto max-w-[596px]']}>
-      <p class="text-overline">Files</p>
       <p class="text-ink-meta font-mono text-[11.5px]">{path}</p>
     </header>
     {#if format === 'csv'}

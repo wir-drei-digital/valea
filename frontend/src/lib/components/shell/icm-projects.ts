@@ -225,3 +225,37 @@ export function offersValeaGitignore(
 export function gitIconAction(signal: { attention: boolean }): 'open-panel' | 'sync-now' {
   return signal.attention ? 'open-panel' : 'sync-now';
 }
+
+/**
+ * A session row's display title. Lifted out of the chat route's all-sessions
+ * pane (and duplicated verbatim in `IcmProjects.svelte`) so the pane that
+ * moved into `ChatPane` did not take a third inline copy with it.
+ *
+ * An untitled WORKFLOW run says so plainly rather than repeating its file
+ * path: the path renders as its own mono line under the title, and a title
+ * that is the line below it is just noise.
+ */
+export function sessionTitle(session: Pick<AgentSessionSummary, 'title' | 'kind'>): string {
+  if (session.title && session.title.trim().length > 0) return session.title;
+  if (session.kind === 'workflow') return 'Workflow run';
+  return 'Chat session';
+}
+
+/**
+ * "2 hours ago" for a session timestamp, in the largest unit that still
+ * reads as a number — seconds under a minute, then minutes, hours, days.
+ * Empty string for a missing or unparseable timestamp, because a row with no
+ * start time should show nothing rather than "Invalid Date".
+ */
+export function sessionRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  const deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const abs = Math.abs(deltaSeconds);
+  if (abs < 60) return rtf.format(deltaSeconds, 'second');
+  if (abs < 3600) return rtf.format(Math.round(deltaSeconds / 60), 'minute');
+  if (abs < 86400) return rtf.format(Math.round(deltaSeconds / 3600), 'hour');
+  return rtf.format(Math.round(deltaSeconds / 86400), 'day');
+}

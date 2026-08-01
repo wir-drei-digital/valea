@@ -17,7 +17,7 @@
 - **NEVER run prettier or any formatter on `frontend/`.** The frontend has no prettier config; running it bare reformats the entire tree. The backend's `mix format` hook does not apply here.
 - **No component render harness.** The codebase convention is pure logic extracted into `.ts` with a `.test.ts` sibling (`pane-route.test.ts`, `pane-split.test.ts`, `icm-route.test.ts`). Components are verified by `bun run check` plus browser verification, never by a mounting test.
 - **Pane cap: 2** side panes beside the primary. **Split cap: 2** files inside a Files pane.
-- **Widths:** nav 236px · primary min 380px · side pane min 300px · Files tree 240px fixed · file split min 300px.
+- **Widths:** nav 236px · primary min 380px · side pane min 300px · Files tree 240px fixed · file split min **240px** (lowered from 300 on 2026-08-01 — see amendment 4 in the banner above).
 - **Light theme only** (standing decision). Colour tokens come from `frontend/src/routes/layout.css`: `--paper-*` surfaces, `--ink-*` text, `--act`/`--suggest`/`--warn` for consequence.
 - **No accent colour on the bottom bar.** In this design system colour means consequence (`PRODUCT.md` principle 1) and opening a view has none. Inactive `text-ink-meta`, active `text-ink-heading`.
 - **Hit targets** ≥ 32px in dense lists, 36px elsewhere.
@@ -26,6 +26,74 @@
   ```
   Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
   ```
+
+## ⚠️ Amendments — these supersede the task text below
+
+Task sections are kept as written for the historical record. Where they
+disagree with this list, **this list governs.**
+
+1. **There is no `＋ Split` control** (Daniel, 2026-08-01). It was specced,
+   built, then deleted: any such button must *guess* which file to open, and
+   the plan's `treeNav.find(n => n.isFile)` finds nothing in a real ICM because
+   top-level entries are folders. Deleted with it: `state.addSplit`,
+   `state.maxSplits`, `canAddSplit`, `firstUnopenedLeaf`. The tree's per-row
+   "Open beside" is the only way to open a second split. **Every surviving
+   mention, so nobody rebuilds the control by following the plan:** Task 3's
+   interface block, its failing-test block (the `canAddSplit` import and the
+   whole `describe('canAddSplit')`) and its `canAddSplit` reference
+   implementation; Task 7's Consumes list, its `FilesPaneState` snippet and the
+   `$effect` that publishes `state.maxSplits` / `state.addSplit` to the header;
+   and the second `<button>` in the `FilesPaneControls` markup, which IS the
+   ＋ Split control in full. Ignore all of them — none of it shipped, and
+   `FilesPaneState` carries neither `maxSplits` nor `addSplit`.
+
+2. **Mail's "one implementation used by both" is retired** (Daniel,
+   2026-08-01). `/mail`'s list carries an account switcher, debounced search, a
+   folder picker, a read filter, pagination and a sync footer; none belong in a
+   pane. What is shared is `MessageList` + `MessageView`. The ~40-line
+   race-suppressed selection effect that was duplicated near-verbatim in
+   `MailPane.svelte` and `routes/mail/+page.svelte` **has been extracted** into
+   `components/mail/mail-selection.svelte.ts` (`watchMailSelection`), which
+   both hosts call with no private copy left in either. Recorded as done, not
+   as an outstanding obligation.
+
+3. **`SPLIT_MIN` is 240, not 300** (Daniel, 2026-08-01). At 300, two files side
+   by side was unreachable on any laptop — a side Files pane needed 2339px with
+   the tree shown, 1739px hidden — which contradicted an originating ask for
+   the feature. At 240 those are 2039px and 1439px, and the PRIMARY-width Files
+   pane the ask describes clears the tree-shown case at 1439px. `TREE_W` stays
+   240; the tree holds deep ICM paths. (Every window figure here inverts
+   `0.4 * (window - 239)` for a side pane, `0.6 * (…)` for the primary — see
+   `pane-fit.ts`'s header.)
+
+4. **The first file always opens**, regardless of width. `openInFirst` and
+   `openAsSecond` floor `paths.length === 0`. Without this the Files pane's
+   tree was inert below a 1589px window at `SPLIT_MIN` 300, and below 1439px
+   at 240.
+
+5. **`PaneHost` keys panes by SUBJECT, not by the wire form.** Task 6 Step 3
+   specifies `{#key serializePaneParam(pane)}` and its snippet keys the
+   `{#each}` the same way. That is the bug the shipped code documents at
+   length, not the design: the wire form carries a Files pane's open files, so
+   every tree click inside a pane became an identity change and Svelte tore
+   down and rebuilt the whole pane — tree, scroll position, both `FileView`s
+   and the per-pane state — to show one different file. It also made the
+   assistant's auto-open claim (an index living in that state) impossible to
+   keep past a single open, so split recycling was structurally impossible in
+   a pane. The shipped key is `paneIdentity(pane)` — mount, session, account —
+   uniquified against collisions, and it is what BOTH the `{#each}` and the
+   state cache use. `chat-new` -> `chat:<id>` deliberately remains an identity
+   change. Position is deliberately NOT part of the key.
+
+6. **`MailPane`'s prop contract in Task 8 is not what shipped.** Its Produces
+   block lists `account`, `selectedId`, `onSelect`, `onAccountChange` and
+   `listVisible`; the component takes none of them. Like every other pane view
+   it is mounted by the registry, so it takes `descriptor` and `context` (it
+   needs no per-pane state), reads the account and message off `descriptor`,
+   and reports a selection through `context.openPane` — a rewrite of its own
+   descriptor, never an append. The Mail
+   SCOPE boundary in that task's Context paragraph is unaffected and still
+   governs: a Mail pane is the read surface only.
 
 ## File Structure
 
@@ -44,7 +112,7 @@
 | File | Responsible for |
 |---|---|
 | `frontend/src/lib/components/panes/FilesPane.svelte` | tree + splits + the split→`FileView` ref map |
-| `frontend/src/lib/components/panes/FilesPaneControls.svelte` | tree toggle + `＋ Split`, rendered in `PaneHost`'s header |
+| `frontend/src/lib/components/panes/FilesPaneControls.svelte` | tree toggle, rendered in `PaneHost`'s header (the `＋ Split` control was removed — see the spec's 2026-08-01 amendment) |
 | `frontend/src/lib/components/panes/MailPane.svelte` | message list + reader, used by pane *and* `/mail` |
 | `frontend/src/lib/components/panes/ChatPane.svelte` | sessions navigator + `ChatView` |
 | `frontend/src/lib/components/panes/ChatPaneControls.svelte` | sessions-list toggle |
@@ -53,6 +121,27 @@
 **Modified:** `lib/panes/pane-route.ts`, `pane-split.ts`, `registry.ts`, `context.ts`, `components/panes/PaneHost.svelte`, `components/shell/AppShell.svelte`, `AppFrame.svelte`, `IcmTree.svelte`, and the three routes.
 
 **Deleted:** `lib/components/panes/FilePaneAdapter.svelte` (absorbed by `FilesPane`).
+
+## Consolidated execution groups
+
+The ten task sections below are dispatched as **six** units. Tasks are grouped
+where they edit the same file, share a review gate, or cannot compile
+separately. A group is one subagent, one review, one commit sequence.
+
+| Group | Task sections | Why grouped |
+|---|---|---|
+| **G1 — Codec** | 1 + 5 | Both rewrite `pane-route.ts` and `pane-route.test.ts`. Splitting them means editing one file in two dispatches for no reviewer benefit. |
+| **G2 — Layout math** | 2 | `pane-fit.ts` + `pane-split.ts`. Independent of G3, reviewed on "is the width arithmetic right". |
+| **G3 — Pane rules** | 3 + 4 | `files-pane-state`, `reveal-path`, `auto-open`, `pane-memory`. Four pure modules, one gate: "are the behavioural rules right". |
+| **G4 — Host contract** | 6 | `PaneHost` N panes + `PaneEntry` registry + `PaneContext`. The contract every component task consumes. |
+| **G5 — Pane components** | 7 + 8 | `FilesPane`, `MailPane`, `ChatPane`, their controls, and `IcmTree`. All implement the G4 contract; typecheck only settles once they exist together. |
+| **G6 — Shell, bar, routes, wiring** | 9 + 10 | `AppShell`/`ContentBar`/route conversions plus memory restore and auto-open. The `list` prop cannot be removed before the routes stop using it, and the wiring has no meaning until the routes exist. |
+
+G1–G3 are pure logic and fully test-driven. G4–G6 are verified by
+`bun run check` plus the browser steps written into each section.
+
+Groups run in order; each is dispatched only after the previous one is reviewed
+and its commits are on the branch.
 
 ---
 
@@ -2508,17 +2597,28 @@ export function receiveAutoFile(path: string): void {
 
 In the tree-click and open-beside handlers, call `state.autoIndex = clearAuto(state.autoIndex, targetIndex)` before `setPaths`.
 
-Also publish `state.addSplit` so the header's `＋ Split` works:
+**And — this is load-bearing, not optional —** every call site that *removes* a
+split must re-map the claim through `shiftAuto`:
 
 ```ts
-$effect(() => {
-  state.addSplit = () => {
-    const first = treeNav.find((n) => n.isFile);
-    if (first) setPaths(openAsSecond(descriptor.paths, first.path, maxSplits));
-  };
-  return () => { state.addSplit = null; };
-});
+// closeSplit and dropVanished RENUMBER the list. A claim held as an index
+// would then point at whatever slid into that slot, and the next auto-open
+// would overwrite a file the user placed — the exact thing the rule exists to
+// prevent. clearAuto covers user OPENS only; it does not cover removals.
+state.autoIndex = shiftAuto(state.autoIndex, removedIndex);
+setPaths(closeSplit(descriptor.paths, removedIndex));
 ```
+
+This applies in `FilesPane`'s split close button and in the route's
+`onVanished` handler alike. A review caught this as a live eviction bug in G3;
+`shiftAuto` was added to `auto-open.ts` specifically for these call sites.
+
+**Do NOT publish `state.addSplit`.** Earlier revisions of this plan asked for
+it here, to drive a `＋ Split` control in the pane header. That control was
+built and then **deleted** (see the banner at the top of this plan), along with
+`addSplit`, `state.maxSplits`, `canAddSplit` and `firstUnopenedLeaf`. There is
+nothing to publish; the tree's per-row "Open beside" is the only way to open a
+second split.
 
 - [ ] **Step 3: Typecheck and test**
 
@@ -2567,18 +2667,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 | Retirements (`SessionHeader` tree, `list`/`rail`, `FilePaneAdapter`) | 6, 9 |
 | Per-subject stale handling | 6 (context), 7 (`onVanished`), 9 (route handler) |
 
-**Known gap carried from the spec:** *nav collapse* is an unresolved open item. This plan implements it (`navVisible` in `AppShell`, toggle at the bar's far left, default on) because the spec proposes keeping it. If Daniel cuts it, delete the `navVisible` prop and the toggle from Task 9 Steps 5–6; nothing else depends on it.
+**Resolved, not a gap:** *nav collapse* was the spec's last open item and is **kept** — implemented as this plan describes (toggle at the bar's far left, default on), and persisted, because every route mounts its own `AppShell`. The earlier "if Daniel cuts it, delete `navVisible`" instruction is withdrawn and must not be followed: `navVisible` is a PARAMETER of the fit arithmetic (`panesThatFit(width, navVisible)`, `truncateToFit`, `restoreTarget`), so deleting it would silently mis-count how many panes fit whenever the nav is hidden. The live value now lives in `shell/pane-room.svelte.ts`, which is what the bar and every route-owned pane opener read.
 
 **Type consistency check:** `PaneDescriptor` kinds are `files` / `chat` / `chat-new` / `mail` throughout. `paths: string[]` (never `path`) on Files everywhere after Task 1. `maxSplits` is the parameter name in `files-pane-state.ts`, `auto-open.ts` and `FilesPaneState` alike. `onBeforeMutate(href: string)` matches between `IcmTree` (Task 7 Step 1) and `FilesPane.beforeMutate` (Step 2). `promoteTarget(promoted, url, panes)` has the same signature in Task 5 and its Task 9 call site. `menuItems` input keys match between `content-bar.ts` and its test.
 
 ---
 
-## Execution Handoff
+## Execution
 
-**Plan complete and saved to `docs/superpowers/plans/2026-07-31-composable-views.md`. Two execution options:**
-
-**1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration
-
-**2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints
-
-**Which approach?**
+**Subagent-driven**, one Opus subagent per consolidated group (see *Consolidated
+execution groups* above), reviewed between groups. A group's subagent is given
+the group's task sections verbatim and works only within them.

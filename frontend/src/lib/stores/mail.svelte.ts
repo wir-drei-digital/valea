@@ -447,6 +447,31 @@ export function normalizeMailDraftReview(raw: Record<string, unknown>): MailDraf
  */
 export class MailStore {
   accounts: MailAccountStatus[] = $state([]);
+  /**
+   * Whether `accounts` has ever been ANSWERED — the difference between "no
+   * mailbox is configured" and "nobody has asked yet". `accounts` starts
+   * empty, so any surface that reads emptiness as an answer states something
+   * about the user's setup that the app has no basis for; a mail pane that
+   * mounts before the first `mail_status` returns would say "no mail account
+   * yet" over a perfectly good mailbox.
+   *
+   * ASK-ONCE, not fetch-succeeded: `refreshStatus` sets this on a FAILED call
+   * too. It once did not, on the reading that a failed request taught us
+   * nothing — but "nobody has asked yet" is a state every surface has to wait
+   * out, and leaving it false made the wait permanent (the ＋ Pane menu kept
+   * Mail live forever on a click that could never land). A failure
+   * deliberately leaves `accounts` alone, so the only thing that now reads as
+   * "no mailbox" is a workspace where status has never once arrived.
+   *
+   * Deliberately UNLIKE `mountsStore.loaded`, which is a retry-until-success
+   * guard: `AppFrame` cold-starts `mountsStore.refresh()` on every route entry
+   * `if (!mountsStore.loaded)`, so setting that one on failure would silently
+   * disable the retry. This flag has no such caller — the mail route and the
+   * mail pane refresh on their own mount regardless — so it is free to mean
+   * the weaker thing, and it has to, because it is also what surfaces read to
+   * decide whether they may speak about the user's setup at all.
+   */
+  statusLoaded = $state(false);
   selectedAccount: string | null = $state(null);
   folders: MailFolder[] = $state([]);
   selectedFolder: string | null = $state(INBOX_FOLDER);
@@ -610,11 +635,26 @@ export class MailStore {
 
   async refreshStatus(): Promise<void> {
     const result = await this.#api.mailStatus();
-    if (!result.ok) return;
+    if (!result.ok) {
+      // The call failed, but SOMEBODY ASKED — which is the only thing this
+      // flag has ever meant ("no mailbox is configured" vs "nobody has asked
+      // yet"). Leaving it false made "unknown" permanent, and permanently
+      // unknown is the one state a surface cannot render honestly: the ＋ Pane
+      // menu kept Mail live forever on a click that could never land.
+      //
+      // Deliberately does NOT touch `accounts`: a failure after a successful
+      // load leaves the known mailboxes in place, so the only case that now
+      // reads as "no account" is a workspace where mail status has never once
+      // arrived — where saying so is imprecise but recoverable, and any later
+      // refresh or `mail_status` push corrects it.
+      this.statusLoaded = true;
+      return;
+    }
 
     const data = result.data as { accounts?: unknown };
     const raw = Array.isArray(data.accounts) ? (data.accounts as Record<string, unknown>[]) : [];
     this.accounts = raw.map(normalizeMailAccountStatus);
+    this.statusLoaded = true;
     await this.#ensureSelection();
     void resupplyCredentials(this.accounts, this.#api);
   }
