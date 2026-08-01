@@ -14,6 +14,12 @@
  *   chat:<sessionId>
  *   chat:new:<mountKey>               (new-session composer scoped to that ICM;
  *                                      rewritten to chat:<id> once it starts)
+ *   chat:new:<mountKey>/<originKind>/<path>[/<mount>[/<label>]]
+ *                                     (composer opened FROM a message or entry;
+ *                                      every field whole-string encoded, so the
+ *                                      path's own `/` cannot look like a field
+ *                                      separator — unlike files:, which encodes
+ *                                      per segment for readable file URLs)
  *   mail:<account>                    (mailbox list)
  *   mail:<account>/<msgId>            (one message)
  *
@@ -46,7 +52,32 @@ export type FilesPaneDescriptor = {
   compare: number | null;
 };
 export type ChatPaneDescriptor = { kind: 'chat'; sessionId: string };
-export type ChatNewPaneDescriptor = { kind: 'chat-new'; mountKey: string };
+/**
+ * What a new-session composer was opened FROM. `path` is the grant-bearing
+ * field (mount-relative for a Knowledge entry, workspace-relative for a mail
+ * message — whichever the matching locator wants); `mount` is the
+ * `mail-<slug>` key for `includeMounts`; `label` is DISPLAY ONLY.
+ *
+ * `label` arrives from the URL and is therefore untrusted — a shared or
+ * hand-written link can carry anything. It renders as plain text, never
+ * `{@html}`, and is capped at parse so a long label cannot push the composer
+ * out of its pane. Nothing is ever granted from it.
+ */
+export type PaneOrigin = {
+  kind: 'mail-message' | 'page' | 'file';
+  path: string;
+  mount?: string;
+  label?: string;
+};
+
+/** Display-only, URL-supplied — see `PaneOrigin.label`. */
+export const ORIGIN_LABEL_CAP = 80;
+
+export type ChatNewPaneDescriptor = {
+  kind: 'chat-new';
+  mountKey: string;
+  from: PaneOrigin | null;
+};
 export type MailPaneDescriptor = { kind: 'mail'; account: string; msgId: string | null };
 export type PaneDescriptor =
   | FilesPaneDescriptor
@@ -78,6 +109,26 @@ function parseCursor(raw: string): { active: number; compare: number | null } | 
   const match = /^(\d+)(?:\+(\d+))?$/.exec(raw);
   if (!match) return null;
   return { active: Number(match[1]), compare: match[2] === undefined ? null : Number(match[2]) };
+}
+
+const ORIGIN_KINDS = ['mail-message', 'page', 'file'] as const;
+
+/** `[kind, path, mount?, label?]`, each whole-string encoded. Null if unusable. */
+function parseOrigin(fields: string[]): PaneOrigin | null {
+  const kind = tryDecode(fields[0]);
+  const path = tryDecode(fields[1]);
+  if (!kind || !path) return null;
+  if (!(ORIGIN_KINDS as readonly string[]).includes(kind)) return null;
+  const mount = fields[2] ? tryDecode(fields[2]) : null;
+  const label = fields[3] ? tryDecode(fields[3]) : null;
+  if (fields[2] && mount === null) return null;
+  if (fields[3] && label === null) return null;
+  return {
+    kind: kind as PaneOrigin['kind'],
+    path,
+    ...(mount ? { mount } : {}),
+    ...(label ? { label: label.slice(0, ORIGIN_LABEL_CAP) } : {})
+  };
 }
 
 export function parsePaneParam(raw: string | null): PaneDescriptor | null {
@@ -120,8 +171,19 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
 
   if (kind === 'chat') {
     if (rest.startsWith('new:')) {
-      const mountKey = tryDecode(rest.slice('new:'.length));
-      return mountKey ? { kind: 'chat-new', mountKey } : null;
+      const fields = rest.slice('new:'.length).split('/');
+      const mountKey = tryDecode(fields[0]);
+      if (!mountKey) return null;
+      if (fields.length === 1) return { kind: 'chat-new', mountKey, from: null };
+      // A present-but-broken origin fails the WHOLE descriptor. It must not
+      // degrade to a blank composer: a composer that opens detached while
+      // looking normal is exactly the "send an instruction about an email
+      // that is not attached" bug this field exists to prevent. (files:'s
+      // truncate/clamp repairs do not apply — those repair a still-correct
+      // subject; a broken origin has no correct subject to fall back to.)
+      if (fields.length < 3 || fields.length > 5) return null;
+      const from = parseOrigin(fields.slice(1));
+      return from ? { kind: 'chat-new', mountKey, from } : null;
     }
     const sessionId = tryDecode(rest);
     return sessionId ? { kind: 'chat', sessionId } : null;
@@ -158,8 +220,17 @@ export function serializePaneParam(d: PaneDescriptor): string {
     }
     case 'chat':
       return `chat:${encodeURIComponent(d.sessionId)}`;
-    case 'chat-new':
-      return `chat:new:${encodeURIComponent(d.mountKey)}`;
+    case 'chat-new': {
+      const mount = encodeURIComponent(d.mountKey);
+      if (!d.from) return `chat:new:${mount}`;
+      // Trailing empties are dropped; an absent mount with a present label
+      // still needs its slot, so it serializes as an empty segment.
+      const fields = [d.from.kind, d.from.path, d.from.mount ?? '', d.from.label ?? ''].map(
+        encodeURIComponent
+      );
+      while (fields.length > 2 && fields[fields.length - 1] === '') fields.pop();
+      return `chat:new:${mount}/${fields.join('/')}`;
+    }
     case 'mail':
       return d.msgId === null
         ? `mail:${encodeURIComponent(d.account)}`
@@ -195,7 +266,10 @@ export function paneIdentity(d: PaneDescriptor): string {
     case 'chat':
       return `chat:${d.sessionId}`;
     case 'chat-new':
-      return `chat-new:${d.mountKey}`;
+      // The ORIGIN is part of the subject: a composer opened on message A is
+      // not the same pane as one opened on message B, and recycling would
+      // leave A attached while the URL says B.
+      return `chat-new:${d.mountKey}:${d.from?.path ?? ''}`;
     case 'mail':
       return `mail:${d.account}`;
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ORIGIN_LABEL_CAP,
   PANE_CAP,
   chatNavigatorFromUrl,
   dedupeSurfaces,
@@ -13,6 +14,7 @@ import {
   promoteTarget,
   serializePaneParam,
   withPanes,
+  type ChatNewPaneDescriptor,
   type FilesPaneDescriptor,
   type PaneDescriptor
 } from './pane-route';
@@ -31,7 +33,7 @@ const filesEmpty = files([]);
 const filesOne = files(['AGENTS.md']);
 const filesTwo = files(['planning/CONTEXT.md', 'AGENTS.md']);
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 'sess-123' };
-const chatNew: PaneDescriptor = { kind: 'chat-new', mountKey: 'life' };
+const chatNew: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: null };
 const mailList: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: null };
 const mailMsg: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: '8842' };
 
@@ -173,6 +175,81 @@ describe('parsePaneParam fails closed', () => {
     'files:m/@1'
   ])('%s -> null', (raw) => {
     expect(parsePaneParam(raw as string | null)).toBeNull();
+  });
+});
+
+describe('chat-new origin', () => {
+  const origin = {
+    kind: 'mail-message' as const,
+    path: 'views/INBOX/42.md',
+    mount: 'mail-mara',
+    label: 'Liefertermin'
+  };
+
+  it('round-trips a full origin', () => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: origin };
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  it('round-trips an origin with no mount and no label', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'notes/CONTEXT.md' }
+    };
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  // Old links keep working and keep their exact wire form.
+  it('leaves the blank composer wire form untouched', () => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: null };
+    expect(serializePaneParam(d)).toBe('chat:new:life');
+    expect(parsePaneParam('chat:new:life')).toEqual(d);
+  });
+
+  it('encodes a path so its slashes cannot look like extra fields', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'file', path: 'a/b/c.pdf' }
+    };
+    expect(serializePaneParam(d)).toBe('chat:new:life/file/a%2Fb%2Fc.pdf');
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  // A present-but-unreadable origin must NOT degrade to a blank composer:
+  // opening detached while looking normal is the bug the descriptor exists
+  // to prevent.
+  it.each([
+    ['chat:new:life/mail-message', 'two fields'],
+    ['chat:new:life/nope/x.md', 'unknown kind'],
+    ['chat:new:life/page/', 'empty path'],
+    ['chat:new:life/page/a/b/c/d', 'too many fields']
+  ])('fails closed on a broken origin (%s)', (raw) => {
+    expect(parsePaneParam(raw)).toBeNull();
+  });
+
+  it('caps a hostile label', () => {
+    const long = 'x'.repeat(500);
+    const parsed = parsePaneParam(`chat:new:life/page/n.md//${long}`);
+    expect(parsed).not.toBeNull();
+    expect((parsed as ChatNewPaneDescriptor).from?.label).toHaveLength(ORIGIN_LABEL_CAP);
+  });
+
+  // "A different subject still is a different pane" — without this, opening a
+  // composer for message A then B recycles the pane and keeps A attached.
+  it('gives two origins under one mount distinct identities', () => {
+    const a: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/1.md' }
+    };
+    const b: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/2.md' }
+    };
+    expect(paneIdentity(a)).not.toBe(paneIdentity(b));
   });
 });
 

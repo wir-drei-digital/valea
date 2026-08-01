@@ -290,7 +290,8 @@
                     <SessionPickerPopover
                       {mountKey}
                       onOpenSession={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
-                      onNewSession={() => wiring.openBeside({ kind: 'chat-new', mountKey })}
+                      onNewSession={() =>
+                        wiring.openBeside({ kind: 'chat-new', mountKey, from: null })}
                       disabledReason={pickerDisabled}
                       {newSessionRefusal}
                       {openSessionRefusal}
