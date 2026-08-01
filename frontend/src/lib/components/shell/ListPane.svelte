@@ -13,27 +13,18 @@
     action,
     filter,
     children,
-    footer,
-    gutter = false
+    footer
   }: {
     title: string;
     action?: Snippet;
     filter?: Snippet;
     children: Snippet;
     footer?: Snippet;
-    /**
-     * This list is the top-left of the content column, so the shell's nav
-     * toggle floats over its first row — indent the title out from under it.
-     * Set by a route whose PRIMARY starts with this list; never by a pane,
-     * which sits to the right of the toggle and would gain a stray indent.
-     * See `NavToggle.svelte`.
-     */
-    gutter?: boolean;
   } = $props();
 </script>
 
 <div class="flex h-full flex-col">
-  <div class={['flex flex-col gap-2.5 pt-4 pe-4 pb-3', gutter ? 'ps-11' : 'ps-4']}>
+  <div class="flex flex-col gap-2.5 px-4 pt-4 pb-3">
     <div class="flex items-center justify-between gap-2">
       <h1 class="font-display text-[21px] leading-tight font-medium text-ink-heading">{title}</h1>
       {#if action}

@@ -306,7 +306,7 @@
           <section
             class="border-paper-hairline bg-paper-panel w-[300px] max-w-[340px] min-w-[250px] shrink-0 overflow-y-auto border-r"
           >
-            <ListPane title="Mail" gutter>
+            <ListPane title="Mail">
               {#snippet action()}
                 <div class="flex items-center gap-1">
                   {#if mailStore.selectedAccount}

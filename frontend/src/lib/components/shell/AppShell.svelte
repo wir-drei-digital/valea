@@ -14,17 +14,34 @@
   // The bottom bar is gone too, and with it the ＋ Pane menu: a pane is now
   // opened from the side you are already working on (mail's "Start a session",
   // the session header's "Open files", Knowledge's session picker), which is
-  // what lets each control name an outcome instead of a kind. All that
-  // survived the bar is the nav collapse, which moved to the content column's
-  // TOP left — see `NavToggle.svelte`.
+  // what lets each control name an outcome instead of a kind.
+  //
+  // NAV COLLAPSE IS HIDDEN, NOT REMOVED (Daniel, 2026-08-01, after using it):
+  // `NavToggle.svelte` is parked unrendered, and everything behind it stays
+  // live and tested — `valea.nav-visible`, `paneRoom.navVisible`, and its part
+  // in `panesThatFit`'s arithmetic, which still reads the persisted preference
+  // on every "may another pane open". Re-rendering the control is one line;
+  // where it should go is the open question.
   //
   // Structurally there is ONE path, not two: every route renders through this
   // component, and a route that hosts no panes simply never has any.
   import type { Snippet } from 'svelte';
-  import NavToggle from './NavToggle.svelte';
+  import { onMount } from 'svelte';
   import { paneRoom } from '$lib/shell/pane-room.svelte';
 
   let { sidebar, main }: { sidebar: Snippet; main: Snippet } = $props();
+
+  // Parking the control leaves one trap that has to be closed rather than
+  // documented: a `false` persisted by an earlier build could no longer be
+  // undone, so anyone who collapsed the nav while it WAS toggleable would open
+  // the app to no navigation and nothing to bring it back. Reconcile instead of
+  // stranding. Idempotent — after the first correction the branch never runs —
+  // and it goes through `toggleNav`, so the preference, the storage key and the
+  // fit arithmetic all stay exactly as they were. Delete this alongside
+  // re-mounting `NavToggle`.
+  onMount(() => {
+    if (!paneRoom.navVisible) paneRoom.toggleNav();
+  });
 
   // The window measurement and the nav collapse both live in `paneRoom`, not
   // here. The collapse is persisted because every route mounts its own
@@ -49,8 +66,7 @@
       {@render sidebar()}
     </aside>
   {/if}
-  <div class="relative flex min-w-0 flex-1 flex-col">
-    <NavToggle {navVisible} onToggle={() => paneRoom.toggleNav()} />
+  <div class="flex min-w-0 flex-1 flex-col">
     <main class="flex min-h-0 min-w-0 flex-1 flex-col">{@render main()}</main>
   </div>
 </div>

@@ -1,5 +1,12 @@
 <script lang="ts">
   /**
+   * PARKED, NOT RENDERED (Daniel, 2026-08-01, after using it): the control is
+   * out of the UI for now, while everything behind it stays live —
+   * `valea.nav-visible`, `paneRoom.navVisible` and its part in `panesThatFit`.
+   * A hidden nav is still a wider row, and every refusal still counts it. This
+   * file is kept because the decision was about PLACEMENT, not about the
+   * feature; mount it from `AppShell` to bring it back.
+   *
    * Collapse/restore the navigation. It used to sit at the far left of the
    * content area's bottom bar; the bar is retired, so it moved to the TOP left
    * of the content column — the same edge, against the nav, where the primary
