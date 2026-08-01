@@ -237,6 +237,24 @@ The new parsing surface: `/chat` must read `from` into its **primary**
 descriptor, not only into `pane` params. This is the one genuinely new piece
 of route parsing in the change.
 
+**`/chat` cannot render a `chat-new` primary at all today.** Its
+`primaryDescriptor` is `{kind:'chat'}` when `?session=` is set and `null`
+otherwise (`chat/+page.svelte:151-153`); `?icm=` only feeds
+`primaryMountKey()` for the create button, and the view renders the
+descriptor only when `kind === 'chat'` (`:237`).
+
+That is a **pre-existing bug this change has to fix anyway**: `routeFor`
+already promotes a `chat-new` pane to `/chat?icm=<key>` (`pane-route.ts:334`),
+so hitting ⤢ on a new-session pane today lands on a dead "no session
+selected" screen and silently loses the composer. Adding the primary state
+serves Knowledge's navigation and closes that hole with one change.
+
+Why `goto` rather than `openBeside` for Knowledge: `EntryMenu` is rendered
+from `IcmTree` (`IcmTree.svelte:228,355`), the sidebar tree, which appears on
+routes that have no pane wiring at all. A callback-when-available design
+would give the same menu item two different behaviors depending on route.
+Navigation works everywhere, and the primary state is needed regardless.
+
 ### 7. Frontend — the attachment chip
 
 The `chat-new` branch renders a bare `Composer` (`ChatView.svelte:618-627`).
