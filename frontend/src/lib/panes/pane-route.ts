@@ -122,6 +122,40 @@ export function serializePaneParam(d: PaneDescriptor): string {
   }
 }
 
+/**
+ * What makes a mounted pane THE SAME pane across a navigation — its SUBJECT,
+ * deliberately not its contents.
+ *
+ * `serializePaneParam` is the wire form and carries everything: which files a
+ * Files pane has open, which message a Mail pane is reading. Keying a mounted
+ * pane on that string made every tree click inside a Files pane an identity
+ * change, so Svelte tore the whole pane down and rebuilt it — the tree and its
+ * scroll position, both `FileView`s and the per-pane state `PaneHost` holds —
+ * in order to show one different file. It also made the assistant's auto-open
+ * claim, which is an index living in that state, impossible to keep for longer
+ * than a single open, so split recycling could never work in a pane at all.
+ *
+ * A different subject still is a different pane: another chat session, another
+ * mailbox, another ICM. And `chat-new` -> `chat:<id>` MUST stay a change —
+ * `ChatView` stashes the first prompt at mount and fires it once the session
+ * exists, so the started session has to arrive on a fresh component.
+ *
+ * Not a substitute for `panesEqual`, which asks whether two descriptors are
+ * the same thing; this asks whether one has become something else.
+ */
+export function paneIdentity(d: PaneDescriptor): string {
+  switch (d.kind) {
+    case 'files':
+      return `files:${d.mountKey}`;
+    case 'chat':
+      return `chat:${d.sessionId}`;
+    case 'chat-new':
+      return `chat-new:${d.mountKey}`;
+    case 'mail':
+      return `mail:${d.account}`;
+  }
+}
+
 /** Identity comparison. Null never equals anything, including null. */
 export function panesEqual(a: PaneDescriptor | null, b: PaneDescriptor | null): boolean {
   if (!a || !b || a.kind !== b.kind) return false;

@@ -10,7 +10,7 @@
   // `paneStates` below — and the row's split layout (`pane-split.ts`).
   import { PaneGroup, Pane, PaneResizer } from 'paneforge';
   import { onDestroy, type Snippet } from 'svelte';
-  import { paneTitle, serializePaneParam, type PaneDescriptor } from '$lib/panes/pane-route';
+  import { paneIdentity, paneTitle, type PaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
   import { paneEntries, type PaneState } from '$lib/panes/registry';
   import { paneRowLayout, savePaneLayout } from '$lib/panes/pane-split';
@@ -45,17 +45,47 @@
   // returns null rather than inventing one.
   const layout = $derived(paneRowLayout(panes));
 
-  // Per-pane chrome state (a Files tree toggle, a Chat sessions toggle) is
-  // created HERE because the header renders before the body mounts: a pane
-  // cannot hand stateful chrome upward to its already-rendering parent. The
-  // same object goes to the header's `controls` and to the body's `view`, so
-  // neither parents the other.
+  /**
+   * The row, each pane paired with the key that both the `{#each}` and the
+   * state cache below are keyed on. ONE list so the two can never disagree
+   * about what "the same pane" means.
+   *
+   * The key is `paneIdentity` — the pane's SUBJECT, never its contents. It was
+   * `serializePaneParam`, the full wire form, which put a Files pane's open
+   * files into its own identity: clicking a file in a pane changed the string,
+   * so Svelte destroyed and remounted the entire pane to show a different file
+   * in it, taking the tree's scroll position, the sibling split's loaded
+   * document and the per-pane state below with it. Position is deliberately
+   * NOT part of the key either: closing the pane on the left must not rebuild
+   * the one on the right.
+   *
+   * The uniquifying suffix is a guard, not a feature. Duplicate keys are
+   * forbidden today — every host runs `dedupeSurfaces`, which allows one pane
+   * per kind — but a duplicate `{#each}` key THROWS during render and blanks
+   * the whole app (nav, bar and all), which is far too sharp an edge to leave
+   * resting on an invariant enforced in another file.
+   */
+  const keyed = $derived.by(() => {
+    const seen = new Set<string>();
+    return panes.map((pane) => {
+      let key = paneIdentity(pane);
+      while (seen.has(key)) key += '~';
+      seen.add(key);
+      return { pane, key };
+    });
+  });
+
+  // Per-pane chrome state (a Files tree toggle, a Chat sessions toggle) and
+  // the assistant's auto-open claim are created HERE because the header
+  // renders before the body mounts: a pane cannot hand stateful chrome upward
+  // to its already-rendering parent. The same object goes to the header's
+  // `controls` and to the body's `view`, so neither parents the other.
   //
-  // Cached under the SAME string the `{#each}` is keyed on. Hosts re-derive
+  // Cached under the SAME key the `{#each}` is keyed on. Hosts re-derive
   // descriptors from `page.url` on every navigation, so a fresh object
-  // identity means nothing; only a genuine identity change (a different file,
-  // the `chat-new` -> `chat:<id>` rewrite) makes a new key, and only that
-  // builds fresh state. A pane that leaves the row is released.
+  // identity means nothing; only a genuine identity change (another session,
+  // another ICM, the `chat-new` -> `chat:<id>` rewrite) builds fresh state.
+  // A pane that leaves the row is released.
   let cache = new Map<string, PaneState | undefined>();
 
   function disposeState(state: PaneState | undefined): void {
@@ -67,9 +97,7 @@
 
   const paneStates = $derived.by(() => {
     const next = new Map<string, PaneState | undefined>();
-    for (const pane of panes) {
-      const key = serializePaneParam(pane);
-      if (next.has(key)) continue;
+    for (const { pane, key } of keyed) {
       next.set(key, cache.has(key) ? cache.get(key) : paneEntries[pane.kind].createState?.(pane));
     }
     for (const [key, state] of cache) {
@@ -117,9 +145,9 @@
   <Pane order={1} defaultSize={layout[0]} minSize={20} class="flex min-h-0 min-w-0 flex-col">
     {@render primary()}
   </Pane>
-  {#each panes as pane, i (serializePaneParam(pane))}
+  {#each keyed as { pane, key }, i (key)}
     {@const entry = paneEntries[pane.kind]}
-    {@const state = paneStates.get(serializePaneParam(pane))}
+    {@const state = paneStates.get(key)}
     <PaneResizer
       aria-label="Resize pane"
       class="bg-paper-hairline hover:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize transition-colors"

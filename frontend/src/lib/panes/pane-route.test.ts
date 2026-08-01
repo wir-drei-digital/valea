@@ -3,6 +3,7 @@ import {
   PANE_CAP,
   chatNavigatorFromUrl,
   dedupeSurfaces,
+  paneIdentity,
   panesEqual,
   paneTitle,
   parsePaneParam,
@@ -225,6 +226,40 @@ describe('dedupeSurfaces', () => {
 
   it('keeps distinct kinds', () => {
     expect(dedupeSurfaces(chat, [filesOne, mailList])).toEqual([filesOne, mailList]);
+  });
+});
+
+describe('paneIdentity', () => {
+  it('ignores which files a Files pane has open', () => {
+    // The defect this exists to prevent: keying a mounted pane on the full
+    // wire form made every tree click a remount.
+    expect(paneIdentity(filesOne)).toBe(paneIdentity(filesEmpty));
+    expect(paneIdentity(filesTwo)).toBe(paneIdentity(filesEmpty));
+  });
+
+  it('ignores which message a Mail pane is reading', () => {
+    expect(paneIdentity(mailMsg)).toBe(paneIdentity(mailList));
+  });
+
+  it('separates a chat-new pane from the session it starts', () => {
+    // Load-bearing: ChatView stashes the first prompt at mount, so the started
+    // session has to arrive on a fresh component.
+    expect(paneIdentity(chatNew)).not.toBe(paneIdentity(chat));
+  });
+
+  it('separates two ICMs, two mailboxes and two sessions', () => {
+    expect(paneIdentity(filesOne)).not.toBe(
+      paneIdentity({ kind: 'files', mountKey: 'valea', paths: ['AGENTS.md'] })
+    );
+    expect(paneIdentity(mailMsg)).not.toBe(
+      paneIdentity({ kind: 'mail', account: 'other@example.com', msgId: '8842' })
+    );
+    expect(paneIdentity(chat)).not.toBe(paneIdentity({ kind: 'chat', sessionId: 'sess-999' }));
+  });
+
+  it('separates every kind from every other', () => {
+    const ids = [filesOne, chat, chatNew, mailMsg].map(paneIdentity);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
 
