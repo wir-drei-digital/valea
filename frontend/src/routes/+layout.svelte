@@ -11,17 +11,19 @@
   import { updatesStore } from '$lib/stores/updates.svelte';
   import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
-  import { inDesktop } from '$lib/keychain';
+  import { windowChrome } from '$lib/shell/platform';
 
   let { children } = $props();
 
-  // Desktop only: the window has no native title bar (overlay style), so a
-  // thin strip along the very top edge is always a drag region — this is
-  // what makes the window draggable on every screen, onboarding included
-  // (the sidebar's brand band is a second, larger drag surface once the
-  // shell renders). 12px tall: inside every pane's own top padding, so it
-  // never sits over anything interactive.
-  const desktop = inDesktop();
+  // Wherever the app owns its frame — macOS overlay, frameless Windows and
+  // Linux — no native title bar offers a grab handle, so a thin strip along
+  // the very top edge is always a drag region. This is what makes the
+  // window draggable on every screen, onboarding included (the sidebar's
+  // brand band is a second, larger drag surface once the shell renders).
+  // 12px tall: inside every pane's own top padding, so it never sits over
+  // anything interactive. Keyed on `windowChrome()` rather than
+  // `inDesktop()` because the strip answers to the chrome, not the runtime.
+  const chrome = windowChrome();
 
   // Joins `workspace:events` once, through the single `wireIcmEvents` call:
   // `icm_changed` keeps the sidebar tree live (Task 18 acceptance
@@ -60,7 +62,7 @@
   });
 </script>
 
-{#if desktop}
+{#if chrome !== 'browser'}
   <div data-tauri-drag-region class="fixed inset-x-0 top-0 z-50 h-3" aria-hidden="true"></div>
 {/if}
 

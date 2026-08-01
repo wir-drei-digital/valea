@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Same mocking posture as `stores/mail.test.ts`: the Tauri-detection
-// primitive is stubbed at its module boundary so both branches of
-// `overlayChrome` are drivable from vitest, where no webview exists.
+// primitive is stubbed at its module boundary so every branch of
+// `windowChrome` (and so of `overlayChrome`, which is expressed through it)
+// is drivable from vitest, where no webview exists.
 vi.mock('../keychain', () => ({ inDesktop: vi.fn(() => false) }));
 
 import { inDesktop } from '../keychain';
-import { overlayChrome } from './platform';
+import { overlayChrome, windowChrome } from './platform';
 
 // Real strings from the three webviews Valea ships in (WKWebView,
 // WebView2, WebKitGTK) — the mac one is the only ARM/Intel-agnostic
@@ -60,5 +61,48 @@ describe('overlayChrome', () => {
 
     expect(overlayChrome()).toBe(false);
     expect(userAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe('windowChrome', () => {
+  it('is browser outside the desktop app, whatever the UA', () => {
+    vi.stubGlobal('navigator', { userAgent: WINDOWS_UA });
+    expect(windowChrome()).toBe('browser');
+  });
+
+  it('names each desktop platform', () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.stubGlobal('navigator', { userAgent: MAC_UA });
+    expect(windowChrome()).toBe('macos-overlay');
+    vi.stubGlobal('navigator', { userAgent: WINDOWS_UA });
+    expect(windowChrome()).toBe('windows');
+    vi.stubGlobal('navigator', { userAgent: LINUX_UA });
+    expect(windowChrome()).toBe('linux');
+  });
+
+  // SSR and prerender have no `navigator` at all; `inDesktop()` short-circuits
+  // before it is touched, so this must not throw.
+  it('is browser during SSR, with no navigator', () => {
+    vi.stubGlobal('navigator', undefined);
+    expect(windowChrome()).toBe('browser');
+  });
+
+  // An unrecognised desktop UA must not silently become 'windows' and start
+  // drawing controls over a native title bar. Unknown falls back to the one
+  // answer that draws nothing.
+  it('falls back to browser for an unrecognised desktop UA', () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Unknown)' });
+    expect(windowChrome()).toBe('browser');
+  });
+
+  // The macOS regression guard: `overlayChrome` must keep answering exactly as
+  // it did before this function existed.
+  it('keeps overlayChrome in agreement', () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.stubGlobal('navigator', { userAgent: MAC_UA });
+    expect(overlayChrome()).toBe(true);
+    vi.stubGlobal('navigator', { userAgent: WINDOWS_UA });
+    expect(overlayChrome()).toBe(false);
   });
 });
