@@ -10,15 +10,41 @@ import { join } from 'node:path';
  * that forces is a silent drift hazard on the platforms nobody develops on.
  * This is the guard: change a base window key without changing the platform
  * files and it fails here, on a Mac, rather than in a user's hands.
+ *
+ * `app.windows` is not the only array caught by that rule. `bundle.externalBin`
+ * is one too, and it is the worse of the two: a sidecar added to the base and
+ * not restated here is not a build error, it is a Windows installer that ships
+ * without the binary and an app that fails when it reaches for it.
  */
 const ROOT = join(import.meta.dirname, '../../../../desktop/src-tauri');
 
-function mainWindow(file: string): Record<string, unknown> | null {
-  const raw = JSON.parse(readFileSync(join(ROOT, file), 'utf8')) as {
-    app?: { windows?: Record<string, unknown>[] };
-  };
-  return raw.app?.windows?.find((w) => w.label === 'main') ?? null;
+type TauriConfig = {
+  app?: { windows?: Record<string, unknown>[] };
+  bundle?: { targets?: unknown; externalBin?: string[] };
+};
+
+function config(file: string): TauriConfig {
+  return JSON.parse(readFileSync(join(ROOT, file), 'utf8')) as TauriConfig;
 }
+
+function mainWindow(file: string): Record<string, unknown> | null {
+  return config(file).app?.windows?.find((w) => w.label === 'main') ?? null;
+}
+
+/**
+ * Reading a platform window must never fall back to `{}`. An empty object
+ * satisfies every "does not contain" assertion below, so a platform file that
+ * had lost its window object entirely would read as a clean pass. Throw
+ * instead, and name the file while doing it.
+ */
+function requireMainWindow(file: string): Record<string, unknown> {
+  const win = mainWindow(file);
+  if (win === null) throw new Error(`${file} declares no window labelled "main"`);
+  return win;
+}
+
+/** Accepted in any config, effective only on macOS. */
+const MACOS_ONLY = ['titleBarStyle', 'hiddenTitle', 'trafficLightPosition'] as const;
 
 /**
  * Keys that are legitimately per-platform, and so are NOT required to match.
@@ -28,12 +54,12 @@ function mainWindow(file: string): Record<string, unknown> | null {
  * someone remembers to update this file. An allowlist was tried first and had
  * exactly the hole this guard exists to close.
  */
-const PER_PLATFORM = new Set([
+const PER_PLATFORM = new Set<string>([
   'decorations', // the whole point of the platform files
-  'shadow', // Windows-only; Tauri documents it unsupported on Linux
-  'titleBarStyle', // the three macOS-only keys below are accepted everywhere
-  'hiddenTitle', // and effective only on macOS
-  'trafficLightPosition'
+  'shadow', // Linux: unsupported. Windows: `true` gives an undecorated window
+  // a 1px white border, and rounded corners on Win11. It is already the serde
+  // default (`default_true`), so stating it is documentation, not a change.
+  ...MACOS_ONLY
 ]);
 
 function sharedKeys(base: Record<string, unknown>): string[] {
@@ -56,38 +82,91 @@ describe('the main window is restated consistently across platform configs', () 
     expect(base?.visible).toBe(false);
   });
 
-  // Iterating a derived list is only a guard if the list has something in it,
-  // and equality alone can't tell a matching key from an absent one that Tauri
-  // will quietly fill with a serde default. So: prove the set is real, then
-  // assert PRESENCE with `Object.hasOwn` before asserting the values.
+  // `base ?? {}` is safe here only because these two assertions defend it: a
+  // null base fails the test above, and an empty derived set fails the
+  // `length` check rather than making every loop below iterate nothing.
+  // Equality alone also can't tell a matching key from an absent one that
+  // Tauri will quietly fill with a serde default, so presence is asserted with
+  // `Object.hasOwn` before any value is compared.
   it('the derived shared set is non-empty and every key is present in windows', () => {
     const keys = sharedKeys(base ?? {});
     expect(keys.length).toBeGreaterThan(0);
-    expect(keys).toContain('label');
 
-    const win = mainWindow('tauri.windows.conf.json') ?? {};
+    const win = requireMainWindow('tauri.windows.conf.json');
     for (const key of keys) expect([key, Object.hasOwn(win, key)]).toEqual([key, true]);
   });
 
   it('windows restates every shared key with the base value', () => {
-    const win = mainWindow('tauri.windows.conf.json');
-    expect(win).not.toBeNull();
+    const win = requireMainWindow('tauri.windows.conf.json');
     for (const key of sharedKeys(base ?? {})) {
-      expect([key, win?.[key]]).toEqual([key, base?.[key]]);
+      expect([key, win[key]]).toEqual([key, base?.[key]]);
     }
   });
 
-  it('windows is frameless', () => {
-    const win = mainWindow('tauri.windows.conf.json');
-    expect(win?.decorations).toBe(false);
+  // The mirror of the test above, and needed because `sharedKeys` derives from
+  // the BASE: a key that exists only in a platform file is in no derived set
+  // and would otherwise pass unexamined. Either it belongs in the base and
+  // every platform owes it, or it is genuinely per-platform and belongs in
+  // `PER_PLATFORM` where the next reader can see it.
+  it('windows declares no key that is neither shared nor per-platform', () => {
+    const shared = sharedKeys(base ?? {});
+    const win = requireMainWindow('tauri.windows.conf.json');
+    const undeclared = Object.keys(win).filter(
+      (k) => !PER_PLATFORM.has(k) && !shared.includes(k)
+    );
+    expect(undeclared).toEqual([]);
   });
 
-  // macOS-only keys must not leak into a platform file: harmless but
-  // misleading, and they would suggest the overlay applies there.
+  it('windows is frameless', () => {
+    const win = requireMainWindow('tauri.windows.conf.json');
+    expect(win.decorations).toBe(false);
+  });
+
+  // Not subsumed by the "no undeclared key" test above, and the reason is worth
+  // stating: `PER_PLATFORM` means "may DIFFER between platforms", which is not
+  // the same as "may APPEAR in any platform file". The macOS keys sit in that
+  // gap — they are per-platform, so the mirror test waves them through, while
+  // being meaningless outside macOS. Harmless at runtime, but they would imply
+  // the overlay chrome applies here, which is the misreading this whole feature
+  // exists to correct.
   it('windows carries no macOS-only keys', () => {
-    const win = mainWindow('tauri.windows.conf.json') ?? {};
-    expect(Object.keys(win)).not.toContain('titleBarStyle');
-    expect(Object.keys(win)).not.toContain('hiddenTitle');
-    expect(Object.keys(win)).not.toContain('trafficLightPosition');
+    const win = requireMainWindow('tauri.windows.conf.json');
+    for (const key of MACOS_ONLY) expect([key, Object.hasOwn(win, key)]).toEqual([key, false]);
+  });
+});
+
+describe('the bundle arrays survive the platform merge', () => {
+  const base = config('tauri.conf.json');
+
+  // SUBSET, not equality, and deliberately so: `valea-spawn` is a Windows-only
+  // Job-Object shim (windows-support spec B2) and has no macOS counterpart, so
+  // the Windows list is legitimately longer. What must never happen is the
+  // other direction — a sidecar in the base that Windows drops on the floor.
+  it('windows restates every base sidecar', () => {
+    const win = config('tauri.windows.conf.json');
+    expect(base.bundle?.externalBin?.length).toBeGreaterThan(0);
+    const shipped = win.bundle?.externalBin ?? [];
+    for (const bin of base.bundle?.externalBin ?? []) {
+      expect([bin, shipped.includes(bin)]).toEqual([bin, true]);
+    }
+  });
+
+  // `targets` gets neither a subset nor an equality check: the base is `"all"`
+  // and Windows narrows to `["nsis"]` on purpose. The only thing worth holding
+  // is that the narrowing is stated — delete the key and the merge silently
+  // hands Windows `"all"` instead.
+  it('windows states its own bundle targets', () => {
+    const win = config('tauri.windows.conf.json');
+    expect(win.bundle?.targets).toBeDefined();
+  });
+});
+
+// `tauri.dev.conf.json` is merged the same way (`--config` in the Justfile, for
+// the `Valea Dev` bundle identity). It carries no `app` key today, so there is
+// no hazard — this is here so that the day someone adds one, they find out that
+// it replaces the whole window array rather than adding to it.
+describe('the dev config stays out of the window array', () => {
+  it('declares no app.windows', () => {
+    expect(config('tauri.dev.conf.json').app?.windows).toBeUndefined();
   });
 });
