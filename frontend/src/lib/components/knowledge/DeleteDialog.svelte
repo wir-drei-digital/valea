@@ -9,10 +9,9 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { api } from '$lib/api/client';
-  import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { hrefWithPane } from '$lib/panes/pane-route';
+  import { followMutation } from './follow-mutation';
   import { withBeforeMutate } from './before-mutate';
   import { groupReferences, deleteImpactLine, type PageRef } from './backlinks-panel';
   import { referenceNoun, type EntryKind } from './entry-kind';
@@ -97,18 +96,20 @@
 
       open = false;
 
-      // Deleting the entry the reader currently has open (or, for a folder,
-      // any page nested under it) leaves the URL pointing at nothing — send
-      // them back to the Knowledge root rather than showing a dead page.
-      // Side-panes pass: `?pane=` rides along, exactly like the route's own
-      // `onVanished` fallback for the same event (the file disappearing out
-      // from under the reader) — the two paths must not disagree about
-      // whether an open session survives.
-      const encoded = knowledgeHref(mountKey, path);
-      const current = page.url.pathname;
-      if (current === encoded || (isFolder && current.startsWith(`${encoded}/`))) {
-        void goto(hrefWithPane('/knowledge', page.url));
-      }
+      // Deleting the entry a reader currently has open (or, for a folder, any
+      // page nested under it) leaves a surface pointing at nothing.
+      //
+      // `followMutation` asks that question of EVERY surface, not just the
+      // route's pathname: the primary's second split (`?split=`) and any Files
+      // pane (`?pane=files:…`) can be showing it too, and neither is visible
+      // to a pathname comparison. Per the spec's per-subject rule it drops the
+      // one file and keeps the rest — a sibling split survives, and a Files
+      // pane left with nothing stays open as its tree rather than closing and
+      // taking the navigator with it. `?pane=` rides along on the primary's
+      // fallback exactly as the route's own `onVanished` does; the two paths
+      // must not disagree about whether an open session survives.
+      const href = followMutation(page.url, { mountKey, path, isFolder }, null);
+      if (href) void goto(href);
     } catch (err) {
       error = "Couldn't save your latest changes. Fix that first, then try again.";
     } finally {

@@ -161,6 +161,32 @@ export function withPanes(url: URL, panes: PaneDescriptor[]): string {
   return next.pathname + next.search;
 }
 
+/**
+ * `href` with the panes currently in `url` re-attached — an IN-ROUTE move that
+ * keeps the composition. Renaming the page you are reading, or following a
+ * deleted file back to the index, must not close the chat sitting beside it.
+ *
+ * Any params `href` carries of its own survive (`?split=`); any pane params it
+ * carries are replaced, since `url`'s are the live ones.
+ */
+export function hrefWithPanes(href: string, url: URL): string {
+  return withPanes(new URL(href, url.origin), parsePanes(url.searchParams));
+}
+
+/**
+ * The `?pane=…&pane=…` suffix alone, for a component that appends a query to
+ * an href it does not own (`IcmTree`'s `linkSearch`). Empty string when there
+ * are no panes, so the bare href is left exactly as it was.
+ */
+export function paneSearchSuffix(panes: PaneDescriptor[]): string {
+  const params = new URLSearchParams();
+  for (const pane of panes.slice(0, PANE_CAP)) {
+    params.append('pane', serializePaneParam(pane));
+  }
+  const search = params.toString();
+  return search ? `?${search}` : '';
+}
+
 /** Legacy `?all=1`: the chat primary's sessions navigator. */
 export function chatNavigatorFromUrl(url: URL): boolean {
   return url.searchParams.get('all') === '1';

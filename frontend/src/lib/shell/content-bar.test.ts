@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { menuItems } from './content-bar';
 
 const base = {
-  icmParam: null,
+  // Annotated for the same reason the brief annotates `openKinds`: `Partial<typeof base>`
+  // would otherwise narrow the override to `null`, and the `?icm=` case could not be written.
+  icmParam: null as string | null,
   enabledMountKeys: ['life', 'valea'],
   mailAccounts: ['mara@example.com'],
   mailStatusLoaded: true,

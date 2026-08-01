@@ -7,6 +7,8 @@ import {
   paneTitle,
   parsePaneParam,
   parsePanes,
+  hrefWithPanes,
+  paneSearchSuffix,
   promoteTarget,
   serializePaneParam,
   withPanes,
@@ -123,6 +125,57 @@ describe('withPanes', () => {
   it('removes every pane param when given an empty list', () => {
     const url = new URL('https://x/chat?session=a91f&pane=chat:z&pane=files:life');
     expect(new URL(withPanes(url, []), 'https://x').searchParams.getAll('pane')).toEqual([]);
+  });
+});
+
+describe('hrefWithPanes', () => {
+  it('carries the current composition onto a plain href', () => {
+    const url = new URL(`https://x/knowledge/life/A.md?pane=${serializePaneParam(chat)}`);
+    const out = new URL(hrefWithPanes('/knowledge/life/B.md', url), 'https://x');
+    expect(out.pathname).toBe('/knowledge/life/B.md');
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(chat)]);
+  });
+
+  it('keeps the params the href itself carries', () => {
+    // The rename/delete follow path rebuilds a two-split primary, so `?split=`
+    // has to survive the pane re-attachment rather than be replaced by it.
+    const url = new URL(`https://x/knowledge/life/A.md?pane=${serializePaneParam(chat)}`);
+    const out = new URL(hrefWithPanes('/knowledge/life/B.md?split=C.md', url), 'https://x');
+    expect(out.searchParams.get('split')).toBe('C.md');
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(chat)]);
+  });
+
+  it('drops params belonging to the OLD url', () => {
+    // `?icm=`/`?session=` mean nothing on the href being navigated to; only
+    // the panes travel.
+    const url = new URL('https://x/chat?session=a91f&icm=life');
+    expect(hrefWithPanes('/knowledge', url)).toBe('/knowledge');
+  });
+
+  it('replaces any pane params the href already carried', () => {
+    const url = new URL(`https://x/chat?pane=${serializePaneParam(chat)}`);
+    const out = new URL(hrefWithPanes('/knowledge?pane=files:stale', url), 'https://x');
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(chat)]);
+  });
+});
+
+describe('paneSearchSuffix', () => {
+  it('is empty for no panes, so a bare href is left alone', () => {
+    expect(paneSearchSuffix([])).toBe('');
+  });
+
+  it('renders one pane param per descriptor, leading with ?', () => {
+    expect(paneSearchSuffix([chat])).toBe(`?pane=${encodeURIComponent(serializePaneParam(chat))}`);
+    const both = paneSearchSuffix([chat, filesOne]);
+    expect(new URLSearchParams(both.slice(1)).getAll('pane')).toEqual([
+      serializePaneParam(chat),
+      serializePaneParam(filesOne)
+    ]);
+  });
+
+  it('enforces the cap, like every other writer', () => {
+    expect(new URLSearchParams(paneSearchSuffix([chat, filesOne, mailMsg]).slice(1)).getAll('pane'))
+      .toHaveLength(PANE_CAP);
   });
 });
 

@@ -19,10 +19,9 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import { api } from '$lib/api/client';
-  import { knowledgeHref } from '$lib/shell/nav';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { hrefWithPane } from '$lib/panes/pane-route';
+  import { followMutation } from './follow-mutation';
   import { withBeforeMutate } from './before-mutate';
   import { groupReferences, impactLine, type PageRef } from './backlinks-panel';
   import { referenceNoun, type EntryKind } from './entry-kind';
@@ -95,23 +94,20 @@
     }
   }
 
-  // If the renamed entry is (or contains) the page currently open in the
-  // main pane, follow it to the new URL rather than leaving the reader on a
-  // now-dead path — the watcher will refresh the tree, but it can't fix up
-  // the address bar. Side-panes pass: following the page moves the PRIMARY,
-  // so `?pane=` rides along (`hrefWithPane`) — renaming the page you're
-  // reading must not close the session open beside it.
-  function navigateIfOpen(newPath: string): void {
-    const oldEncoded = knowledgeHref(mountKey, path);
-    const current = page.url.pathname;
-
-    if (current === oldEncoded) {
-      void goto(hrefWithPane(knowledgeHref(mountKey, newPath), page.url));
-    } else if (isFolder && current.startsWith(`${oldEncoded}/`)) {
-      // `suffix` is sliced off the live pathname, so it is already encoded.
-      const suffix = current.slice(oldEncoded.length);
-      void goto(hrefWithPane(`${knowledgeHref(mountKey, newPath)}${suffix}`, page.url));
-    }
+  // Follow the renamed entry through every surface showing it, rather than
+  // leaving a reader on a now-dead path — the watcher refreshes the tree, but
+  // it cannot fix up the address bar.
+  //
+  // `followMutation` replaces the pathname comparison this used to do. A file
+  // open in a PANE, or in the primary's second split, lives in the query
+  // string and never in the pathname, so the old check could not see it at
+  // all: for a non-`.md` file that left a permanently dead split, since
+  // `FileView` forwards `onVanished` only to `MarkdownPageView`. Panes ride
+  // along either way — renaming the page you are reading must not close the
+  // session open beside it.
+  function followRename(newPath: string): void {
+    const href = followMutation(page.url, { mountKey, path, isFolder }, newPath);
+    if (href) void goto(href);
   }
 
   async function submit() {
@@ -135,7 +131,7 @@
 
       const newPath = (result.data as { path: string; updatedPages: string[] }).path;
       open = false;
-      navigateIfOpen(newPath);
+      followRename(newPath);
     } catch (err) {
       error = "Couldn't save your latest changes. Fix that first, then try again.";
     } finally {
