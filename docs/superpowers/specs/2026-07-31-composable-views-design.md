@@ -820,3 +820,85 @@ pane" for what a re-mount has to account for.)*
 *(Stale mail panes were an open item and are now settled under Memory: any
 pane whose subject vanishes closes and is dropped from storage, mail
 included.)*
+
+## Amendment, 2026-08-01 (evening) — five adjustments from live use
+
+All five came from Daniel using the merged feature, and each overturns
+something written above. The superseded text is left in place; this section
+governs.
+
+**1. The tree is resizable, and wider.** "Fixed `TREE_W` and deliberately not
+resizable" is retired. `TREE_W` is now the width the tree OPENS at (280, up
+from 240 — at 240 a nested folder plus a filename truncated on nearly every
+real ICM row), and the user drags it between `TREE_MIN` 200 and `TREE_MAX` 480.
+
+The unit is PIXELS, not the percentage the compare splits use, and that is the
+whole reason the resizer is hand-rolled rather than another `PaneResizer`: a
+navigator stored as a percentage is unusably thin in a narrow side pane and a
+second reading column in a wide primary, from one stored number. Pixels are
+also what `pane-fit.ts` already reasons in. What the hand-rolled handle keeps
+from paneforge is everything the user meets — the same hairline, the same
+hover, `role="separator"` with live values, and arrow-key resizing.
+
+`splitsThatFit` and `treeFits` therefore take a WIDTH rather than a boolean,
+and callers pass `clampTreeWidth(stored, paneWidth)` — what the tree actually
+renders at. The clamp's pane-relative ceiling (`paneWidth - SPLIT_MIN`) is what
+makes dragging safe: the tree can never take enough of the pane to push the
+file below the threshold where `treeFits` would hide it, so the resizer cannot
+make its own tree disappear. It also squeezes rather than hides as a pane
+narrows — down to `TREE_MIN`, which is why the tree now survives to 440px of
+pane instead of 480 — and never rewrites the preference, so a wide pane
+restores the full stored width.
+
+**2. The session header's file-browser button is a TOGGLE.** It was open-only,
+which meant that from its first use onward it was `aria-disabled` and
+explaining that the pane the user was looking at was open. `alreadyOpenRefusal`
+is no longer a refusal for THIS control — it is what the second press does. The
+cap and the width still refuse, because those are about the row the pane would
+join.
+
+This is the whole of `PaneContext.besideOpen` / `closeBeside`. `besideOpen`
+deliberately does NOT count the route's own primary, unlike `besideRefusal`,
+which must: only a pane can be closed.
+
+**3. ＋ moved inside the tab strip, after the last tab.** It was outside the
+scroll box so a full strip could not scroll it away. That cost was accepted for
+placement: a "one more" control belongs at the end of the row it appends to,
+not as a third member of the icon group at the far right. The mitigation is
+structural — chips have a `min-w-[88px]` floor, so a strip narrow enough to
+hide ＋ is one that is already scrolling, and pressing it scrolls the pending
+chip, its immediate neighbour, back into view.
+
+**4. Compare with one tab open creates the second column instead of
+refusing.** "Open a second tab to compare" asked the user to do by hand the one
+thing the control could obviously do for them. Pressing Compare with a single
+tab now opens an EMPTY right-hand column and the next file picked lands in it —
+with the file already being read keeping the LEFT column, which is the
+arrangement the two columns promised while the right one was empty.
+
+The armed state is `FilesPaneState.pendingCompare`, a second flag beside
+`pendingTab` rather than a `compare` index, because there is nothing to index:
+the column holds no file, so no descriptor can name it and nothing about it
+belongs in the URL. It counts as compare being ON (the header reads pressed),
+it falls back exactly as a filled comparison does when the pane is too narrow,
+and it is cleared by anything that supersedes it — switching tabs, closing the
+pending chip, pressing Compare again, an assistant open, or the last tab
+closing. The one refusal left is an empty pane: nothing to put in the left
+column.
+
+**5. A closed file browser comes back with its tabs.** `rememberFilesPane` /
+`recallFilesPane`, keyed by ICM, written when a Files pane is CLOSED and read
+when `openBeside` is handed a Files descriptor with no paths.
+
+This is the one place content lives outside the URL, and the reason is that the
+URL cannot hold it: closing a pane is exactly a navigation that removes it, and
+the control that reopens it names an ICM and nothing else. The route-level
+`loadPanes`/`savePanes` cannot serve it either — that restores a whole row on
+route ENTRY, and this is a close and a reopen WITHIN a route, where the URL has
+already spoken. A caller that NAMES a file (a citation, a link, a cross-ICM
+re-point) is never overridden, and a browser closed with nothing open erases
+its entry rather than storing an empty one.
+
+**Also, on the chat side (2026-07-30-session-file-activity-design):** the
+inline file-activity rail is retired. The "Context · N" list is a popover at
+every width, and nothing opens it but a click. See that spec's amendment.

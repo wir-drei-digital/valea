@@ -7,15 +7,19 @@
   // same header renders for a route primary and for a session inside a pane.
   //
   // It carried a popover FILE TREE here, on the folder name. That is retired,
-  // and `onOpenFiles` is its replacement: the tree is a PANE now (`FilesPane`),
-  // a real browser with tabs, rename, delete, compare and persistent expansion
-  // rather than a menu that closed on every click. Opening it from here is
-  // files-beside-chat, created from the chat side — the composition the bar's
-  // ＋ Pane → Files used to be the only route to.
+  // and `onToggleFiles` is its replacement: the tree is a PANE now
+  // (`FilesPane`), a real browser with tabs, rename, delete, compare and
+  // persistent expansion rather than a menu that closed on every click.
+  // Opening it from here is files-beside-chat, created from the chat side —
+  // the composition the bar's ＋ Pane → Files used to be the only route to.
+  //
+  // It TOGGLES: `filesOpen` is both the pressed state and which way the next
+  // press goes. It used to be open-only, and so spent every moment after its
+  // first use greyed out, explaining that the pane the user was looking at was
+  // open.
   //
   // `filesRefusal` is the half that must not be lost with the bar: at the pane
-  // cap, at a narrow window, or with a file browser already on screen, the
-  // control says WHY rather than doing nothing.
+  // cap or at a narrow window the control says WHY rather than doing nothing.
   //
   // `onArchive` is the "there is a session here" signal (the route's old
   // `selectedId` gate): a host in new-session mode has no session yet and
@@ -25,12 +29,9 @@
   // LABEL) and Delete, which is permanent and therefore swaps to an inline
   // confirm row before `onDelete` ever fires.
   //
-  // `onShowFiles` is the same shape of signal for the file-activity rail: the
-  // host passes it only while the rail is CLOSED **and could actually open**
-  // (its placement/width gate), so the "Files · N" pill is purely a reopen
-  // affordance — it never competes with a rail already on screen, and never
-  // offers to open one that can't appear. `filesCount > 0` keeps it off a
-  // session that touched nothing.
+  // `filesPanel` is the file-activity list, and it is always a POPOVER now —
+  // the inline rail that used to open itself beside the transcript is retired.
+  // `filesCount > 0` keeps the pill off a session that touched nothing.
   import type { Snippet } from 'svelte';
   import Folder from '@lucide/svelte/icons/folder';
   import Archive from '@lucide/svelte/icons/archive';
@@ -47,9 +48,9 @@
     onArchive,
     onDelete,
     filesCount = 0,
-    onShowFiles,
     filesPanel,
-    onOpenFiles,
+    onToggleFiles,
+    filesOpen = false,
     filesRefusal = null
   }: {
     icmName: string | null;
@@ -59,24 +60,20 @@
     onArchive?: () => void;
     onDelete?: () => void;
     filesCount?: number;
-    onShowFiles?: () => void;
-    /**
-     * Mutually exclusive with `onShowFiles` (the host picks per layout):
-     * when the inline rail cannot fit — narrow view, side-pane placement —
-     * the pill becomes a popover trigger and this snippet is its content
-     * (the host renders the rail's popover variant). The file-activity
-     * affordance never disappears with the layout; it defers.
-     */
+    /** The file-activity list, rendered inside the "Context · N" pill's popover. */
     filesPanel?: Snippet;
     /**
-     * Open the file browser BESIDE this session. Absent on a host that cannot
-     * place a pane at all, in which case no control renders — an affordance
-     * that could never work is worse than none.
+     * Open the file browser beside this session, or close the one that is
+     * open. Absent on a host that cannot place a pane at all, in which case no
+     * control renders — an affordance that could never work is worse than none.
      */
-    onOpenFiles?: () => void;
+    onToggleFiles?: () => void;
+    /** Whether a file browser is open beside this session — which way the toggle goes. */
+    filesOpen?: boolean;
     /**
-     * Why it cannot open right now, `null` when it can. Present with
-     * `onOpenFiles`, never instead of it: the control still renders, still
+     * Why it cannot OPEN right now, `null` when it can — and always `null`
+     * while `filesOpen`, since closing is never refused. Present with
+     * `onToggleFiles`, never instead of it: the control still renders, still
      * takes focus, and says the reason. See `pane-offer.ts`.
      */
     filesRefusal?: string | null;
@@ -92,7 +89,7 @@
   });
 </script>
 
-{#if icmName || onArchive || onDelete || onOpenFiles}
+{#if icmName || onArchive || onDelete || onToggleFiles}
   <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
     {#if icmName}
       <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
@@ -101,55 +98,47 @@
       </span>
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
-    {#if filesCount > 0 && (onShowFiles || filesPanel)}
-      {#if filesPanel}
-        <!-- Popover mode: the inline rail can't fit here, so the same pill
-             opens the file list as a popover instead of vanishing with the
-             layout. No id — the inline pill elsewhere on the page owns it. -->
-        <Popover.Root>
-          <Popover.Trigger
-            class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 data-[state=open]:bg-paper-pill -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
-          >
-            Context · {filesCount}
-          </Popover.Trigger>
-          <Popover.Content align="end" class="w-[316px] p-2">
-            {@render filesPanel()}
-          </Popover.Content>
-        </Popover.Root>
-      {:else}
-        <!-- id: the rail's close button hands keyboard focus here after it
-             unmounts itself (ChatView.closeRail). min-h-8/-my-1: ≥32px hit
-             target without growing the header bar. -->
-        <button
-          id="session-files-pill"
-          type="button"
-          onclick={onShowFiles}
-          class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
+    {#if filesCount > 0 && filesPanel}
+      <!-- One behaviour at every width: the pill opens the file list as a
+           popover. `min-h-8`/`-my-1` keep a ≥32px hit target without growing
+           the header bar. -->
+      <Popover.Root>
+        <Popover.Trigger
+          class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 data-[state=open]:bg-paper-pill -my-1 min-h-8 shrink-0 rounded-md px-1.5 text-[11.5px] whitespace-nowrap transition-colors outline-none focus-visible:ring-2"
         >
           Context · {filesCount}
-        </button>
-      {/if}
+        </Popover.Trigger>
+        <Popover.Content align="end" class="w-[316px] p-2">
+          {@render filesPanel()}
+        </Popover.Content>
+      </Popover.Root>
     {/if}
-    {#if onOpenFiles}
+    {#if onToggleFiles}
       <!-- `aria-disabled`, not the `disabled` attribute: a truly disabled
            button takes no pointer events, so its `title` never appears, and it
            leaves the tab order, so a keyboard user could never reach the reason
            either. The same shape `IcmTree`'s row affordance takes. `refusable`
            (layout.css) is what makes the refusal VISIBLE without hovering —
            this is a fact about the session, not a consequence, so no accent
-           colour and no alarm. -->
+           colour and no alarm.
+           `aria-pressed` rather than a second icon: the pane it names is right
+           there beside the button, so the state needs announcing, not
+           illustrating. -->
+      {@const label = filesOpen ? 'Close the file browser' : 'Open files beside this session'}
       <button
         type="button"
-        title={filesRefusal ?? 'Open files beside this session'}
-        aria-label={filesRefusal
-          ? `Open files beside this session — unavailable: ${filesRefusal.toLowerCase()}`
-          : 'Open files beside this session'}
+        title={filesRefusal ?? label}
+        aria-label={filesRefusal ? `${label} — unavailable: ${filesRefusal.toLowerCase()}` : label}
+        aria-pressed={filesOpen}
         aria-disabled={filesRefusal ? 'true' : undefined}
         onclick={() => {
           if (filesRefusal) return;
-          onOpenFiles();
+          onToggleFiles();
         }}
-        class="refusable text-ink-meta hover:bg-paper-pill hover:text-ink-heading -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+        class={[
+          'refusable hover:bg-paper-pill hover:text-ink-heading -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors',
+          filesOpen ? 'text-ink-heading' : 'text-ink-meta'
+        ]}
       >
         <PanelRight class="size-4" strokeWidth={1.5} aria-hidden="true" />
       </button>

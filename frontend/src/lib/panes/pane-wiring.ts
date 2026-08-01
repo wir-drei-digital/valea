@@ -18,6 +18,7 @@ import { goto } from '$app/navigation';
 import { autoOpen } from './auto-open';
 import { TAB_CAP, resolveTabs, type TabState } from './files-pane-state';
 import { dropSubject, replaceAt } from './pane-edit';
+import { recallFilesPane, rememberFilesPane } from './pane-memory';
 import { paneRefusal } from './pane-offer';
 import {
   PANE_CAP,
@@ -54,6 +55,15 @@ export type PaneWiring = {
    * than click into nothing — see `pane-offer.ts`.
    */
   besideRefusal: (kind: PaneDescriptor['kind']) => string | null;
+  /** Whether a SIDE pane of this kind is on screen — the primary is not one. */
+  besideOpen: (kind: PaneDescriptor['kind']) => boolean;
+  /**
+   * Close the side pane of this kind, if there is one. The other half of a
+   * TOGGLE: a control that opens a pane and then goes dead because the pane it
+   * opened is open is a control that spends most of its life disabled, so the
+   * session header's file browser closes from the same button it opens from.
+   */
+  closeBeside: (kind: PaneDescriptor['kind']) => void;
 };
 
 export function paneWiring(read: {
@@ -190,6 +200,11 @@ export function paneWiring(read: {
       // row will accept.
       openBeside,
       besideRefusal,
+      besideOpen,
+      closeBeside: (kind) => {
+        const at = read.panes().findIndex((p) => p.kind === kind);
+        if (at !== -1) closePane(at);
+      },
       // `replaceState` so Back does not step through the dead composer state.
       sessionCreated: (id) =>
         go(replaceAt(read.panes(), index, { kind: 'chat', sessionId: id }), true),
@@ -252,16 +267,48 @@ export function paneWiring(read: {
    */
   function openBeside(d: PaneDescriptor): void {
     if (besideRefusal(d.kind)) return;
-    go(dedupeSurfaces(read.primary?.() ?? null, [...read.panes(), d]));
+    go(dedupeSurfaces(read.primary?.() ?? null, [...read.panes(), reopened(d)]));
+  }
+
+  /**
+   * A file browser asked for with NOTHING picked is a request for the file
+   * browser, not for an empty one — so it comes back with the tabs it was
+   * closed with (`pane-memory.ts`). Every other descriptor passes through
+   * untouched, including a Files pane that names a file: that caller knows
+   * exactly what it wants shown.
+   */
+  function reopened(d: PaneDescriptor): PaneDescriptor {
+    if (d.kind !== 'files' || d.paths.length > 0) return d;
+    return recallFilesPane(d.mountKey) ?? d;
+  }
+
+  // A user closing a pane is an ordinary navigation: Back reopens it.
+  function closePane(index: number): void {
+    const panes = read.panes();
+    const closing = panes[index];
+    // Remembered on the way out, which is the only moment the tabs and the
+    // intent to close are both in hand. Back still restores the pane from the
+    // URL — this is for the NEXT open, which starts from a control that knows
+    // an ICM and nothing more.
+    if (closing?.kind === 'files') rememberFilesPane(closing);
+    go(replaceAt(panes, index, null));
+  }
+
+  function besideOpen(kind: PaneDescriptor['kind']): boolean {
+    return read.panes().some((p) => p.kind === kind);
   }
 
   return {
     paneContext,
-    // A user closing a pane is an ordinary navigation: Back reopens it.
-    closePane: (index) => go(replaceAt(read.panes(), index, null)),
+    closePane,
     promotePane: (d) => void goto(promoteTarget(d, read.url(), read.panes())),
     openFileSurface,
     besideRefusal,
-    openBeside
+    besideOpen,
+    openBeside,
+    closeBeside: (kind) => {
+      const at = read.panes().findIndex((p) => p.kind === kind);
+      if (at !== -1) closePane(at);
+    }
   };
 }

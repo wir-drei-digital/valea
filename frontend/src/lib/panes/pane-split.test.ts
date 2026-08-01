@@ -3,9 +3,11 @@ import {
   defaultPaneLayout,
   loadFilesSplit,
   loadPaneLayout,
+  loadTreeWidth,
   paneRowLayout,
   saveFilesSplit,
-  savePaneLayout
+  savePaneLayout,
+  saveTreeWidth
 } from './pane-split';
 import type { PaneDescriptor } from './pane-route';
 
@@ -183,6 +185,59 @@ describe('the layout a pane row opens at', () => {
   });
 });
 
+// The bounds are written out (200 / 280 / 480) rather than imported, the same
+// convention `pane-fit.test.ts` keeps: a test that computes its expectation
+// from the constant it is testing cannot notice that constant moving.
+describe('the files tree width', () => {
+  beforeEach(() => {
+    installFakeLocalStorage();
+    localStorage.clear();
+  });
+
+  afterEach(() => removeLocalStorage());
+
+  it('opens at the default until the user drags it', () => {
+    expect(loadTreeWidth()).toBe(280);
+  });
+
+  it('round-trips a dragged width', () => {
+    saveTreeWidth(330);
+    expect(loadTreeWidth()).toBe(330);
+  });
+
+  // Asserted against RAW STORAGE, not through the reader: with only
+  // `save(20) -> load() === 200` the reader's own clamp satisfies the
+  // expectation whatever the writer did, and an unclamped writer would go
+  // unnoticed until something else read the key.
+  it('clamps on the way in', () => {
+    saveTreeWidth(20);
+    expect(localStorage.getItem('valea.files-tree-width')).toBe('200');
+    saveTreeWidth(2000);
+    expect(localStorage.getItem('valea.files-tree-width')).toBe('480');
+  });
+
+  it('clamps on the way out, so a hand-edited entry cannot widen the tree', () => {
+    localStorage.setItem('valea.files-tree-width', '5000');
+    expect(loadTreeWidth()).toBe(480);
+    localStorage.setItem('valea.files-tree-width', '-40');
+    expect(loadTreeWidth()).toBe(200);
+  });
+
+  it('falls back to the default for an unreadable entry', () => {
+    localStorage.setItem('valea.files-tree-width', 'wide please');
+    expect(loadTreeWidth()).toBe(280);
+  });
+
+  // Storage is shared by every Files pane, so it must not carry one pane's
+  // ceiling: the pane-relative squeeze is `clampTreeWidth`'s job at render
+  // time, and baking it in here would shrink every OTHER pane's tree to
+  // whatever the narrowest one could afford.
+  it('stores the preference, not one pane\'s squeeze', () => {
+    saveTreeWidth(460);
+    expect(loadTreeWidth()).toBe(460);
+  });
+});
+
 describe('pane layouts — no localStorage (SSR/guard)', () => {
   beforeEach(() => removeLocalStorage());
 
@@ -190,7 +245,9 @@ describe('pane layouts — no localStorage (SSR/guard)', () => {
     expect(loadPaneLayout(2)).toBeNull();
     expect(paneRowLayout([{ kind: 'chat', sessionId: 's1' }])).toEqual([60, 40]);
     expect(loadFilesSplit()).toBe(40);
+    expect(loadTreeWidth()).toBe(280);
     expect(() => savePaneLayout(2, [60, 40])).not.toThrow();
     expect(() => saveFilesSplit(45)).not.toThrow();
+    expect(() => saveTreeWidth(300)).not.toThrow();
   });
 });

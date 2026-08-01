@@ -17,7 +17,7 @@
   // The store effect below is keyed on the SESSION ID alone for the same
   // family of reasons — an unrelated URL change (e.g. opening a side pane,
   // `?pane=`) must not tear down and rejoin a live session's channel.
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -36,12 +36,7 @@
   } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
   import { turnCount, latestTurnAutoOpenPath } from '$lib/components/agent/auto-open';
-  import {
-    checkExistence,
-    closedRailMemory,
-    deriveFileActivity,
-    shouldAutoOpen
-  } from '$lib/components/agent/file-activity';
+  import { checkExistence, deriveFileActivity } from '$lib/components/agent/file-activity';
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
 
@@ -203,7 +198,7 @@
   });
 
   /**
-   * "Open files beside this session" — files-beside-chat, created from the
+   * The file browser beside this session — files-beside-chat, created from the
    * chat side, replacing the popover file tree this header used to carry.
    *
    * The subject is the session's own ICM, so a session whose mount is not
@@ -213,9 +208,27 @@
    * `besideRefusal`, so this control and the route's agree by construction.
    */
   const canOpenFiles = $derived(openMountKey !== null && context.openBeside !== undefined);
-  const filesRefusal = $derived(context.besideRefusal?.('files') ?? null);
+  /**
+   * A TOGGLE, not an opener. It used to disable itself while a file browser
+   * was open and say "the file browser is already open beside this" — which is
+   * the state it spends most of its life in, and pointing at a pane the user
+   * can plainly see is not worth a control. Pressing it now closes that pane,
+   * and the browser comes back with its tabs when it is pressed again
+   * (`pane-memory.ts`).
+   */
+  const filesOpen = $derived(context.besideOpen?.('files') ?? false);
+  /**
+   * Every refusal EXCEPT "already open", which is what this button now does
+   * rather than what stops it. The rest — the pane cap, a window too narrow —
+   * still apply, because they are about the row this pane would join.
+   */
+  const filesRefusal = $derived(filesOpen ? null : (context.besideRefusal?.('files') ?? null));
 
-  function openFilesBeside(): void {
+  function toggleFilesBeside(): void {
+    if (filesOpen) {
+      context.closeBeside?.('files');
+      return;
+    }
     const key = openMountKey;
     if (!key) return;
     context.openBeside?.({ kind: 'files', mountKey: key, paths: [], active: 0, compare: null });
@@ -422,57 +435,23 @@
     return (relPath: string) => open({ mountKey: key, path: relPath });
   });
 
-  // --- File-activity rail (spec: 2026-07-30-session-file-activity-design) ---
+  // --- File activity (spec: 2026-07-30-session-file-activity-design) --------
   //
   // Aggregation is a plain derived over the same items the transcript reads.
-  // Auto-open fires only on the derived count's 0 -> >0 transition (attach
-  // included), and never for a session the user closed the rail on
-  // (`closedRailMemory`, this app run only). Rendering is additionally gated
-  // on primary placement and container width >= 860px — the rail yields to a
-  // squeezed layout (e.g. an open side pane at PaneHost's 30% minimums).
+  //
+  // IT IS A POPOVER, ALWAYS. It used to be an inline right-hand rail that
+  // OPENED ITSELF the first time a session touched a file, falling back to a
+  // popover only where the rail could not fit — which meant the same session
+  // laid itself out two different ways depending on the window, and the layout
+  // moved under the reader mid-turn, while a pane they had opened on purpose
+  // competed for the same edge. The list is a record you consult, not a
+  // surface you work in, so it now waits behind the header's "Context · N"
+  // pill and nothing but a click opens it.
+  //
+  // Retired with the rail: `shouldAutoOpen` and `ClosedRailMemory`
+  // (`file-activity.ts`), whose whole purpose was remembering that you had
+  // closed something that no longer opens by itself.
   const fileActivities = $derived.by(() => (store ? deriveFileActivity(store.items) : []));
-
-  let railOpen = $state(false);
-  let railCountStore: AgentSessionStore | null = null;
-  let previousFileCount = 0;
-
-  $effect(() => {
-    const current = store;
-    const count = fileActivities.length;
-    if (current !== railCountStore) {
-      // New (or no) session: reset tracking, then let the 0 -> count check
-      // below run against THIS session's own baseline.
-      railCountStore = current;
-      previousFileCount = 0;
-      railOpen = false;
-    }
-    const id = sessionId;
-    if (
-      id !== null &&
-      !railOpen &&
-      shouldAutoOpen(previousFileCount, count, closedRailMemory.isClosed(id))
-    ) {
-      railOpen = true;
-    }
-    previousFileCount = count;
-  });
-
-  // Close/reopen each unmount the control that had focus (the rail's ✕, the
-  // header pill) — without a hand-off, keyboard focus falls to <body> and the
-  // user re-tabs from the top. So each side passes focus to its counterpart
-  // after the DOM settles. The ids are unique per page: rail and pill only
-  // render in the one primary-placement ChatView.
-  function closeRail(): void {
-    railOpen = false;
-    if (sessionId !== null) closedRailMemory.close(sessionId);
-    void tick().then(() => document.getElementById('session-files-pill')?.focus());
-  }
-
-  function reopenRail(): void {
-    railOpen = true;
-    if (sessionId !== null) closedRailMemory.reopen(sessionId);
-    void tick().then(() => document.getElementById('file-activity-rail')?.focus());
-  }
 
   // --- Auto-open a reply's single named file (message-file-links spec §3) ---
   //
@@ -551,21 +530,14 @@
     }
   }
 
-  let viewWidth = $state(0);
-  // Where the INLINE rail can exist at all; when false, the header pill
-  // switches to popover mode (`filesPanel` below) instead of vanishing —
-  // the file-activity affordance defers with the layout, never deletes.
-  const railCanShow = $derived(context.placement === 'primary' && viewWidth >= 860);
-  const showRail = $derived(railOpen && railCanShow && fileActivities.length > 0);
-
   // Existence notes: reality-check changed rows against the mount tree via
   // `ensurePathLoaded` — ONLY its definitive 'missing' marks a row (store
   // issue-#2 contract). Re-runs are scoped to: changed-row-SET changes (the
   // `changedRelPaths` key — the `fileActivities` read below happens AFTER an
   // `await`, which Svelte does not track, so a mere diff/index mutation on an
   // already-listed row doesn't re-trigger), a `groups` REASSIGNMENT (which is
-  // how every `icm_changed` refetch lands), the open mount, rail visibility,
-  // and the effect's own first run on mount. Deliberately NOT the
+  // how every `icm_changed` refetch lands), the open mount, and the effect's
+  // own first run on mount. Deliberately NOT the
   // `onIcmChanged` listener: that fires BEFORE the refetch settles, so a
   // tick-based recheck would walk the stale tree through `loadDir`'s
   // loaded-dir cache and miss a deletion permanently (Codex review finding).
@@ -590,11 +562,10 @@
     void icmStore.groups;
     const key = openMountKey;
     const token = ++existenceRun;
-    // Applicable when the file list is REACHABLE: the inline rail is shown,
-    // or the popover pill is the affordance (`!railCanShow`) — the popover
-    // must not silently omit "no longer exists" notes the rail would show.
-    const applicable = showRail || (!railCanShow && fileActivities.length > 0);
-    if (!applicable || !key) {
+    // Applicable whenever there is a list to reach: the pill is the one
+    // affordance now, and the popover must not silently omit the "no longer
+    // exists" notes.
+    if (fileActivities.length === 0 || !key) {
       missingKeys = new Set();
       return;
     }
@@ -619,15 +590,10 @@
 </script>
 
 {#snippet filesPopover()}
-  <!-- The header pill's popover content where the inline rail can't fit —
-       same component, popover variant (no panel chrome, no ✕, popover
-       dismissal). -->
-  <FileActivityRail
-    variant="popover"
-    activities={fileActivities}
-    {missingKeys}
-    onOpenFile={openToolFile}
-  />
+  <!-- The header pill's popover content, and the only place this list renders
+       now: no panel chrome and no ✕, because the popover card provides the
+       first and its own dismissal the second. -->
+  <FileActivityRail activities={fileActivities} {missingKeys} onOpenFile={openToolFile} />
 {/snippet}
 
 {#if descriptor.kind === 'chat-new'}
@@ -639,7 +605,8 @@
       icmName={openIcmName}
       ended={false}
       archiving={false}
-      onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+      onToggleFiles={canOpenFiles ? toggleFilesBeside : undefined}
+      {filesOpen}
       {filesRefusal}
     />
     <div class="min-h-0 flex-1 overflow-y-auto">
@@ -667,16 +634,16 @@
 {:else if store}
   <!-- Transcript scrolls; the composer (or the ended/starting row) stays
        docked at the pane's bottom edge, per the cockpit chat screen. -->
-  <div bind:clientWidth={viewWidth} class="flex min-h-0 w-full flex-1">
+  <div class="flex min-h-0 w-full flex-1">
     <!-- Full-width column: the header band and its border span the whole
          chat area, and the transcript's scrollbar sits at the pane's right
          edge — while the message stream and composer stay centered at 660px
          inside their own wrappers. -->
     <div class="flex min-h-0 min-w-0 flex-1 flex-col pt-3">
-      <!-- The "Context · N" pill renders only where the rail could actually
-           show (primary placement, >= 860px): elsewhere clicking it would set
-           railOpen, hide the pill, and surface no rail — an inert affordance
-           that deletes itself. -->
+      <!-- The "Context · N" pill is a POPOVER wherever it renders. It used to
+           be a popover only where the inline rail could not fit and a rail
+           opener everywhere else, which made the same pill do two different
+           things depending on how wide the window was. -->
       <SessionHeader
         icmName={openIcmName}
         {ended}
@@ -685,9 +652,9 @@
         onArchive={() => void archiveOpenSession()}
         onDelete={() => void deleteOpenSession()}
         filesCount={fileActivities.length}
-        onShowFiles={railCanShow && !railOpen ? reopenRail : undefined}
-        filesPanel={!railCanShow ? filesPopover : undefined}
-        onOpenFiles={canOpenFiles ? openFilesBeside : undefined}
+        filesPanel={filesPopover}
+        onToggleFiles={canOpenFiles ? toggleFilesBeside : undefined}
+        {filesOpen}
         {filesRefusal}
       />
       {#if archiveError}
@@ -734,19 +701,6 @@
         {/if}
       </div>
     </div>
-    {#if showRail}
-      <!-- The rail appears and disappears instantly: it is opened and closed
-           by direct user action, where an animated width reads as lag on a
-           surface you are already looking at. -->
-      <div class="flex min-h-0 shrink-0">
-        <FileActivityRail
-          activities={fileActivities}
-          {missingKeys}
-          onOpenFile={openToolFile}
-          onClose={closeRail}
-        />
-      </div>
-    {/if}
   </div>
 {:else}
   <p class="text-ink-meta px-8 py-8 text-[13px]">Loading…</p>

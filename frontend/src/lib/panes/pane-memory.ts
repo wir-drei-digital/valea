@@ -18,10 +18,12 @@ import {
   dedupeSurfaces,
   parsePaneParam,
   serializePaneParam,
+  type FilesPaneDescriptor,
   type PaneDescriptor
 } from './pane-route';
 
 const CONTENT_PREFIX = 'valea.content.';
+const FILES_PREFIX = 'valea.files-pane.';
 const CHROME_KEY = 'valea.pane-chrome';
 const NAV_KEY = 'valea.nav-visible';
 const VERSION = 1;
@@ -124,6 +126,51 @@ export function restoreTarget(input: {
     input.navVisible
   );
   return fitted.length > 0 ? fitted : null;
+}
+
+/**
+ * What a file browser had open when it was closed, per ICM — so opening one
+ * again from a session comes back to the tabs you left, not to an empty pane.
+ *
+ * This is the one place content is remembered outside the URL, and the reason
+ * is that the URL cannot hold it: closing a pane is exactly a navigation that
+ * REMOVES it from the URL, and the control that reopens it (the session
+ * header's file-browser toggle) names an ICM and nothing else. Without this,
+ * "close it to read the transcript, open it again" costs every tab — the one
+ * flow the toggle exists to make cheap.
+ *
+ * The route-level `loadPanes`/`savePanes` above cannot serve it: that restores
+ * a whole row on route ENTRY, and this is a close and a reopen WITHIN a route,
+ * where the URL has already spoken and always wins.
+ *
+ * Keyed by mount, because another ICM is another file browser with its own
+ * tabs. Stored as the pane's own wire form, so the codec is the only thing
+ * that ever has to agree with itself about what a Files pane is.
+ *
+ * A browser closed with NOTHING open erases the entry rather than storing an
+ * empty one: a row the user emptied on purpose must not come back tomorrow.
+ */
+export function rememberFilesPane(d: FilesPaneDescriptor): void {
+  try {
+    if (d.paths.length === 0) localStorage.removeItem(FILES_PREFIX + d.mountKey);
+    else localStorage.setItem(FILES_PREFIX + d.mountKey, serializePaneParam(d));
+  } catch {
+    // best-effort persistence only
+  }
+}
+
+/** `null` when nothing is remembered, or when what is stored is not this ICM's browser. */
+export function recallFilesPane(mountKey: string): FilesPaneDescriptor | null {
+  try {
+    const parsed = parsePaneParam(localStorage.getItem(FILES_PREFIX + mountKey));
+    if (parsed === null || parsed.kind !== 'files') return null;
+    // The key already names the mount, so a descriptor naming another one is a
+    // corrupted or hand-edited entry — and opening a browser onto the wrong
+    // ICM is worse than opening an empty one.
+    return parsed.mountKey === mountKey && parsed.paths.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export function loadChrome(): PaneChrome {

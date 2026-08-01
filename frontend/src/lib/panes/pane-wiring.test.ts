@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { paneWiring } from './pane-wiring';
 import { alreadyOpenRefusal } from './pane-offer';
 import { dedupeSurfaces, parsePanes, type PaneDescriptor } from './pane-route';
@@ -267,5 +267,123 @@ describe('openBeside — the gate every pane-opening control shares', () => {
     expect(h.context().besideRefusal?.('files')).toBe(h.wiring.besideRefusal('files'));
     h.context().openBeside?.({ kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null });
     expect(h.navigated()).toBe(0);
+  });
+});
+
+describe('besideOpen / closeBeside — the other half of a toggle', () => {
+  it('reports only PANES, never the route primary', () => {
+    // `besideRefusal` deliberately counts the primary too, because
+    // `dedupeSurfaces` does. This one must not: a control that toggled on the
+    // primary would offer to close a pane that does not exist.
+    const primary: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null };
+    const h = host('/knowledge/life/A.md', primary, () => 2);
+    expect(h.wiring.besideRefusal('files')).toBe(alreadyOpenRefusal('files'));
+    expect(h.wiring.besideOpen('files')).toBe(false);
+  });
+
+  it('reports a pane of that kind, and closes it', () => {
+    const h = host(`/chat?session=s1&pane=${life}`);
+    expect(h.wiring.besideOpen('files')).toBe(true);
+    h.wiring.closeBeside('files');
+    h.land();
+    expect(h.panes()).toEqual([]);
+    expect(h.wiring.besideOpen('files')).toBe(false);
+  });
+
+  it('leaves the other panes alone', () => {
+    const h = host(`/chat?session=s1&pane=${life}&pane=mail:me@x.test`);
+    h.wiring.closeBeside('files');
+    h.land();
+    expect(h.panes()).toEqual([{ kind: 'mail', account: 'me@x.test', msgId: null }]);
+  });
+
+  it('does nothing when no pane of that kind is open', () => {
+    const h = host('/chat?session=s1');
+    h.wiring.closeBeside('files');
+    expect(h.navigated()).toBe(0);
+  });
+});
+
+describe('reopening a file browser', () => {
+  // These are the only wiring tests that need storage: closing a Files pane
+  // writes what it had open, and opening an EMPTY one reads it back.
+  function installFakeLocalStorage(): void {
+    const data = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (key: string) => (data.has(key) ? data.get(key)! : null),
+        setItem: (key: string, value: string) => void data.set(key, value),
+        removeItem: (key: string) => void data.delete(key),
+        clear: () => data.clear()
+      },
+      configurable: true,
+      writable: true
+    });
+  }
+
+  beforeEach(() => installFakeLocalStorage());
+  afterEach(() => {
+    // @ts-expect-error - restoring the node environment's missing global
+    delete globalThis.localStorage;
+  });
+
+  /** Two tabs, the second showing — `notes/B.md` is per-segment encoded. */
+  const opened = 'files:life/A.md|notes%2FB.md@1';
+  const emptyBrowser: PaneDescriptor = {
+    kind: 'files',
+    mountKey: 'life',
+    paths: [],
+    active: 0,
+    compare: null
+  };
+
+  it('comes back with the tabs it was closed with', () => {
+    // THE flow: open the browser from a session, read two files, close it to
+    // give the transcript the width, open it again. Reopening to an empty pane
+    // costs every tab and makes the toggle expensive to use.
+    const h = host(`/chat?session=s1&pane=${opened}`);
+    h.wiring.closeBeside('files');
+    h.land();
+    expect(h.panes()).toEqual([]);
+
+    h.wiring.openBeside(emptyBrowser);
+    h.land();
+    expect(h.panes()).toEqual([
+      { kind: 'files', mountKey: 'life', paths: ['A.md', 'notes/B.md'], active: 1, compare: null }
+    ]);
+  });
+
+  it('opens empty when that ICM has no browser to remember', () => {
+    const h = host('/chat?session=s1');
+    h.wiring.openBeside(emptyBrowser);
+    h.land();
+    expect(h.panes()).toEqual([emptyBrowser]);
+  });
+
+  it('never overrides a caller that named a file', () => {
+    // A citation, a link, a cross-ICM re-point: those callers know exactly
+    // what they want shown, and substituting yesterday's tabs would bury it.
+    const h = host(`/chat?session=s1&pane=${opened}`);
+    h.wiring.closeBeside('files');
+    h.land();
+    const named: PaneDescriptor = {
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['C.md'],
+      active: 0,
+      compare: null
+    };
+    h.wiring.openBeside(named);
+    h.land();
+    expect(h.panes()).toEqual([named]);
+  });
+
+  it('remembers per ICM', () => {
+    const h = host(`/chat?session=s1&pane=${opened}`);
+    h.wiring.closeBeside('files');
+    h.land();
+    h.wiring.openBeside({ ...emptyBrowser, mountKey: 'w3d' });
+    h.land();
+    expect(h.panes()).toEqual([{ ...emptyBrowser, mountKey: 'w3d' }]);
   });
 });

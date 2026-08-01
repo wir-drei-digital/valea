@@ -3,13 +3,15 @@ import {
   loadChrome,
   loadNavVisible,
   loadPanes,
+  recallFilesPane,
+  rememberFilesPane,
   restoreTarget,
   routeKeyFor,
   savePanes,
   saveChrome,
   saveNavVisible
 } from './pane-memory';
-import { serializePaneParam, type PaneDescriptor } from './pane-route';
+import { serializePaneParam, type FilesPaneDescriptor, type PaneDescriptor } from './pane-route';
 
 // This vitest setup runs on the default (node) environment, where the
 // `localStorage` global is not a usable Web Storage object — the same
@@ -268,10 +270,76 @@ describe('chrome preferences', () => {
 
 // Panes are read on the server too, where there is no storage at all. Losing
 // the memory is correct there; throwing would take the whole render down.
+describe('the file browser a session reopens', () => {
+  const browser: FilesPaneDescriptor = {
+    kind: 'files',
+    mountKey: 'life',
+    paths: ['A.md', 'notes/B.md'],
+    active: 1,
+    compare: null
+  };
+
+  beforeEach(() => {
+    installFakeLocalStorage();
+    localStorage.clear();
+  });
+
+  afterEach(() => removeLocalStorage());
+
+  it('remembers nothing until a browser is closed', () => {
+    expect(recallFilesPane('life')).toBeNull();
+  });
+
+  it('brings back the tabs and which one was showing', () => {
+    rememberFilesPane(browser);
+    expect(recallFilesPane('life')).toEqual(browser);
+  });
+
+  it('keeps a comparison', () => {
+    const compared = { ...browser, active: 0, compare: 1 };
+    rememberFilesPane(compared);
+    expect(recallFilesPane('life')).toEqual(compared);
+  });
+
+  // Another ICM is another file browser, and opening one onto the wrong
+  // workspace's files would be worse than opening an empty one.
+  it('is per ICM', () => {
+    rememberFilesPane(browser);
+    expect(recallFilesPane('w3d')).toBeNull();
+    rememberFilesPane({ ...browser, mountKey: 'w3d', paths: ['CONTEXT.md'], active: 0 });
+    expect(recallFilesPane('life')).toEqual(browser);
+    expect(recallFilesPane('w3d')?.paths).toEqual(['CONTEXT.md']);
+  });
+
+  it('forgets a browser closed with nothing open', () => {
+    rememberFilesPane(browser);
+    rememberFilesPane({ ...browser, paths: [], active: 0 });
+    // Closing every tab and then the pane is a deliberate clean slate; the
+    // row must not come back tomorrow.
+    expect(recallFilesPane('life')).toBeNull();
+  });
+
+  it('refuses an entry that names another ICM than its key', () => {
+    // Only reachable by hand-editing storage — and a browser that opens onto
+    // the wrong workspace is the one outcome worse than an empty one.
+    localStorage.setItem('valea.files-pane.life', serializePaneParam(browser).replace('life', 'w3d'));
+    expect(recallFilesPane('life')).toBeNull();
+  });
+
+  it('refuses an unreadable entry rather than throwing at the caller', () => {
+    localStorage.setItem('valea.files-pane.life', 'not a pane param');
+    expect(recallFilesPane('life')).toBeNull();
+  });
+});
+
 describe('pane memory — no localStorage (SSR/guard)', () => {
   beforeEach(() => removeLocalStorage());
 
   it('degrades to empty memory and swallows the failed writes', () => {
+    expect(recallFilesPane('life')).toBeNull();
+    expect(() =>
+      rememberFilesPane({ kind: 'files', mountKey: 'life', paths: ['A.md'], active: 0, compare: null })
+    ).not.toThrow();
     expect(loadPanes('chat')).toEqual([]);
     expect(loadChrome()).toEqual({ files: { tree: true }, chat: { sessions: false } });
     expect(() => savePanes('chat', [chat])).not.toThrow();

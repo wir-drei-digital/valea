@@ -203,6 +203,9 @@
     openFile: wiring.openFileSurface,
     openBeside: wiring.openBeside,
     besideRefusal: wiring.besideRefusal,
+    // The other two thirds of the session header's file-browser TOGGLE.
+    besideOpen: wiring.besideOpen,
+    closeBeside: wiring.closeBeside,
     onArchived: afterArchive
   };
 </script>

@@ -74,6 +74,20 @@ export type PaneContext = {
    * the window and with the row.
    */
   besideRefusal?: (kind: PaneDescriptor['kind']) => string | null;
+  /**
+   * Whether a SIDE pane of this kind is already on screen. A THUNK for the
+   * same reason `besideRefusal` is, and deliberately NOT the same question:
+   * that one counts the route's own primary too, because `dedupeSurfaces`
+   * does. This one counts only panes, because only a pane can be closed.
+   */
+  besideOpen?: (kind: PaneDescriptor['kind']) => boolean;
+  /**
+   * Close the side pane of this kind. Paired with `openBeside` and
+   * `besideOpen` to make one control a TOGGLE — the alternative is a button
+   * that opens a pane and then greys itself out for as long as the pane it
+   * opened is open, which is most of the time.
+   */
+  closeBeside?: (kind: PaneDescriptor['kind']) => void;
   /** A chat-new view created its session — host rewrites its descriptor to `chat:<id>`. */
   sessionCreated?: (id: string) => void;
   /** The view's whole subject was archived/removed — host closes this pane. */

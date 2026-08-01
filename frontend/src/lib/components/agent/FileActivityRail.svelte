@@ -1,10 +1,10 @@
 <script lang="ts">
-  // The session file-activity rail (spec:
-  // docs/superpowers/specs/2026-07-30-session-file-activity-design.md).
+  // The session's file-activity list (spec:
+  // docs/superpowers/specs/2026-07-30-session-file-activity-design.md), shown
+  // in the session header's "Context · N" popover.
   // One row per touched file; badges tell read-only from changed; diffs are
-  // hidden until a row is expanded. Presentational: aggregation, auto-open,
-  // and existence checks are the host's job (ChatView) — this renders what
-  // it is given.
+  // hidden until a row is expanded. Presentational: aggregation and existence
+  // checks are the host's job (ChatView) — this renders what it is given.
   //
   // SECURITY: names, dirs, paths, and diff text are agent-produced content —
   // plain interpolation only, {@html} is FORBIDDEN (same rule as every
@@ -18,7 +18,6 @@
   // note, and the badge — the badge text is the non-color carrier of
   // read-vs-changed, so masking it breaks information parity. All children are
   // plain text, so the computed name already reads the whole row.
-  import X from '@lucide/svelte/icons/x';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
   import DiffBlock from '$lib/components/diff/DiffBlock.svelte';
@@ -28,23 +27,11 @@
   let {
     activities,
     missingKeys,
-    onOpenFile,
-    onClose,
-    variant = 'rail'
+    onOpenFile
   }: {
     activities: FileActivity[];
     missingKeys: ReadonlySet<string>;
     onOpenFile?: (relPath: string) => void;
-    /** Rail variant only — the popover variant dismisses via its own primitive. */
-    onClose?: () => void;
-    /**
-     * 'rail' is the inline right column. 'popover' hosts the same list
-     * inside the header pill's popover when the inline rail cannot fit
-     * (narrow view, side-pane placement) — no border/panel chrome (the
-     * popover card provides it), no ✕, no focus-target id (ids must stay
-     * unique: an inline rail elsewhere on the page may hold them).
-     */
-    variant?: 'rail' | 'popover';
   } = $props();
 
   const BADGE_LABEL: Record<FileActivity['kindBadge'], string> = {
@@ -94,48 +81,18 @@
   }
 </script>
 
-<!-- tabindex="-1" (rail variant): the host moves focus here when the header
-     pill reopens the rail, so keyboard users land where they asked to go
-     instead of <body>. bg-paper-panel is the design system's dedicated rail
-     surface; the popover variant sits on the popover card instead. -->
-<aside
-  id={variant === 'rail' ? 'file-activity-rail' : undefined}
-  tabindex="-1"
-  class={[
-    'flex flex-col outline-none',
-    variant === 'rail'
-      ? 'border-paper-hairline bg-paper-panel w-[300px] shrink-0 border-l'
-      : 'max-h-96 w-[300px]'
-  ]}
-  aria-label="Context files this session read or changed"
->
-  <!-- Rail variant matches the chat header's vertical band exactly (the
-       host column's pt-3 + content + pb-2), so the two border-b lines read
-       as one continuous rule across the pane. min-h-6 pins the content row
-       to the same 24px the chat header's controls set. -->
-  <div
-    class={[
-      'border-paper-hairline flex items-center gap-2 border-b px-3',
-      variant === 'rail' ? 'pt-3 pb-2' : 'py-2'
-    ]}
-  >
+<!-- It lives in the header pill's popover, and only there. It used to also be
+     an inline right-hand column that opened itself the first time a session
+     touched a file — retired, with its `variant` prop, its ✕ and its
+     focus-target id, when the popover became the one way in. No panel chrome
+     or surface colour here: the popover card provides both. -->
+<aside class="flex max-h-96 w-[300px] flex-col" aria-label="Context files this session read or changed">
+  <div class="border-paper-hairline flex items-center gap-2 border-b px-3 py-2">
     <!-- h2: gives screen-reader rotor users a landmark inside the aside.
          One string, matching the header pill's "Context · N" exactly. -->
     <h2 class="text-ink-heading flex min-h-6 items-center text-[12.5px] font-medium">
       Context · <span class="text-ink-meta font-normal">&nbsp;{activities.length}</span>
     </h2>
-    {#if variant === 'rail' && onClose}
-      <!-- size-8 with negative margin: a ≥32px hit target (product floor)
-           without growing the header bar. -->
-      <button
-        type="button"
-        onclick={onClose}
-        aria-label="Close context panel"
-        class="text-ink-meta hover:bg-paper-pill hover:text-ink-heading focus-visible:ring-ring/50 -my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
-      >
-        <X class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    {/if}
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto py-1">

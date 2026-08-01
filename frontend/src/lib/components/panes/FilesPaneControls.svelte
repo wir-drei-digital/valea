@@ -24,9 +24,11 @@
    *
    * COMPARE is the exception, and the reason it belongs here rather than in the
    * strip: it names no file at all. It puts the tab you are reading beside the
-   * one you were reading before it, which is a property of the pane, not of any
-   * row. It is also the last control in this feature that depends on a width,
-   * because two columns genuinely do compete for the content area.
+   * one you were reading before it — or, with nothing to put there, beside an
+   * empty column waiting for the next file picked. Either way it is a property
+   * of the pane, not of any row. It is also the last control in this feature
+   * that depends on a width, because two columns genuinely do compete for the
+   * content area.
    *
    * Both pressed states read what is RENDERED (`treeShown`, `compareShown`),
    * never the preference or the descriptor: the body drops the tree when the
@@ -69,6 +71,14 @@
   function basename(path: string): string {
     return path.split('/').pop() ?? path;
   }
+
+  /**
+   * Whether the pending tab has the content area to ITSELF, which is when no
+   * open tab may read as showing. Compare's armed second column is the case
+   * that is not: the active tab keeps the left column, so it is still on
+   * screen and the strip must say so.
+   */
+  const blank = $derived(pane.pendingTab && !pane.compareShown);
 
   /**
    * The scrolling chip list, so the strip can hold the active tab in view.
@@ -155,8 +165,7 @@
          partner while two columns are rendered, and NEITHER while a pending tab
          holds the content area. -->
       {@const showing =
-        !pane.pendingTab &&
-        (i === descriptor.active || (pane.compareShown && i === descriptor.compare))}
+        !blank && (i === descriptor.active || (pane.compareShown && i === descriptor.compare))}
       <!-- `min-w-[88px]` is the floor that makes overflow structurally
            impossible rather than merely unlikely: no chip can be narrower than
            the label button's own padding, so the button can never overhang the
@@ -223,32 +232,39 @@
           class="text-ink-meta min-w-0 flex-1 truncate py-1.5 pr-8 pl-2.5 text-[12px] italic"
           aria-current="true"
         >
-          New tab
+          {pane.pendingCompare ? 'Compare with…' : 'New tab'}
         </span>
         <button
           type="button"
           title="Close tab"
           aria-label="Close the new tab"
-          onclick={() => (pane.pendingTab = false)}
+          onclick={() => pane.clearPendingTab()}
           class="text-ink-meta hover:text-ink-heading focus-visible:ring-ring/50 absolute top-0 right-0 flex size-8 items-center justify-center rounded-r-md bg-inherit transition-colors outline-none focus-visible:ring-2"
         >
           <X class="size-3" strokeWidth={1.5} />
         </button>
       </div>
     {/if}
-  </div>
 
-  <!-- OUTSIDE the scroll box: ＋ is how you get a seventh tab, and a control
-       that scrolls away with the sixth is a control you cannot reach. -->
-  <button
-    type="button"
-    title="New tab"
-    aria-label="New tab"
-    onclick={() => (pane.pendingTab = true)}
-    class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
-  >
-    <Plus class="size-3.5" strokeWidth={1.5} />
-  </button>
+    <!-- INSIDE the scroll box, immediately after the last tab, which is where a
+         "one more" control belongs — it reads as the end of the strip rather
+         than as a third member of the icon group on the right, and it moves
+         with the tabs it appends to.
+         The cost is that a full strip can scroll it out of view. It is the
+         cheaper of the two: the chips have a `min-w-[88px]` floor, so a strip
+         narrow enough to hide ＋ is one that is already scrolling, and pressing
+         it scrolls the pending chip — its immediate neighbour — back into
+         view. -->
+    <button
+      type="button"
+      title="New tab"
+      aria-label="New tab"
+      onclick={() => pane.startPendingTab()}
+      class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+    >
+      <Plus class="size-3.5" strokeWidth={1.5} />
+    </button>
+  </div>
 </div>
 
 <!-- Same `aria-disabled` rule as the tree toggle below. The guard lives in the

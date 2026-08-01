@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * The file browser as ONE pane: a tab strip above the content, the file the
-   * active tab names below it, and an optional 240px ICM tree down the RIGHT
-   * edge. From the outside it is a single pane, which is the whole point —
+   * active tab names below it, and an optional, resizable ICM tree down the
+   * RIGHT edge. From the outside it is a single pane, which is the whole point —
    * nothing outside this component can observe that the tree relates to the
    * content, so there is no cross-pane sync to arrange.
    *
@@ -37,7 +37,14 @@
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { icmToNav, knowledgeHref } from '$lib/shell/nav';
   import { ancestorHrefs } from '$lib/shell/reveal-path';
-  import { TREE_W, splitsThatFit, treeFits } from '$lib/shell/pane-fit';
+  import {
+    TREE_MAX,
+    TREE_MIN,
+    TREE_W,
+    clampTreeWidth,
+    splitsThatFit,
+    treeFits
+  } from '$lib/shell/pane-fit';
   import { loadFilesSplit, saveFilesSplit } from '$lib/panes/pane-split';
   import {
     TAB_CAP,
@@ -66,6 +73,16 @@
   }: { descriptor: FilesPaneDescriptor; context: PaneContext; state: FilesPaneState } = $props();
 
   let paneWidth = $state(0);
+  /** The whole row (content + resizer + tree), so a drag can measure from its right edge. */
+  let row = $state<HTMLElement | null>(null);
+
+  /**
+   * What the tree RENDERS at: the user's stored width, squeezed by whatever
+   * this pane can spare. Everything reads this — the arithmetic below, the
+   * column itself, the resizer's ARIA values — so no two of them can disagree
+   * about how wide the navigator is.
+   */
+  const treeW = $derived(clampTreeWidth(pane.treeWidth, paneWidth));
 
   /** The descriptor's content half, in the shape the pure rules take. */
   const tabs = $derived<TabState>({
@@ -109,9 +126,9 @@
    * The rule is unchanged by the move to tabs; it simply measures the other
    * side of the pane now.
    */
-  const treeShown = $derived(pane.treeVisible && treeFits(paneWidth, descriptor.paths.length));
+  const treeShown = $derived(pane.treeVisible && treeFits(paneWidth, descriptor.paths.length, treeW));
   $effect(() => {
-    pane.treeBlocked = treeFits(paneWidth, descriptor.paths.length)
+    pane.treeBlocked = treeFits(paneWidth, descriptor.paths.length, treeW)
       ? null
       : 'Not enough width for the tree beside a file';
   });
@@ -120,14 +137,15 @@
    * The compare escape, and the ONE place a width still decides what a Files
    * pane may hold: two columns genuinely do compete for the content area, so
    * `splitsThatFit` still governs them — measured against what is RENDERED,
-   * because a tree the width just took away is 240px the columns get to keep.
+   * because a tree the width just took away is width the columns get to keep,
+   * and a tree the user dragged wider is width they do not.
    *
    * Below the threshold compare falls back to the active tab alone WITHOUT
    * rewriting the descriptor, so widening the window brings the comparison
    * back. The header reads `compareShown`, never the raw descriptor, or its
    * pressed state would announce a second column that is not on screen.
    */
-  const compareFits = $derived(splitsThatFit(paneWidth, treeShown) >= 2);
+  const compareFits = $derived(splitsThatFit(paneWidth, treeShown ? treeW : 0) >= 2);
   // ORDER IS LOAD-BEARING. `compareFits` first, so `paneWidth` is read on every
   // evaluation and is therefore a dependency of this derived even while
   // compare is off. With `descriptor.compare !== null` first, a pane that
@@ -137,14 +155,33 @@
   // exact starvation tabs exist to end — while the header button reported
   // both `aria-pressed="true"` and `aria-disabled="true"`. Found in a live
   // browser; no unit test in this repo can see it.
-  const compareShown = $derived(compareFits && descriptor.compare !== null);
+  //
+  // `pendingCompare` counts as compare being ON: two columns are on screen,
+  // the right one simply has no file in it yet. The header must read pressed
+  // for the same reason it must not when the width has dropped a column — it
+  // describes what is rendered.
+  const compareShown = $derived(compareFits && (descriptor.compare !== null || pane.pendingCompare));
   $effect(() => {
     pane.compareShown = compareShown;
+    // A SECOND TAB IS NO LONGER A PRECONDITION. Compare used to refuse below
+    // two tabs and say "open a second tab to compare", which asked the user to
+    // do by hand the one thing the control could obviously do for them —
+    // pressing it now opens the empty second column and the next file picked
+    // lands in it. What is left is the one case with nothing to put in the
+    // LEFT column: an empty pane.
     pane.compareBlocked = !compareFits
       ? 'Not enough width for two files side by side'
-      : descriptor.paths.length < 2
-        ? 'Open a second tab to compare'
+      : descriptor.paths.length === 0
+        ? 'Open a file to compare'
         : null;
+  });
+
+  // Nothing to be the left column any more — the last tab closed under an
+  // armed second column. Disarming here rather than in `closeAt` catches every
+  // route to an empty pane, including the ones this component never sees
+  // (a delete followed through `follow-mutation.ts`, Back, a hand-edited URL).
+  $effect(() => {
+    if (pane.pendingCompare && descriptor.paths.length === 0) pane.clearPendingTab();
   });
 
   const treeNav = $derived(
@@ -239,19 +276,46 @@
     // rules run, because they are what would make it look like an open.
     const placed = !descriptor.paths.includes(path);
     const next = pane.pendingTab ? openInNewTab(tabs, path) : openInActiveTab(tabs, path);
-    pane.pendingTab = false;
-    if (placed) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
-    apply(next);
+    place(next, placed);
   }
 
   /** The row's "Open in a new tab" affordance. Same claim release for the tab it lands in. */
   function openInTab(path: string): void {
     if (newTabDisabled) return;
     const placed = !descriptor.paths.includes(path);
-    const next = openInNewTab(tabs, path);
-    pane.pendingTab = false;
+    place(openInNewTab(tabs, path), placed);
+  }
+
+  /**
+   * What both openers do once the rules have answered: release the claim on the
+   * tab the file landed in, fill an armed compare column if there is one, and
+   * retire the pending tab either way.
+   *
+   * The claim is released against `next.active` — where the file was PLACED —
+   * not against what ends up showing, which compare moves.
+   */
+  function place(next: TabState, placed: boolean): void {
+    const shown = pane.pendingCompare ? pairWithPrevious(next) : next;
+    pane.clearPendingTab();
     if (placed) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
-    apply(next);
+    apply(shown);
+  }
+
+  /**
+   * Compare's armed second column being filled: the file just picked takes the
+   * RIGHT column and the tab that was already showing keeps the LEFT one —
+   * which is the arrangement the two columns promised while the right one was
+   * still empty. Activating the new tab instead would swap the sides under the
+   * reader.
+   *
+   * `descriptor.active` still names the same file: an appended tab renumbers
+   * nothing, and `openInNewTab` at the cap replaces in place and never takes
+   * the active tab. Picking the tab that is already showing leaves nothing to
+   * compare, and `resolveTabs` drops the partner rather than pairing a file
+   * with itself.
+   */
+  function pairWithPrevious(next: TabState): TabState {
+    return resolveTabs(next.paths, descriptor.active, next.active);
   }
 
   /**
@@ -259,7 +323,7 @@
    * The assistant may go on recycling the tab it made while you read another.
    */
   function showTab(index: number): void {
-    pane.pendingTab = false;
+    pane.clearPendingTab();
     const next = activateTab(tabs, index);
     if (next !== tabs) apply(next);
   }
@@ -284,8 +348,23 @@
       apply({ ...tabs, compare: null });
       return;
     }
+    // An armed-but-unfilled second column is compare being ON, so pressing
+    // again turns it off — and takes the empty tab with it rather than leaving
+    // a stray "New tab" chip behind as the only trace of a comparison that
+    // never happened.
+    if (pane.pendingCompare) {
+      pane.clearPendingTab();
+      return;
+    }
     const target = compareTarget(tabs, previousPath === null ? null : tabs.paths.indexOf(previousPath));
-    if (target === null) return;
+    // Nothing to put beside the active tab: the second column opens EMPTY and
+    // waits for a file, which is what the tree click after it is for. The one
+    // pane this cannot serve — no tabs at all — never reaches here, because
+    // `compareBlocked` refuses it.
+    if (target === null) {
+      pane.startPendingTab(true);
+      return;
+    }
     apply(resolveTabs(tabs.paths, tabs.active, target));
   }
 
@@ -365,7 +444,10 @@
     pane.autoPath = next.autoIndex === null ? null : next.paths[next.autoIndex];
     // Already the tab on screen — nothing to navigate for.
     if (next.paths === descriptor.paths && at === descriptor.active) return;
-    pane.pendingTab = false;
+    // The assistant does NOT fill an armed compare column: the user armed it
+    // for a file they were about to pick, and a citation arriving in the
+    // meantime would take the slot they opened.
+    pane.clearPendingTab();
     apply(resolveTabs(next.paths, at, descriptor.compare));
   }
 
@@ -392,22 +474,92 @@
     return () => context.registerFileTarget?.(null);
   });
 
-  /** What the content area renders: one file, or two when compare is on. */
+  /**
+   * The FILES the content area renders: one, or two when compare is on. A BARE
+   * pending tab empties it — the empty state takes the whole pane, which is
+   * what "＋, now pick something" looks like. An ARMED one does not: the file
+   * being read keeps the left column and only the right one is waiting.
+   */
   const columns = $derived(
-    descriptor.paths.length === 0 || pane.pendingTab
+    descriptor.paths.length === 0 || (pane.pendingTab && !pane.pendingCompare)
       ? []
       : compareShown && descriptor.compare !== null
         ? [descriptor.paths[descriptor.active], descriptor.paths[descriptor.compare]]
         : [descriptor.paths[descriptor.active]]
   );
 
+  /**
+   * Compare's second column, open and waiting for a file — rendered BESIDE
+   * `columns` rather than as an entry in it, so nothing downstream has to
+   * carry a column that is not a file. Gated on `compareShown`, so a pane too
+   * narrow for two columns falls back to the active file alone and keeps the
+   * arming, exactly as a filled comparison falls back.
+   */
+  const pendingColumn = $derived(
+    compareShown && pane.pendingCompare && descriptor.compare === null
+  );
+
+  // --- Resizing the tree ----------------------------------------------------
+  //
+  // Hand-rolled rather than wrapped in paneforge, unlike the compare splits
+  // beside it, and the unit is why: paneforge lays out in PERCENTAGES, and a
+  // navigator stored as a percentage is thin to the point of uselessness in a
+  // narrow side pane and a second reading column in a wide primary — from one
+  // stored number. It is also the unit `pane-fit.ts` reasons in, so a
+  // percentage would have to be converted back before anything could ask
+  // whether the tree still fits beside a file.
+  //
+  // What it keeps from `PaneResizer` is everything the user meets: the same
+  // 3px hairline, the same hover, `role="separator"` with live values, and
+  // arrow-key resizing for anyone not using a pointer.
+  const TREE_NUDGE = 16;
+
+  function setTreeWidth(px: number): void {
+    pane.treeWidth = clampTreeWidth(px, paneWidth);
+  }
+
+  function startTreeResize(event: PointerEvent): void {
+    const handle = event.currentTarget as HTMLElement;
+    // Measured from the ROW's right edge, which is the tree's outer edge, so
+    // the width follows the pointer exactly however the pane is scrolled or
+    // positioned. Captured once at pointerdown: re-measuring mid-drag would
+    // read a box the drag is itself changing.
+    const edge = row?.getBoundingClientRect().right;
+    if (edge === undefined) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    const drag = (move: PointerEvent): void => setTreeWidth(edge - move.clientX);
+    const stop = (): void => {
+      handle.removeEventListener('pointermove', drag);
+      handle.removeEventListener('pointerup', stop);
+      handle.removeEventListener('pointercancel', stop);
+      // Written ONCE, at the end: a drag crosses hundreds of pixels and every
+      // one of them would otherwise be a `localStorage` write.
+      pane.commitTreeWidth();
+    };
+    handle.addEventListener('pointermove', drag);
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
+  }
+
+  function onTreeResizeKey(event: KeyboardEvent): void {
+    // The tree is on the RIGHT, so left grows it. Nudged from what is ON
+    // SCREEN (`treeW`), not from the stored preference — a tree the pane is
+    // currently squeezing would otherwise jump on the first key.
+    const step = event.key === 'ArrowLeft' ? TREE_NUDGE : event.key === 'ArrowRight' ? -TREE_NUDGE : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    setTreeWidth(treeW + step);
+    pane.commitTreeWidth();
+  }
+
 </script>
 
-<div bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
+<div bind:this={row} bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     {#if columns.length === 0}
       <p class="text-ink-meta m-auto px-6 text-[12.5px]">Pick a file to read it.</p>
-    {:else if columns.length === 1}
+    {:else if columns.length === 1 && !pendingColumn}
       <!-- One file, the whole content area, at any pane width. That is the
            point of the tab strip above it. -->
       <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
@@ -457,18 +609,67 @@
             </div>
           </Pane>
         {/each}
+        {#if pendingColumn}
+          <PaneResizer
+            aria-label="Resize the compared files"
+            class="bg-paper-hairline hover:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize transition-colors"
+          />
+          <!-- Compare's second column before it has a file. It is a real
+               column rather than a hint over the first one: the point of
+               pressing Compare with a single tab open is to SEE the space the
+               next file will land in, beside the one already being read. -->
+          <Pane order={2} minSize={20} class="flex min-h-0 min-w-0 flex-col">
+            <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+              <span class="text-ink-meta min-w-0 flex-1 truncate text-[11px] italic">New tab</span>
+            </div>
+            <p class="text-ink-meta m-auto px-6 text-center text-[12.5px]">
+              Pick a file to compare.
+            </p>
+          </Pane>
+        {/if}
       </PaneGroup>
     {/if}
   </div>
 
   {#if treeShown}
+    <!-- Resizable, in pixels — see `startTreeResize`. It sits between the
+         content and the tree and looks exactly like the resizer between two
+         compared files, because it is the same gesture on the same kind of
+         edge.
+         The suppressions are the ARIA window-splitter pattern, which is a
+         FOCUSABLE `separator` with live values (the same shape paneforge's own
+         `PaneResizer` renders): Svelte's rule reads `separator` as
+         non-interactive and so objects to both the `tabindex` that makes it
+         keyboard-reachable and the handlers that make it do anything. Removing
+         either is what would break accessibility here, not keeping it. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the file tree"
+      aria-valuenow={treeW}
+      aria-valuemin={TREE_MIN}
+      aria-valuemax={TREE_MAX}
+      tabindex="0"
+      onpointerdown={startTreeResize}
+      onkeydown={onTreeResizeKey}
+      ondblclick={() => {
+        setTreeWidth(TREE_W);
+        pane.commitTreeWidth();
+      }}
+      class="bg-paper-hairline hover:bg-paper-chip-border focus-visible:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize touch-none transition-colors outline-none"
+    ></div>
+  {/if}
+
+  {#if treeShown}
     <!-- The tree sits on the RIGHT of the content, not the left: the tab strip
          belongs above the file it names, and a navigator between the strip and
-         its content would cut the two apart. Fixed `TREE_W` and deliberately
-         not resizable — it is a navigator, not a second reading surface, and
-         the width is the constant the fit arithmetic reasons about rather than
-         a literal beside it. -->
-    <div style:width="{TREE_W}px" class="border-paper-hairline shrink-0 overflow-y-auto border-l">
+         its content would cut the two apart.
+         `TREE_W` is where it OPENS, not what it is: the width is the user's
+         (`pane.treeWidth`), squeezed by whatever this pane can spare
+         (`clampTreeWidth`). The border moved to the resizer's own hairline, so
+         the edge is one line rather than two touching ones. -->
+    <div style:width="{treeW}px" class="shrink-0 overflow-y-auto">
       <!-- `entryMenus` is explicit because this tree drives selection through
            `onSelect` (a click rewrites the descriptor, it does not navigate)
            and IcmTree reads that as picker mode, which suppresses the

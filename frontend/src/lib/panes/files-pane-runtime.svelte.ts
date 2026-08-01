@@ -20,11 +20,19 @@
  * `pendingTab` lives here rather than in the body: both halves render it.
  */
 import { loadChrome, saveChrome } from './pane-memory';
+import { loadTreeWidth, saveTreeWidth } from './pane-split';
 import type { PaneDescriptor } from './pane-route';
 
 export class FilesPaneState {
   kind = 'files' as const;
   treeVisible = $state(loadChrome().files.tree);
+  /**
+   * How wide the user dragged the tree, in pixels — the PREFERENCE, which is
+   * why the pane clamps it for rendering rather than writing the clamp back
+   * (`clampTreeWidth`). A tree squeezed by a narrow pane returns to this width
+   * on a wide one.
+   */
+  treeWidth = $state(loadTreeWidth());
   /** Which tab auto-open claimed; see `auto-open.ts`. */
   autoIndex = $state<number | null>(null);
   /**
@@ -80,6 +88,21 @@ export class FilesPaneState {
    * tree row may read as current.
    */
   pendingTab = $state(false);
+  /**
+   * The pending tab is compare's SECOND COLUMN, waiting for a file — set when
+   * Compare is pressed with only one tab open.
+   *
+   * It is a second flag rather than a `compare` index because there is nothing
+   * to index: the column holds no file yet, so no descriptor can name it and
+   * nothing about it belongs in the URL. It only changes what the pending tab
+   * MEANS — the active tab keeps the left column instead of the empty state
+   * taking the whole pane, and the file picked next lands on the right rather
+   * than replacing what is being read.
+   *
+   * Never set without `pendingTab`; `startPendingTab`/`clearPendingTab` are
+   * the only writers, so the two cannot drift apart.
+   */
+  pendingCompare = $state(false);
 
   /**
    * Registered by the pane body, which owns every descriptor rewrite. The
@@ -101,6 +124,23 @@ export class FilesPaneState {
     this.treeVisible = !this.treeVisible;
     const chrome = loadChrome();
     saveChrome({ ...chrome, files: { tree: this.treeVisible } });
+  }
+
+  /** Persist the width a drag or a keyboard nudge finished at. */
+  commitTreeWidth(): void {
+    saveTreeWidth(this.treeWidth);
+  }
+
+  /** ＋, or Compare with one tab open (`compare`). The two flags move together. */
+  startPendingTab(compare = false): void {
+    this.pendingTab = true;
+    this.pendingCompare = compare;
+  }
+
+  /** The pending tab was filled, closed, or superseded. */
+  clearPendingTab(): void {
+    this.pendingTab = false;
+    this.pendingCompare = false;
   }
 }
 

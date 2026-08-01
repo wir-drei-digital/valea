@@ -7,10 +7,12 @@
  * lose either arrangement. The count is unambiguous — nothing is ever
  * hidden-but-mounted, so requested, mounted and visible panes are one set.
  */
+import { TREE_W, clampTreeWidth } from '$lib/shell/pane-fit';
 import type { PaneDescriptor } from './pane-route';
 
 const LAYOUT_PREFIX = 'valea.pane-split.';
 const FILES_KEY = 'valea.files-split';
+const TREE_KEY = 'valea.files-tree-width';
 const FILES_DEFAULT = 40;
 const FILES_MIN = 20;
 const FILES_MAX = 70;
@@ -105,6 +107,42 @@ export function loadFilesSplit(): number {
 export function saveFilesSplit(pct: number): void {
   try {
     localStorage.setItem(FILES_KEY, String(clampFiles(pct)));
+  } catch {
+    // best-effort persistence only
+  }
+}
+
+/**
+ * The Files tree's width, in PIXELS rather than the percentage the two splits
+ * beside it use.
+ *
+ * A navigator wants the same width whatever it is docked to — a percentage
+ * would make the tree of a narrow side pane unusably thin and the tree of a
+ * wide primary a second reading column, from one stored number. Pixels are
+ * also the unit `pane-fit.ts` reasons in, so nothing has to convert to decide
+ * whether the tree still fits beside a file.
+ *
+ * Shared by every Files pane, exactly as the tree's visibility is: it is a
+ * preference, not a property of one pane's contents.
+ *
+ * Clamped on the way IN as well as out, against `TREE_MIN`/`TREE_MAX` only —
+ * `clampTreeWidth`'s pane-relative ceiling is a rendering decision and belongs
+ * to whoever is measuring a pane, not to storage.
+ */
+export function loadTreeWidth(): number {
+  try {
+    const raw = localStorage.getItem(TREE_KEY);
+    if (raw === null) return TREE_W;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? clampTreeWidth(parsed, 0) : TREE_W;
+  } catch {
+    return TREE_W;
+  }
+}
+
+export function saveTreeWidth(px: number): void {
+  try {
+    localStorage.setItem(TREE_KEY, String(clampTreeWidth(px, 0)));
   } catch {
     // best-effort persistence only
   }

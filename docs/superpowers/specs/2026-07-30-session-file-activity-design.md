@@ -306,3 +306,25 @@ and plain-language notes only. Mono diff detail appears only after an expand.
   gating vs. PaneHost's 30% minimums; backslash-aware name derivation;
   attach-as-transition auto-open; close-map cap; a11y rules per
   `ToolCallCard` precedent.
+
+## Amendment, 2026-08-01 — the rail is a popover, and nothing opens it by itself
+
+**Daniel, after using it beside the composable-views panes.** Two of the three
+things this spec shipped are retired; the third is unchanged.
+
+**The inline rail is gone.** `FileActivityRail` renders only inside the
+`SessionHeader` pill's popover now, at every width and in every placement — the
+`variant` prop, the panel chrome, the ✕ and the `#file-activity-rail` focus
+target went with the column. It had become the same session laying itself out
+two different ways depending on the window, and it competed for the right edge
+with a Files pane the user had opened on purpose.
+
+**Auto-open is gone**, and with it `shouldAutoOpen` and `ClosedRailMemory`.
+Both existed only to serve it: one decided when to fire, the other remembered
+which sessions you had closed it on. A record you consult should not move the
+layout under you mid-turn, so the list waits behind the pill until it is asked
+for — and there is now nothing to suppress and nothing to remember.
+
+**Unchanged:** the aggregation (`deriveFileActivity`), the badges, the
+expandable diffs, the existence notes (`checkExistence`), and the pill itself,
+which keeps its `Context · N` label and its `filesCount > 0` gate.

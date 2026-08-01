@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AcpItemLike } from './item-shapes';
 import type { FileActivity } from './file-activity';
-import {
-  ClosedRailMemory,
-  checkExistence,
-  deriveFileActivity,
-  shouldAutoOpen,
-  splitPathName
-} from './file-activity';
+import { checkExistence, deriveFileActivity, splitPathName } from './file-activity';
 
 let nextId = 0;
 function tool(over: Partial<AcpItemLike> & { [k: string]: unknown } = {}): AcpItemLike {
@@ -156,45 +150,9 @@ describe('deriveFileActivity', () => {
   });
 });
 
-describe('shouldAutoOpen', () => {
-  it('fires on the 0 -> >0 transition', () => {
-    expect(shouldAutoOpen(0, 3, false)).toBe(true);
-  });
-  it('initial attach counts: prev 0 with a populated snapshot fires', () => {
-    expect(shouldAutoOpen(0, 12, false)).toBe(true);
-  });
-  it('does not fire on later growth or when closed by user', () => {
-    expect(shouldAutoOpen(3, 4, false)).toBe(false);
-    expect(shouldAutoOpen(0, 3, true)).toBe(false);
-    expect(shouldAutoOpen(0, 0, false)).toBe(false);
-  });
-});
-
-describe('ClosedRailMemory', () => {
-  it('remembers close, forgets on reopen', () => {
-    const m = new ClosedRailMemory();
-    m.close('s1');
-    expect(m.isClosed('s1')).toBe(true);
-    m.reopen('s1');
-    expect(m.isClosed('s1')).toBe(false);
-  });
-  it('evicts the oldest beyond the cap of 50', () => {
-    const m = new ClosedRailMemory();
-    for (let i = 0; i < 51; i++) m.close(`s${i}`);
-    expect(m.isClosed('s0')).toBe(false);
-    expect(m.isClosed('s1')).toBe(true);
-    expect(m.isClosed('s50')).toBe(true);
-  });
-  it('re-closing refreshes recency, so the stale entry is evicted instead', () => {
-    const m = new ClosedRailMemory();
-    m.close('a');
-    m.close('b');
-    m.close('a');
-    for (let i = 0; i < 49; i++) m.close(`s${i}`);
-    expect(m.isClosed('a')).toBe(true);
-    expect(m.isClosed('b')).toBe(false);
-  });
-});
+// `shouldAutoOpen` and `ClosedRailMemory` were tested here. Both went with the
+// inline rail that opened itself: the list is a popover now, so there is no
+// auto-open to decide and no "you closed it" to remember.
 
 describe('splitPathName', () => {
   it('splits on forward slash', () => {

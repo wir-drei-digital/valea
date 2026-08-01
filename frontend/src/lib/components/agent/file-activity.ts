@@ -189,42 +189,14 @@ export function deriveFileActivity(items: AcpItemLike[]): FileActivity[] {
     });
 }
 
-/** Auto-open fires only on the 0 -> >0 transition of the derived count (attach included). */
-export function shouldAutoOpen(prevCount: number, count: number, closedByUser: boolean): boolean {
-  return !closedByUser && prevCount === 0 && count > 0;
-}
-
-const MAX_CLOSED_REMEMBERED = 50;
-
-/**
- * Per-session "the user closed the rail" memory — in-memory only (a fresh
- * app launch starts over, deliberately), capped so an arbitrarily long run
- * can't grow it unboundedly. `close()` re-inserts at the end of the
- * insertion-ordered Set, so eviction drops the LEAST-RECENTLY-CLOSED id —
- * re-closing a session keeps it from aging out.
- */
-export class ClosedRailMemory {
-  #ids = new Set<string>();
-
-  isClosed(id: string): boolean {
-    return this.#ids.has(id);
-  }
-
-  close(id: string): void {
-    this.#ids.delete(id);
-    this.#ids.add(id);
-    if (this.#ids.size > MAX_CLOSED_REMEMBERED) {
-      const oldest = this.#ids.values().next().value;
-      if (oldest !== undefined) this.#ids.delete(oldest);
-    }
-  }
-
-  reopen(id: string): void {
-    this.#ids.delete(id);
-  }
-}
-
-export const closedRailMemory = new ClosedRailMemory();
+// RETIRED (2026-08-01): `shouldAutoOpen` and `ClosedRailMemory` lived here.
+// The file-activity list opened itself as an inline rail the first time a
+// session touched a file, and both existed to serve that: one decided when to
+// fire, the other remembered which sessions the user had closed it on. The
+// list is a popover behind the header's "Context · N" pill now — nothing but a
+// click opens it — so there is no auto-open to suppress and nothing to
+// remember. Aggregation (`deriveFileActivity`) and the existence check
+// (`checkExistence`) are unchanged; they were never part of that.
 
 /**
  * The ICM tree never lists dot-prefixed entries, nor the root manifest
