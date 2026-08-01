@@ -294,6 +294,7 @@ export type CreateAgentSessionInput = {
   contextDoc?: Record<string, any> | null;
   input?: Record<string, any> | null;
   includeMounts?: Array<string> | null;
+  openedFromKind?: string | null;
   initialPrompt?: string | null;
 };
 

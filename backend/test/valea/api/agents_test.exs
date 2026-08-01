@@ -13,7 +13,13 @@ defmodule Valea.Api.AgentsTest do
   use ExUnit.Case, async: false
 
   import Valea.AgentCase,
-    only: [start_session: 3, kill_session: 1, mount_test_icm!: 2, open_workspace!: 1]
+    only: [
+      start_session: 3,
+      kill_session: 1,
+      mount_test_icm!: 2,
+      open_workspace!: 1,
+      fake_cmd: 1
+    ]
 
   alias Valea.Api.Agents
   alias Valea.Mounts
@@ -21,7 +27,7 @@ defmodule Valea.Api.AgentsTest do
 
   setup do
     ws = open_workspace!("W")
-    icm = mount_test_icm!(ws.path, name: "Primary")
+    icm = mount_test_icm!(ws.path, name: "Primary", pages: %{"CONTEXT.md" => "# Context\n"})
     %{ws: ws.path, generation: Manager.generation(), icm: icm}
   end
 
@@ -204,6 +210,192 @@ defmodule Valea.Api.AgentsTest do
       true ->
         Process.sleep(20)
         wait_until(fun, tries - 1)
+    end
+  end
+
+  # Spec 2026-08-02 — the session's ORIGIN. `opened_from_kind` arrives as a
+  # client-supplied STRING and ends up as an ATOM on the scope, so the seam
+  # between the two is a closed allowlist and never `String.to_atom/1`
+  # (unbounded atom growth from a wire field is a DoS). It is doubly
+  # load-bearing: `SessionSettings.opened_from_noun/1` has exactly three
+  # clauses and no catch-all, so an unvetted atom reaching the scope would
+  # raise inside `SessionScope.resolve/1` and break session LAUNCH, not
+  # merely mislabel a premise. Both directions are covered here — the wire
+  # argument on create, and the value read back off disk on resume (a
+  # transcript is a file a user can hand-edit; it is untrusted input too).
+  describe "opened_from_kind" do
+    defp premise(ws, id) do
+      path = Path.join([ws, "runtime", "sessions", id, "context.md"])
+      if File.regular?(path), do: File.read!(path), else: ""
+    end
+
+    defp context_doc(icm), do: %{"kind" => "icm", "icm_id" => icm.id, "path" => "CONTEXT.md"}
+
+    # Forget the materialized system prompt, so a later assertion on it can
+    # only pass if the path under test re-wrote it.
+    defp forget_context!(ws, id), do: File.rm_rf!(Path.join([ws, "runtime", "sessions", id]))
+
+    defp end_session!(ws, id) do
+      kill_session(id)
+      wait_until(fn -> Registry.lookup(Valea.Agents.SessionRegistry, id) == [] end)
+      forget_context!(ws, id)
+    end
+
+    defp tamper_meta!(ws, id, changes) do
+      path = Path.join(ws, "logs/sessions/#{id}.jsonl")
+      [meta | rest] = path |> File.read!() |> String.split("\n", trim: true)
+      tampered = meta |> Jason.decode!() |> Map.merge(changes) |> Jason.encode!()
+      File.write!(path, Enum.join([tampered | rest], "\n") <> "\n")
+    end
+
+    defp create_with_origin(generation, icm, kind) do
+      Valea.App.Config.set_harness_command(fake_cmd("happy"))
+
+      run(:create_session, %{
+        mount_key: icm.mount_key,
+        generation: generation,
+        opened_from_kind: kind,
+        context_doc: context_doc(icm)
+      })
+    end
+
+    test "rejects an origin kind that is not in the allowlist — and creates no atom for it", %{
+      generation: generation,
+      icm: icm
+    } do
+      # NB `""` is deliberately absent: Ash's `:string` type trims and casts
+      # an empty string to `nil` before the action's `run` ever sees it, so
+      # a blank kind is "no origin", not a rejected one.
+      for bogus <- ["../../etc/passwd", "mail-message", "Page", "workflow_run_kind_x"] do
+        assert {:error, error} =
+                 run(:create_session, %{
+                   mount_key: icm.mount_key,
+                   generation: generation,
+                   opened_from_kind: bogus
+                 })
+
+        assert %Valea.Api.Error{code: "opened_from_kind_invalid"} = error.errors |> hd()
+
+        # `String.to_existing_atom/1` raises for an atom the VM has never
+        # seen — the assertion that the rejected string did NOT become one.
+        assert_raise ArgumentError, fn -> String.to_existing_atom(bogus) end
+      end
+    end
+
+    test "accepts the three real origin kinds and names the origin in the system prompt", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      doc = Path.join(icm.root, "CONTEXT.md")
+
+      for {kind, noun} <- [
+            {"mail_message", "a mail message"},
+            {"page", "a page in this ICM"},
+            {"file", "a file in this ICM"}
+          ] do
+        assert {:ok, %{id: id}} = create_with_origin(generation, icm, kind)
+        on_exit(fn -> kill_session(id) end)
+
+        assert premise(ws, id) =~ "This session was opened from #{noun}: #{doc}."
+        assert [meta | _] = transcript_lines(ws, id)
+        assert Jason.decode!(meta)["opened_from_kind"] == kind
+      end
+    end
+
+    test "a session created without an origin kind gets no premise paragraph", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      Valea.App.Config.set_harness_command(fake_cmd("happy"))
+
+      assert {:ok, %{id: id}} =
+               run(:create_session, %{
+                 mount_key: icm.mount_key,
+                 generation: generation,
+                 context_doc: context_doc(icm)
+               })
+
+      on_exit(fn -> kill_session(id) end)
+
+      refute premise(ws, id) =~ "This session was opened from"
+      assert [meta | _] = transcript_lines(ws, id)
+      assert Jason.decode!(meta)["opened_from_kind"] == nil
+    end
+
+    test "resume rebuilds the origin from the recorded kind", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      assert {:ok, %{id: id}} = create_with_origin(generation, icm, "page")
+      end_session!(ws, id)
+
+      assert {:ok, %{id: ^id}} =
+               run(:resume_agent_session, %{session_id: id, generation: generation})
+
+      on_exit(fn -> kill_session(id) end)
+
+      assert premise(ws, id) =~
+               "This session was opened from a page in this ICM: " <>
+                 Path.join(icm.root, "CONTEXT.md")
+    end
+
+    test "resume drops the origin when the locator no longer resolves, without blocking", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      assert {:ok, %{id: id}} = create_with_origin(generation, icm, "page")
+      end_session!(ws, id)
+      File.rm!(Path.join(icm.root, "CONTEXT.md"))
+
+      assert {:ok, %{id: ^id}} =
+               run(:resume_agent_session, %{session_id: id, generation: generation})
+
+      on_exit(fn -> kill_session(id) end)
+
+      # Narrowed, not blocked: a resumed session never names a path it can
+      # no longer read.
+      refute premise(ws, id) =~ "This session was opened from"
+    end
+
+    test "resume treats a hand-edited origin kind as untrusted input", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      assert {:ok, %{id: id}} = create_with_origin(generation, icm, "page")
+      end_session!(ws, id)
+      tamper_meta!(ws, id, %{"opened_from_kind" => "hand_edited_origin_kind"})
+
+      # No FunctionClauseError out of `SessionSettings.opened_from_noun/1`
+      # (which would break the resume outright), no premise, no new atom.
+      assert {:ok, %{id: ^id}} =
+               run(:resume_agent_session, %{session_id: id, generation: generation})
+
+      on_exit(fn -> kill_session(id) end)
+
+      refute premise(ws, id) =~ "This session was opened from"
+      assert_raise ArgumentError, fn -> String.to_existing_atom("hand_edited_origin_kind") end
+    end
+
+    test "resume ignores a non-string origin kind in the transcript", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      assert {:ok, %{id: id}} = create_with_origin(generation, icm, "page")
+      end_session!(ws, id)
+      tamper_meta!(ws, id, %{"opened_from_kind" => %{"kind" => "page"}})
+
+      assert {:ok, %{id: ^id}} =
+               run(:resume_agent_session, %{session_id: id, generation: generation})
+
+      on_exit(fn -> kill_session(id) end)
+
+      refute premise(ws, id) =~ "This session was opened from"
     end
   end
 
