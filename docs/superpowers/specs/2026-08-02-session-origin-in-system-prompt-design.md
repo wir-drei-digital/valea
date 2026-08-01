@@ -114,11 +114,19 @@ string.
 and nothing at all when it is nil (so plain chat sessions are byte-identical
 to today). Framing forks on `kind`; the shape is:
 
-> This session was opened from a mail message: `<abs path>` (granted read).
-> The user started here deliberately — treat that message as the subject of
-> this session and read it before acting on their first instruction.
+> This session was opened from a mail message: `<abs path>`. The user
+> started here deliberately — treat that message as the subject of this
+> session and read it before acting on their first instruction.
 
 with "a page in this ICM" / "a file in this ICM" for `:page` / `:file`.
+
+**The paragraph never claims a grant mechanism.** An earlier draft said
+"(granted read)", which is true for mail (`input` becomes an explicit
+`Read(<path>)` allow) and false for Knowledge (`context_doc` gets no grant
+— it is readable only because it sits inside the primary ICM's read root,
+`api/agents.ex:111-113`). Naming the path and saying nothing about how it
+became readable is correct for both, and keeps `context/1` from asserting a
+posture it did not build.
 
 The instruction to *read before acting* is load-bearing. Without it the
 locator reads as one more available thing in a context doc that is
@@ -140,6 +148,14 @@ reason. Grants are still re-resolved, never widened; `context_doc` gets no
 grant on resume for the same reason it gets none on create (it lives inside
 a read root already).
 
+**Resume is best-effort, and `opened_from` follows the grant.** The existing
+`resume_read_paths/2` deliberately narrows rather than blocks: a vanished
+input file yields no grant instead of failing the resume, because "the
+conversation already contains whatever was read from it"
+(`api/agents.ex:265-276`). `opened_from` must move in lockstep — when the
+locator no longer resolves, it is `nil` and the premise paragraph is
+omitted. A resumed session must never name a path it cannot read.
+
 ### 4. Frontend — origin travels in the descriptor
 
 ```ts
@@ -157,6 +173,28 @@ export type ChatNewPaneDescriptor = {
 
 `from: null` is today's blank-session behavior, so every existing
 `chat:new:<mountKey>` link keeps parsing unchanged.
+
+**Wire form**, extending the module's documented grammar:
+
+```
+chat:new:<mountKey>                              (blank composer — unchanged)
+chat:new:<mountKey>/<kind>/<path>                (origin, no mount, no label)
+chat:new:<mountKey>/<kind>/<path>/<mount>        (mail: adds includeMounts key)
+chat:new:<mountKey>/<kind>/<path>/<mount>/<label>
+```
+
+Every field is whole-string `encodeURIComponent`'d — including `path`, whose
+`/` becomes `%2F`. This deviates from the `files` descriptor's per-segment
+`encodePath`, deliberately: `files` encodes per segment so file URLs stay
+readable, but here `/` is the field separator, so a per-segment path would
+be indistinguishable from extra fields. Trailing empty fields are omitted on
+serialize; an empty `mount` with a present `label` serializes as an empty
+segment (`…/<path>//<label>`).
+
+Parse rules: exactly 1 field after the kind prefix means `from: null`; 3–5
+fields parse an origin; 2 fields, more than 5, an unrecognized `kind`, or an
+undecodable/empty `path` fail the whole descriptor closed. `label` is capped
+at 80 characters at parse (§7).
 
 **Not a module-level stash.** Reusing `initial-prompt.ts`'s in-memory map is
 tempting and wrong: that map deliberately does not survive a reload, which
@@ -229,9 +267,17 @@ can mislead the eye but can never widen what the session may read.
   composer surfaces it through the existing `createError` row
   (`ChatView.svelte:618`) with its typed text, and the typed message is
   preserved so the user is not told to "try again" for a deleted file.
-- **Malformed `from` in a hand-written URL.** Parses to `from: null` —
-  degrades to a blank new-session composer, never a refusal or a crash.
-  Consistent with `parsePaneParam`'s fail-soft posture.
+- **Malformed `from` in a hand-written URL.** The whole descriptor fails
+  closed to `null`, exactly like every other malformed pane param. An
+  earlier draft of this spec had it degrade to `from: null`, which
+  contradicts §4: a composer that opens *detached* while looking normal is
+  the same "user types 'file this under Müller' with nothing attached" bug
+  the descriptor design exists to prevent. A `from` that is absent entirely
+  is a legitimate blank composer; a `from` that is present but unreadable is
+  not, and the pane must not open. `parsePaneParam`'s two repair cases
+  (Files tab truncation, cursor clamping) do not apply — those repair a
+  still-correct subject, whereas a broken origin has no correct subject to
+  fall back to.
 - **`opened_from` path outside every read root.** Cannot occur through the
   UI (both locators are validated pre-scope), but `context/1` states the
   grant as fact, so the renderer must not invent one: it names the path the
