@@ -37,20 +37,27 @@ disagree with this list, **this list governs.**
    the plan's `treeNav.find(n => n.isFile)` finds nothing in a real ICM because
    top-level entries are folders. Deleted with it: `state.addSplit`,
    `state.maxSplits`, `canAddSplit`, `firstUnopenedLeaf`. The tree's per-row
-   "Open beside" is the only way to open a second split. Stale mentions survive
-   in Task 3's interface block, Task 7's Consumes list, and the
-   `FilesPaneState` / `FilesPaneControls` snippets — ignore them.
+   "Open beside" is the only way to open a second split. **Every surviving
+   mention, so nobody rebuilds the control by following the plan:** Task 3's
+   interface block, its failing-test block (the `canAddSplit` import and the
+   whole `describe('canAddSplit')`) and its `canAddSplit` reference
+   implementation; Task 7's Consumes list, its `FilesPaneState` snippet and the
+   `$effect` that publishes `state.maxSplits` / `state.addSplit` to the header;
+   and the second `<button>` in the `FilesPaneControls` markup, which IS the
+   ＋ Split control in full. Ignore all of them — none of it shipped, and
+   `FilesPaneState` carries neither `maxSplits` nor `addSplit`.
 
 2. **Mail's "one implementation used by both" is retired** (Daniel,
    2026-08-01). `/mail`'s list carries an account switcher, debounced search, a
    folder picker, a read filter, pagination and a sync footer; none belong in a
-   pane. What is shared is `MessageList` + `MessageView`. **G6 must still
-   extract** the ~40-line race-suppressed selection effect, currently duplicated
-   near-verbatim in `MailPane.svelte` and `routes/mail/+page.svelte`, into one
-   `mail-selection` helper used by both. This is an obligation, not a
-   completed fact.
+   pane. What is shared is `MessageList` + `MessageView`. The ~40-line
+   race-suppressed selection effect that was duplicated near-verbatim in
+   `MailPane.svelte` and `routes/mail/+page.svelte` **has been extracted** into
+   `components/mail/mail-selection.svelte.ts` (`watchMailSelection`), which
+   both hosts call with no private copy left in either. Recorded as done, not
+   as an outstanding obligation.
 
-4. **`SPLIT_MIN` is 240, not 300** (Daniel, 2026-08-01). At 300, two files side
+3. **`SPLIT_MIN` is 240, not 300** (Daniel, 2026-08-01). At 300, two files side
    by side was unreachable on any laptop — a side Files pane needed 2339px with
    the tree shown, 1739px hidden — which contradicted an originating ask for
    the feature. At 240 those are 2039px and 1439px, and the PRIMARY-width Files
@@ -59,10 +66,34 @@ disagree with this list, **this list governs.**
    `0.4 * (window - 239)` for a side pane, `0.6 * (…)` for the primary — see
    `pane-fit.ts`'s header.)
 
-3. **The first file always opens**, regardless of width. `openInFirst` and
+4. **The first file always opens**, regardless of width. `openInFirst` and
    `openAsSecond` floor `paths.length === 0`. Without this the Files pane's
    tree was inert below a 1589px window at `SPLIT_MIN` 300, and below 1439px
    at 240.
+
+5. **`PaneHost` keys panes by SUBJECT, not by the wire form.** Task 6 Step 3
+   specifies `{#key serializePaneParam(pane)}` and its snippet keys the
+   `{#each}` the same way. That is the bug the shipped code documents at
+   length, not the design: the wire form carries a Files pane's open files, so
+   every tree click inside a pane became an identity change and Svelte tore
+   down and rebuilt the whole pane — tree, scroll position, both `FileView`s
+   and the per-pane state — to show one different file. It also made the
+   assistant's auto-open claim (an index living in that state) impossible to
+   keep past a single open, so split recycling was structurally impossible in
+   a pane. The shipped key is `paneIdentity(pane)` — mount, session, account —
+   uniquified against collisions, and it is what BOTH the `{#each}` and the
+   state cache use. `chat-new` -> `chat:<id>` deliberately remains an identity
+   change. Position is deliberately NOT part of the key.
+
+6. **`MailPane`'s prop contract in Task 8 is not what shipped.** Its Produces
+   block lists `account`, `selectedId`, `onSelect`, `onAccountChange` and
+   `listVisible`; the component takes none of them. Like every other pane view
+   it is mounted by the registry, so it takes `descriptor` and `context` (it
+   needs no per-pane state), reads the account and message off `descriptor`,
+   and reports a selection through `context.openPane` — a rewrite of its own
+   descriptor, never an append. The Mail
+   SCOPE boundary in that task's Context paragraph is unaffected and still
+   governs: a Mail pane is the read surface only.
 
 ## File Structure
 
@@ -2636,7 +2667,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 | Retirements (`SessionHeader` tree, `list`/`rail`, `FilePaneAdapter`) | 6, 9 |
 | Per-subject stale handling | 6 (context), 7 (`onVanished`), 9 (route handler) |
 
-**Known gap carried from the spec:** *nav collapse* is an unresolved open item. This plan implements it (`navVisible` in `AppShell`, toggle at the bar's far left, default on) because the spec proposes keeping it. If Daniel cuts it, delete the `navVisible` prop and the toggle from Task 9 Steps 5–6; nothing else depends on it.
+**Resolved, not a gap:** *nav collapse* was the spec's last open item and is **kept** — implemented as this plan describes (toggle at the bar's far left, default on), and persisted, because every route mounts its own `AppShell`. The earlier "if Daniel cuts it, delete `navVisible`" instruction is withdrawn and must not be followed: `navVisible` is a PARAMETER of the fit arithmetic (`panesThatFit(width, navVisible)`, `truncateToFit`, `restoreTarget`), so deleting it would silently mis-count how many panes fit whenever the nav is hidden. The live value now lives in `shell/pane-room.svelte.ts`, which is what the bar and every route-owned pane opener read.
 
 **Type consistency check:** `PaneDescriptor` kinds are `files` / `chat` / `chat-new` / `mail` throughout. `paths: string[]` (never `path`) on Files everywhere after Task 1. `maxSplits` is the parameter name in `files-pane-state.ts`, `auto-open.ts` and `FilesPaneState` alike. `onBeforeMutate(href: string)` matches between `IcmTree` (Task 7 Step 1) and `FilesPane.beforeMutate` (Step 2). `promoteTarget(promoted, url, panes)` has the same signature in Task 5 and its Task 9 call site. `menuItems` input keys match between `content-bar.ts` and its test.
 

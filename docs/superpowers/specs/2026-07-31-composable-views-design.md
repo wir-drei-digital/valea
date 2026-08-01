@@ -234,11 +234,11 @@ switcher, debounced search, a folder picker, a read filter, pagination and a
 sync footer — none of which belong in a pane, and swapping `MailPane` into the
 route would have deleted all of them. What is genuinely shared is
 `MessageList` + `MessageView`; `MailPane` is a third composition of them. The
-real cost is the ~40-line race-suppressed selection effect, now duplicated
+real cost was the ~40-line race-suppressed selection effect, once duplicated
 near-verbatim in `MailPane` and the route — and its own comments record that
-the race was caught live once already. It **must be** extracted into one
-`mail-selection` helper used by both — an obligation on the implementation,
-not a completed fact.
+the race was caught live once already. **This landed:** it lives in one
+`mail-selection` helper that both hosts call, with no private copy left in
+either. Settled, not an outstanding obligation.
 
 **Reuse needs a navigation adapter, not just extraction.** `MessageList`
 renders each row as an anchor to `messageHref(account, msgId)`
@@ -419,7 +419,9 @@ own. `filesPopover` is that rail's fallback, not a file browser, and stays.
 
 A ~28px band across the content area only. `＋ Pane` on the right, opening a
 short menu (Files / Chat / Mail), with kinds already open shown as checked and
-inert. Nav collapse sits at the far left if that open item is confirmed.
+inert. Nav collapse sits at the far left — confirmed, shipped, and persisted
+(every route mounts its own `AppShell`, so a collapse held in component state
+would spring back open on the next navigation).
 
 **Every menu item must name a concrete subject**, since no descriptor kind
 accepts "empty":
@@ -618,7 +620,10 @@ One pass, internally ordered so each step is separately reviewable:
 7. `pane-memory.ts` and restore-on-entry
 8. `auto-open.ts` and the chat tool-chip path
 
-## Open items for review
+## Open items for review — all settled
+
+*(Nothing below is outstanding. The two notes are kept as the record of how
+each was decided.)*
 
 *(Nav collapse was the last open item and is now settled: **kept**, default on,
 toggled from the bar's far left. "Fixed anchor" governs the nav's position —
