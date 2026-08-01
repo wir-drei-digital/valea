@@ -119,9 +119,14 @@ export function watchPaneMemory(read: {
 
   $effect(() => {
     const url = read.url();
-    // Same gate, and load-bearing for the same reason: seeding `recorded` from
-    // a list that has not been deduped against the real primary makes the
-    // dedup itself look like an edit.
+    // The same gate, DEFENSIVE rather than load-bearing: removing it alone
+    // does not reproduce the wipe, because the restore half re-seeds
+    // `recorded` from the settled list once `ready` flips and this half then
+    // adopts that. It stays because that is the restore half's behaviour, not
+    // a property of this one — if `recorded` ever stops being re-seeded there,
+    // this is the only thing standing between a cold load and an emptied row.
+    // Seeding from a list that has not been deduped against the real primary
+    // makes the dedup itself look like an edit.
     if (read.ready?.() === false) return;
     const key = routeKeyFor(url.pathname);
     if (!key) return;

@@ -453,8 +453,23 @@ export class MailStore {
    * empty, so any surface that reads emptiness as an answer states something
    * about the user's setup that the app has no basis for; a mail pane that
    * mounts before the first `mail_status` returns would say "no mail account
-   * yet" over a perfectly good mailbox. Deliberately NOT set when the fetch
-   * fails: a failed request taught us nothing either.
+   * yet" over a perfectly good mailbox.
+   *
+   * ASK-ONCE, not fetch-succeeded: `refreshStatus` sets this on a FAILED call
+   * too. It once did not, on the reading that a failed request taught us
+   * nothing — but "nobody has asked yet" is a state every surface has to wait
+   * out, and leaving it false made the wait permanent (the ＋ Pane menu kept
+   * Mail live forever on a click that could never land). A failure
+   * deliberately leaves `accounts` alone, so the only thing that now reads as
+   * "no mailbox" is a workspace where status has never once arrived.
+   *
+   * Deliberately UNLIKE `mountsStore.loaded`, which is a retry-until-success
+   * guard: `AppFrame` cold-starts `mountsStore.refresh()` on every route entry
+   * `if (!mountsStore.loaded)`, so setting that one on failure would silently
+   * disable the retry. This flag has no such caller — the mail route and the
+   * mail pane refresh on their own mount regardless — so it is free to mean
+   * the weaker thing, and it has to, because it is also what surfaces read to
+   * decide whether they may speak about the user's setup at all.
    */
   statusLoaded = $state(false);
   selectedAccount: string | null = $state(null);
