@@ -18,6 +18,7 @@
   // family of reasons — an unrelated URL change (e.g. opening a side pane,
   // `?pane=`) must not tear down and rejoin a live session's channel.
   import { onMount } from 'svelte';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -679,6 +680,26 @@
     <div class="mx-auto w-full max-w-[660px] px-4">
       {#if createError}
         <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
+      {/if}
+      {#if descriptor.from}
+        <!-- Without this the change trades a canned turn the user did not want
+             for an empty box with no visible evidence the source is in play.
+             `label` is URL-supplied and untrusted: plain interpolation only,
+             never {@html}. It is display-only — the grant comes from `path`.
+             Read straight off the `descriptor` prop, never snapshotted into a
+             local: `label` is excluded from `paneIdentity` (Task 4), so a
+             label-only change re-renders this pane instead of remounting it,
+             and a captured copy would show the stale label forever. -->
+        <div class="px-4 pb-2">
+          <span
+            class="bg-paper-track text-ink-meta inline-flex max-w-full items-center gap-1.5 truncate rounded-md px-2 py-1 text-[12px]"
+          >
+            <Paperclip class="size-3.5 shrink-0" aria-hidden="true" />
+            <span class="truncate">
+              {descriptor.from.label ?? descriptor.from.path.split('/').pop() ?? descriptor.from.path}
+            </span>
+          </span>
+        </div>
       {/if}
       <Composer
         busy={creating}
