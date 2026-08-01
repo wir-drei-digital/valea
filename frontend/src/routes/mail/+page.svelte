@@ -7,7 +7,7 @@
   // (not a path segment) is the right selection mechanism here too.
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
   import { AppFrame, ListPane, EmptyState, MainColumn, SegmentedControl } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -27,10 +27,10 @@
     cleanupPrompt,
     filterMessagesByRead,
     syncNowErrorMessage,
-    targetAccount,
     type ReadFilter
   } from '$lib/components/mail/mail-shapes';
-  import { mailStore, type MailMessageDetail } from '$lib/stores/mail.svelte';
+  import { watchMailSelection } from '$lib/components/mail/mail-selection.svelte';
+  import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { composeHref } from '$lib/components/mail/compose';
   import AccountSwitcher from '$lib/components/mail/AccountSwitcher.svelte';
@@ -76,91 +76,21 @@
   // state.
   let showSetup = $state(page.url.searchParams.get('setup') === '1');
 
-  // Race-safe selection load: `MailStore.select` writes into the shared
-  // `mailStore.selected` singleton with no per-call id tag, so two
-  // in-flight `select()` calls (rapid clicking between messages) could
-  // otherwise resolve out of order. `activeId`/`activeDetail` are this
-  // route's own local capture of "the detail that belongs to the
-  // currently-selected id" — read synchronously off `mailStore.selected`
-  // the instant THIS call's own `select()` resolves, and only committed if
-  // a newer selection hasn't superseded it (`cancelled`) — a stale, slower
-  // response for a message the user has since navigated away from is
-  // silently dropped rather than flashing the wrong content.
+  // Race-safe selection load, shared with `MailPane` — one implementation, in
+  // `mail-selection.svelte.ts`. It used to live here and was copied into the
+  // pane near-verbatim; the copy is gone, because the comments in it record a
+  // race that was already caught live once and two copies of that reasoning
+  // drift. This route's half is only WHERE the selection comes from: the URL.
   //
-  // `mailStore.selected !== before` distinguishes "the fetch actually
-  // updated `selected`" from "it failed and left the old value alone" (see
-  // `MailStore.select`'s `if (!result.ok) return;` early exit) — `select()`
-  // returns `Promise<void>`, so reference identity is the only signal
-  // available for that distinction without changing the store's contract.
-  //
-  // `untrack` around both `mailStore.selected` reads is load-bearing, not
-  // decorative: this effect's own `select()` call is what LATER mutates
-  // `mailStore.selected`. Reading it tracked inside the effect body would
-  // register it as a dependency, so that later mutation would re-trigger
-  // this same effect — an infinite `get_mail_message` loop keyed on nothing
-  // the user did (caught live on an earlier revision).
-  //
-  // `selectedAccount` and the ARRIVAL of accounts ARE tracked, though (the
-  // untracked read they replace latched this effect to whatever was known on
-  // its first run): a deep link arriving before `refreshStatus` resolves has
-  // no account yet, and "no account YET" must not be treated as "no
-  // account" — it waits, and the effect re-runs when the accounts land.
-  //
-  // What is NOT tracked is `targetAccount`'s membership SCAN. It reads
-  // `accounts[i].account` for every row, and `handleMailStatus` REPLACES a
-  // row object on every `mail_status` push — several per poll cycle, none of
-  // which change which accounts exist. Tracking that scan re-ran this whole
-  // effect (clearing `activeDetail`, re-fetching the open message) roughly
-  // twice per poll: a visible read-pane flicker and redundant RPCs on a
-  // screen the user wasn't touching. `accounts.length` stays the
-  // arrived-signal; the scan itself is untracked.
-  //
-  // This effect is also the ONLY thing that switches accounts (`?account=`
-  // is the source of truth — `AccountSwitcher` navigates rather than writing
-  // the store, or its write would race the URL and be reverted here), so the
-  // account switch runs before the `!id` bail-out: switching accounts with
-  // no message open is exactly that case.
-  let activeId: string | null = $state(null);
-  let activeDetail: MailMessageDetail | null = $state(null);
-  let loadError = $state(false);
-
-  $effect(() => {
-    const id = selectedId;
-    const accParam = selectedAccountParam;
-    const storeAccount = mailStore.selectedAccount;
-    const accountsReady = mailStore.accounts.length > 0;
-    const target = untrack(() => targetAccount(accParam, storeAccount, mailStore.accounts));
-    activeId = null;
-    activeDetail = null;
-    loadError = false;
-
-    let cancelled = false;
-    void (async () => {
-      if (target && target !== storeAccount) {
-        await mailStore.selectAccount(target);
-        if (cancelled) return;
-      }
-      if (!id) return;
-      if (!target) {
-        if (accountsReady) loadError = true; // accounts loaded, none selectable
-        return; // otherwise wait — effect re-runs when accounts arrive
-      }
-      const before = untrack(() => mailStore.selected);
-      await mailStore.select(id);
-      if (cancelled) return;
-      const selected = untrack(() => mailStore.selected);
-      if (selected !== before) {
-        activeId = id;
-        activeDetail = selected;
-      } else {
-        loadError = true;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  });
+  // `?account=` is the source of truth for which mailbox is open —
+  // `AccountSwitcher` navigates rather than writing the store, or its write
+  // would race the URL and be reverted by the effect — and the effect switches
+  // accounts before it looks at the message id, so switching accounts with no
+  // message open is handled by the same pass.
+  const selection = watchMailSelection(() => ({
+    msgId: selectedId,
+    account: selectedAccountParam
+  }));
 
   // The drafts list is workspace-wide (every account's), the pane's count is
   // not — it belongs to the account being read.
@@ -516,9 +446,9 @@
         {:else}
           <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
         {/if}
-      {:else if activeId === selectedId && activeDetail}
-        <MessageView message={activeDetail} />
-      {:else if loadError}
+      {:else if selection.activeId === selectedId && selection.detail}
+        <MessageView message={selection.detail} />
+      {:else if selection.failed}
         <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
       {:else}
         <p class="text-ink-meta text-[13px]">Loading…</p>
