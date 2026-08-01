@@ -12,64 +12,57 @@
   // `#EEE8D9` track, meta ink measured 2.79:1 — under even the design
   // system's own floor. Secondary keeps the quiet-vs-lifted contrast without
   // the illegibility.
-  // A `quiet` variant drops the track and the lift, keeping only the geometry
-  // and the semantics. It exists for a control the reader mostly does not need
-  // — the page view's Friendly/Raw toggle, which sat in the same visual weight
-  // class as the tab strip above it and competed with it for attention. The
-  // track is what forced idle labels up to `text-ink-secondary`; on plain paper
-  // `text-ink-meta` is the weight the rest of the page's furniture already uses
-  // (the path line right below it), so quiet can go a step lighter without the
-  // contrast problem that note describes.
   //
-  // Quiet carries NO persistent fill, not even a lighter one: `--paper-pill` is
-  // darker than the `--paper-card` the tab strip's chips use, so a filled quiet
-  // pill would have weighed MORE than the thing it is meant to sit under. The
-  // selected segment is ink weight alone, with the fill moved to hover so the
-  // control still announces itself as clickable.
+  // `size` is the ONLY axis of variation, and it varies geometry only. An
+  // earlier `quiet` variant instead dropped the track and the lift, to keep the
+  // page view's Friendly/Raw toggle out of the tab strip's weight class. It
+  // worked, but a segmented control without a track has no segments: the pill
+  // is what says these two labels are one either/or. So the track comes back
+  // and the recessing is done with SIZE — §4's S step (11.5px labels, the same
+  // size as the path line it now shares a row with) against the default M
+  // (12px). Recessing by size also restores the contrast note above: on the
+  // track, idle ink has to be `text-ink-secondary` at any size.
   //
-  // Geometry is deliberately UNCHANGED between the variants: this is a paint
-  // change, and shrinking a control nobody needs is how it becomes a control
-  // nobody can hit.
+  // The catch is §4's other rule, the ≥32px hit target. A 24px pill breaches
+  // it, so `sm` buys the height back with a transparent `::after` strip rather
+  // than by growing: the repo's usual `-my-1 min-h-8` trick (SessionHeader,
+  // FileActivityRail) enlarges the visible box, and here the visible box is
+  // exactly what we were asked to shrink. Pointer events on a pseudo-element
+  // hit its originating element, so each segment stays a 32px target while
+  // painting 20px.
   let {
     options,
     value,
     label,
-    quiet = false,
+    size = 'md',
     onChange
   }: {
     options: { value: string; label: string; count?: number }[];
     value: string;
     /** Accessible name for the control. */
     label: string;
-    /** Recede: no track, no lift, lighter ink. Same size, same semantics. */
-    quiet?: boolean;
+    /** `'sm'`: same pill, same semantics, one type step down (§4's S). */
+    size?: 'md' | 'sm';
     onChange: (value: string) => void;
   } = $props();
+
+  const sm = $derived(size === 'sm');
 </script>
 
-<div
-  role="tablist"
-  aria-label={label}
-  class={[
-    'inline-flex items-center rounded-full',
-    quiet ? '' : 'bg-paper-track p-0.5'
-  ]}
->
+<div role="tablist" aria-label={label} class="bg-paper-track inline-flex items-center rounded-full p-0.5">
   {#each options as option (option.value)}
     <button
       type="button"
       role="tab"
       aria-selected={value === option.value}
       class={[
-        'rounded-full px-3 py-1 text-[12px] whitespace-nowrap transition-colors',
-        quiet && 'hover:bg-paper-pill',
+        'rounded-full whitespace-nowrap transition-colors',
+        sm
+          ? "relative px-2.5 py-0.5 text-[11.5px] leading-4 after:absolute after:inset-x-0 after:top-1/2 after:h-8 after:-translate-y-1/2 after:content-['']"
+          : 'px-3 py-1 text-[12px]',
         value === option.value
-          ? quiet
-            ? 'text-ink-heading'
-            : 'bg-paper-card text-ink-heading shadow-card'
-          : quiet
-            ? 'text-ink-meta hover:text-ink-heading'
-            : 'text-ink-secondary hover:text-ink-heading'
+          ? 'bg-paper-card text-ink-heading shadow-card'
+          : 'text-ink-secondary hover:text-ink-heading'
       ]}
       onclick={() => onChange(option.value)}
     >
