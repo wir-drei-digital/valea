@@ -155,10 +155,30 @@
   // from a tool chip lands in the Files pane — creating one if there is none.
   const wiring = paneWiring({ url: () => page.url, panes: () => panes });
 
+  /**
+   * A row in the sessions navigator. `ChatPane` calls `context.openPane` for
+   * it — the same call a SIDE pane uses to rewrite its own descriptor — and
+   * for the primary "rewrite my own descriptor" means navigating this route
+   * (`PaneContext.openPane`'s doc says exactly that).
+   *
+   * Without it every row of `?all=1` is a dead button: the call is
+   * optional-chained, so a missing handler is silent.
+   *
+   * `?all=1` survives the move, or picking a session from the list would
+   * close the list you picked it from; `hrefWithPanes` keeps whatever is open
+   * beside the transcript, since switching sessions is an in-route move.
+   */
+  function openSessionAsPrimary(d: PaneDescriptor): void {
+    if (d.kind !== 'chat') return;
+    const target = `/chat?${showAllPane ? 'all=1&' : ''}session=${encodeURIComponent(d.sessionId)}`;
+    void goto(hrefWithPanes(target, page.url), { keepFocus: true, noScroll: true });
+  }
+
   // Stable identity on purpose: `ChatView` derives from `context.openFile`,
   // and a fresh object every render would churn that for no reason.
   const primaryContext: PaneContext = {
     placement: 'primary',
+    openPane: openSessionAsPrimary,
     openFile: wiring.openFileSurface,
     onArchived: afterArchive
   };
