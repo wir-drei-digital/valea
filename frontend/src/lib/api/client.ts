@@ -2314,6 +2314,13 @@ export const api = {
   // each must name an existing, enabled, non-degraded mail mount; the backend
   // rejects an ICM key as `include_not_mail` and anything unavailable as
   // `mail_unavailable`, fail-closed, before any session starts.
+  // Session-origin Task 5: `opts.openedFromKind` records WHAT the composer was
+  // opened from, so the session's system prompt can state its own premise. The
+  // wire spelling is UNDERSCORED and allowlisted server-side to exactly these
+  // three values — anything else fails the action closed. Callers holding a
+  // `PaneOrigin` (hyphenated `'mail-message'`) must map before calling; that
+  // mapping lives at the caller (ChatView), not here, so this module stays
+  // free of pane/route types.
   createAgentSession: (
     mountKey: string,
     generation: number,
@@ -2324,6 +2331,8 @@ export const api = {
       input?: { kind: 'workspace'; path: string } | { kind: 'icm'; icm_id: string; path: string };
       /** Mail mount keys (mail-<slug>) to include in the session scope. */
       includeMounts?: string[];
+      /** Wire spelling of the composer's origin — underscored, allowlisted server-side. */
+      openedFromKind?: 'mail_message' | 'page' | 'file';
     }
   ) =>
     runRpc(
@@ -2333,7 +2342,8 @@ export const api = {
           generation,
           contextDoc: opts?.contextDoc ?? null,
           input: opts?.input ?? null,
-          includeMounts: opts?.includeMounts ?? []
+          includeMounts: opts?.includeMounts ?? [],
+          openedFromKind: opts?.openedFromKind ?? null
         }),
       () =>
         httpCreateAgentSession(
@@ -2343,7 +2353,8 @@ export const api = {
               generation,
               contextDoc: opts?.contextDoc ?? null,
               input: opts?.input ?? null,
-              includeMounts: opts?.includeMounts ?? []
+              includeMounts: opts?.includeMounts ?? [],
+              openedFromKind: opts?.openedFromKind ?? null
             },
             fields: createAgentSessionFields
           })
