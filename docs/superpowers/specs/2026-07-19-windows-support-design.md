@@ -382,7 +382,7 @@ native Windows CI lane, which runs the full backend suite in T1.
   wrapper, leak the handle into app state next to `Backend`. Fixes the
   Burrito-wrapper orphan (Ground truth). The nonce/PortCollision probe
   already covers the "orphan from a crashed previous run" window.
-- **E2 — window chrome.** `titleBarStyle: "Overlay"`, `hiddenTitle`,
+- **E2 — window chrome.** *(SUPERSEDED 2026-08-02 by `2026-08-02-frameless-windows-linux-chrome-design.md`, which takes Windows and Linux frameless with `decorations: false` and app-drawn controls. The description below is the state this replaced.)* `titleBarStyle: "Overlay"`, `hiddenTitle`,
   `trafficLightPosition` are macOS-only and ignored elsewhere; Windows
   gets standard decorations. Frontend: the drag-region padding the
   overlay style implies must not leave a dead strip on Windows — audit
