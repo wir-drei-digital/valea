@@ -143,6 +143,57 @@ defmodule Valea.Agents.SessionSettingsTest do
     assert md =~ "CONTEXT.md"
   end
 
+  describe "opened_from premise" do
+    test "names a mail message and tells the agent to read it first" do
+      md =
+        SessionSettings.context(
+          scope(%{
+            opened_from: %{path: "/ws/sources/mail/mara/views/INBOX/42.md", kind: :mail_message}
+          })
+        )
+
+      assert md =~ "opened from a mail message"
+      assert md =~ "/ws/sources/mail/mara/views/INBOX/42.md"
+      assert md =~ "read it before acting"
+    end
+
+    test "names a page and a file with their own wording" do
+      page =
+        SessionSettings.context(
+          scope(%{opened_from: %{path: "/icms/coaching/CONTEXT.md", kind: :page}})
+        )
+
+      file =
+        SessionSettings.context(
+          scope(%{opened_from: %{path: "/icms/coaching/invoice.pdf", kind: :file}})
+        )
+
+      assert page =~ "opened from a page in this ICM"
+      assert file =~ "opened from a file in this ICM"
+    end
+
+    # The premise must never assert HOW the path became readable: `input`
+    # creates an explicit Read() allow, `context_doc` gets no grant at all and
+    # is merely inside the primary's read root. One wording serves both only if
+    # it claims neither.
+    test "never claims a grant mechanism" do
+      md =
+        SessionSettings.context(
+          scope(%{opened_from: %{path: "/icms/coaching/CONTEXT.md", kind: :page}})
+        )
+
+      refute md =~ "granted"
+    end
+
+    # Guards every plain chat session against drift.
+    test "adds nothing when there is no origin" do
+      assert SessionSettings.context(scope(%{})) ==
+               SessionSettings.context(scope(%{opened_from: nil}))
+
+      refute SessionSettings.context(scope(%{})) =~ "opened from"
+    end
+  end
+
   # Task 14 (mail-maildir spec §"Mount & containment"): the managedSettings
   # mirror of PermissionPolicy's mail deny tier. Globs are case-SENSITIVE
   # here — the authoritative, casefolded enforcement is PermissionPolicy's
