@@ -1,21 +1,28 @@
 <script lang="ts">
   /**
-   * The file browser as ONE pane: an optional 240px ICM tree plus one or two
-   * file splits. From the outside it is a single pane, which is the whole point
-   * — nothing outside this component can observe that the tree relates to the
-   * splits, so there is no cross-pane sync to arrange.
+   * The file browser as ONE pane: a tab strip above the content, the file the
+   * active tab names below it, and an optional 240px ICM tree down the RIGHT
+   * edge. From the outside it is a single pane, which is the whole point —
+   * nothing outside this component can observe that the tree relates to the
+   * content, so there is no cross-pane sync to arrange.
+   *
+   * TABS, NOT SPLITS. Files used to share the content area side by side, and
+   * they lost the width argument on every laptop: two files wanted a 1439px
+   * window, `SPLIT_MIN` had to come down from 300 to 240 to reach one at all,
+   * and a pane a tool chip created could still starve a file to twenty pixels.
+   * A tab costs no width, so one file gets the whole content area at any pane
+   * size. True side-by-side survives as ONE explicit control — Compare, in the
+   * pane header, which is the only thing here that still consults a width.
    *
    * Owns the split -> FileView ref map that `onBeforeMutate(href)` dispatches
-   * over: with two editable splits, a rename must flush the split holding that
+   * over: with two columns compared, a rename must flush the one holding that
    * file and not its sibling.
    *
    * It also owns the assistant's auto-open CLAIM (`pane.autoIndex`, an INDEX
    * into `paths`) and is where an assistant-opened file actually lands
-   * (`receiveAutoFile`) — because both of the rule's inputs are private to
-   * this component: the claim itself, and the split cap measured off this
-   * pane's own width.
+   * (`receiveAutoFile`) — because the claim is private to this component.
    *
-   * Every path list handed upward is a fresh array from `files-pane-state.ts`,
+   * Every path list handed upward is a fresh state from `files-pane-state.ts`,
    * and every removal re-maps the claim through `shiftAuto` first — see
    * `auto-open.ts`'s header for what skipping that costs. Removals this
    * component cannot see (a delete followed through `follow-mutation.ts`) come
@@ -26,6 +33,7 @@
   import { PaneGroup, Pane, PaneResizer } from 'paneforge';
   import FileView from '$lib/components/views/FileView.svelte';
   import IcmTree from '$lib/components/shell/IcmTree.svelte';
+  import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
@@ -34,10 +42,15 @@
   import { TREE_W, splitsThatFit, treeFits } from '$lib/shell/pane-fit';
   import { loadFilesSplit, saveFilesSplit } from '$lib/panes/pane-split';
   import {
-    canOpenBeside,
-    closeSplit,
-    openAsSecond,
-    openInFirst
+    TAB_CAP,
+    activateTab,
+    canOpenInNewTab,
+    closeTab,
+    compareTarget,
+    openInActiveTab,
+    openInNewTab,
+    resolveTabs,
+    type TabState
   } from '$lib/panes/files-pane-state';
   import { autoOpen, clearAuto, shiftAuto, shiftAutoAll } from '$lib/panes/auto-open';
   import type { FilesPaneDescriptor } from '$lib/panes/pane-route';
@@ -56,6 +69,39 @@
 
   let paneWidth = $state(0);
 
+  /** The descriptor's content half, in the shape the pure rules take. */
+  const tabs = $derived<TabState>({
+    paths: descriptor.paths,
+    active: descriptor.active,
+    compare: descriptor.compare
+  });
+
+  /**
+   * A tab the user asked for but has not filled yet — `＋`, then a file.
+   *
+   * Deliberately LOCAL and not in the URL: it holds nothing, so there is
+   * nothing to address, and a reload legitimately loses it. At most one exists
+   * at a time, so ＋ while one is waiting is a no-op rather than a strip full
+   * of identical empty chips.
+   */
+  let pendingTab = $state(false);
+
+  /**
+   * The tab that was showing before this one, as a PATH rather than an index —
+   * the list renumbers under it, and an index that survived a close would name
+   * whatever slid into the slot. It is what Compare puts beside the active tab.
+   */
+  let previousPath = $state<string | null>(null);
+  // Seeded by the effect's own first run rather than at init, which would read
+  // `descriptor` outside a closure and capture only its initial value.
+  let lastActivePath: string | null = null;
+  $effect(() => {
+    const now = descriptor.paths[descriptor.active] ?? null;
+    if (now === lastActivePath) return;
+    if (lastActivePath !== null) previousPath = lastActivePath;
+    lastActivePath = now;
+  });
+
   /**
    * The tree is only rendered when the pane can AFFORD it beside the file.
    *
@@ -71,6 +117,9 @@
    * intact and comes back the moment the pane is wide enough — so `treeBlocked`
    * travels to the header instead, where the toggle disables itself and says
    * why rather than claiming to show a tree that is not there.
+   *
+   * The rule is unchanged by the move to tabs; it simply measures the other
+   * side of the pane now.
    */
   const treeShown = $derived(pane.treeVisible && treeFits(paneWidth, descriptor.paths.length));
   $effect(() => {
@@ -79,28 +128,47 @@
       : 'Not enough width for the tree beside a file';
   });
 
-  // How many files may sit BESIDE each other here, from this pane's own width.
-  // Stays local: the header has no control that needs it any more, and the only
-  // things that consult it are the two openers below. Measured against what is
-  // RENDERED, not what is preferred — a tree the width just took away is 240px
-  // the splits get to keep. The first file is never subject to this cap at all
-  // — see `files-pane-state.ts`.
-  const maxSplits = $derived(splitsThatFit(paneWidth, treeShown));
+  /**
+   * The compare escape, and the ONE place a width still decides what a Files
+   * pane may hold: two columns genuinely do compete for the content area, so
+   * `splitsThatFit` still governs them — measured against what is RENDERED,
+   * because a tree the width just took away is 240px the columns get to keep.
+   *
+   * Below the threshold compare falls back to the active tab alone WITHOUT
+   * rewriting the descriptor, so widening the window brings the comparison
+   * back. The header reads `compareShown`, never the raw descriptor, or its
+   * pressed state would announce a second column that is not on screen.
+   */
+  const compareFits = $derived(splitsThatFit(paneWidth, treeShown) >= 2);
+  const compareShown = $derived(descriptor.compare !== null && compareFits);
+  $effect(() => {
+    pane.compareShown = compareShown;
+    pane.compareBlocked = !compareFits
+      ? 'Not enough width for two files side by side'
+      : descriptor.paths.length < 2
+        ? 'Open a second tab to compare'
+        : null;
+  });
 
   const treeNav = $derived(
     icmToNav(icmStore.groups.find((g) => g.mount === descriptor.mountKey)?.tree ?? [])
   );
+  /** Every open tab is marked in the tree; the active one more strongly. */
   const activePaths = $derived(descriptor.paths.map((p) => knowledgeHref(descriptor.mountKey, p)));
+  const currentPath = $derived(
+    descriptor.paths.length === 0
+      ? null
+      : knowledgeHref(descriptor.mountKey, descriptor.paths[descriptor.active])
+  );
 
-  // The tree cannot know how wide its host is, so the reason travels down. A
-  // pane too narrow for two files would REPLACE the split it was told to open
-  // beside, which is a control lying about what it does.
-  const besideDisabled = $derived(
-    canOpenBeside(descriptor.paths, maxSplits) ? null : 'Not enough width for a second file'
+  // The tree cannot know how many tabs its host has open, so the reason travels
+  // down. Width is no longer one of them: a tab takes none.
+  const newTabDisabled = $derived(
+    canOpenInNewTab(tabs) ? null : `${TAB_CAP} tabs are open — close one to open another`
   );
 
   /**
-   * The assistant's claim — but only while the split it names still holds the
+   * The assistant's claim — but only while the tab it names still holds the
    * file it was made for.
    *
    * `descriptor.paths` is rewritten by things that never reach `closeAt` or
@@ -116,15 +184,15 @@
       : null
   );
 
-  // Reveal the newest split's ancestors and scroll it into view. Only the
-  // newest: scrolling for both open files would fight itself.
+  // Reveal the ACTIVE tab's ancestors and scroll it into view. Only the active
+  // one: revealing for every open tab would fight itself.
   let revealed: string | null = null;
   $effect(() => {
-    const newest = descriptor.paths.at(-1);
-    if (!newest || newest === revealed) return;
-    revealed = newest;
-    for (const href of ancestorHrefs(descriptor.mountKey, newest)) treeOpenState.open(href);
-    const target = knowledgeHref(descriptor.mountKey, newest);
+    const showing = descriptor.paths[descriptor.active];
+    if (!showing || showing === revealed) return;
+    revealed = showing;
+    for (const href of ancestorHrefs(descriptor.mountKey, showing)) treeOpenState.open(href);
+    const target = knowledgeHref(descriptor.mountKey, showing);
     queueMicrotask(() =>
       document.querySelector(`[data-tree-href="${CSS.escape(target)}"]`)?.scrollIntoView({
         block: 'nearest'
@@ -132,9 +200,11 @@
     );
   });
 
-  // Split -> FileView ref map, keyed by href so a rename flushes the right one.
-  // `flushPending` is FileView's existing exported method (FileView.svelte:56),
-  // the same one the Knowledge route calls through its single `fileViewRef`.
+  // Open file -> FileView ref map, keyed by href so a rename flushes the right
+  // one. `flushPending` is FileView's existing exported method
+  // (FileView.svelte:56), the same one the Knowledge route calls through its
+  // single `fileViewRef`. Only RENDERED files are in it — a tab that is not
+  // showing has no editor to flush, because it has none mounted.
   const views: Record<string, FileView | null> = {};
 
   async function beforeMutate(href: string): Promise<void> {
@@ -142,7 +212,7 @@
   }
 
   /**
-   * Flush EVERY open split, for a caller that is about to invalidate all of
+   * Flush EVERY rendered file, for a caller that is about to invalidate all of
    * them at once rather than mutate one file — the workspace switch
    * (`AppFrame`'s `onBeforeMutateActive`). `beforeMutate(href)` is the
    * per-file half of the same contract.
@@ -151,40 +221,88 @@
     await Promise.all(Object.values(views).map((view) => view?.flushPending?.()));
   }
 
-  function setPaths(paths: string[]): void {
-    context.openPane?.({ ...descriptor, paths });
-  }
-
-  /** A tree click. Lands in split 0, and releases the assistant's claim on it. */
-  function openFirst(path: string): void {
-    const next = openInFirst(descriptor.paths, path, maxSplits);
-    pane.autoIndex = clearAuto(pane.autoIndex, next.indexOf(path));
-    setPaths(next);
-  }
-
-  /** "Open beside" — split 1, same claim release for the slot it lands in. */
-  function openBeside(path: string): void {
-    const next = openAsSecond(descriptor.paths, path, maxSplits);
-    pane.autoIndex = clearAuto(pane.autoIndex, next.indexOf(path));
-    setPaths(next);
+  function apply(next: TabState): void {
+    context.openPane?.({ ...descriptor, ...next });
   }
 
   /**
-   * Closing a split RENUMBERS `paths`, so the claim — an index — has to move
+   * A tree click. The tree drives the OPEN TAB: the active tab's file is
+   * replaced, so browsing costs no tabs at all. The exception is a pending
+   * empty tab, which is exactly a request for the next file to get one of its
+   * own.
+   */
+  function openFromTree(path: string): void {
+    const next = pendingTab ? openInNewTab(tabs, path) : openInActiveTab(tabs, path);
+    pendingTab = false;
+    pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    apply(next);
+  }
+
+  /** The row's "Open in a new tab" affordance. Same claim release for the tab it lands in. */
+  function openInTab(path: string): void {
+    if (newTabDisabled) return;
+    const next = openInNewTab(tabs, path);
+    pendingTab = false;
+    pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    apply(next);
+  }
+
+  /**
+   * Switching tabs is NOT an open: it places no file, so it releases no claim.
+   * The assistant may go on recycling the tab it made while you read another.
+   */
+  function showTab(index: number): void {
+    pendingTab = false;
+    const next = activateTab(tabs, index);
+    if (next !== tabs) apply(next);
+  }
+
+  /**
+   * Closing a tab RENUMBERS `paths`, so the claim — an index — has to move
    * with it or it starts pointing at whatever slid into that slot, and the
    * next assistant open silently overwrites a file the USER placed.
    * `clearAuto` covers user opens only; it does not cover removals.
    */
   function closeAt(index: number): void {
     pane.autoIndex = shiftAuto(pane.autoIndex, index);
-    setPaths(closeSplit(descriptor.paths, index));
+    apply(closeTab(tabs, index));
   }
 
   /**
-   * A split's file was deleted underneath it. The HOST drops the subject (and
-   * keeps the pane if the sibling survives — `PaneContext.onVanished`), but
-   * the claim is ours, and the resulting renumbering is the same one
-   * `closeAt` guards against.
+   * ＋. A tab that holds nothing yet, showing the same empty state a Files
+   * pane with no tabs shows. It is deliberately not a descriptor rewrite:
+   * there is nothing to write.
+   */
+  function newTab(): void {
+    pendingTab = true;
+  }
+
+  function toggleCompare(): void {
+    // Matches the `aria-disabled` control: the guard covers pointer AND
+    // keyboard activation, which an `aria-disabled` button still receives.
+    if (pane.compareBlocked !== null) return;
+    if (descriptor.compare !== null) {
+      // Turning compare off closes NEITHER tab — both stay in the strip.
+      apply({ ...tabs, compare: null });
+      return;
+    }
+    const target = compareTarget(tabs, previousPath === null ? null : tabs.paths.indexOf(previousPath));
+    if (target === null) return;
+    apply(resolveTabs(tabs.paths, tabs.active, target));
+  }
+
+  $effect(() => {
+    pane.toggleCompare = toggleCompare;
+    return () => {
+      pane.toggleCompare = null;
+    };
+  });
+
+  /**
+   * A tab's file was deleted underneath it. The HOST drops the subject (and
+   * keeps the pane if the others survive — `PaneContext.onVanished`), but the
+   * claim is ours, and the resulting renumbering is the same one `closeAt`
+   * guards against.
    */
   function fileVanished(path: string): void {
     if (!context.onVanished) return;
@@ -200,10 +318,10 @@
    * move with it or the next assistant open overwrites whatever slid into the
    * freed slot: exactly the eviction the rule exists to prevent.
    *
-   * A folder carries its descendants, so this can take both splits at once,
+   * A folder carries its descendants, so this can take several tabs at once,
    * which is what `shiftAutoAll` is for. A RENAME needs nothing here — it maps
    * paths in place and never changes the list's length, so the claim still
-   * names the same split.
+   * names the same tab.
    */
   function entryDeleted(target: { path: string; isFolder: boolean }): void {
     const removed: number[] = [];
@@ -215,19 +333,23 @@
 
   /**
    * A file the ASSISTANT opened — a tool chip, a citation — handed here by
-   * whichever surface it was clicked in. It recycles the split auto-open
-   * created and never evicts one the user placed; `auto-open.ts` holds the
-   * rule, this holds the claim.
+   * whichever surface it was clicked in. It recycles the tab auto-open created
+   * and never evicts one the user placed; `auto-open.ts` holds the rule, this
+   * holds the claim.
    *
-   * It lives in the pane and not in the route because both of its inputs do:
-   * the claim is an index into THIS pane's `paths`, and `maxSplits` is
-   * measured from this pane's own width, which nothing above here can see.
+   * It lives in the pane and not in the route because the claim is an index
+   * into THIS pane's `paths`, which nothing above here can see. The file
+   * becomes the SHOWING tab: a citation that arrives behind the tab you are
+   * reading is one you never see.
    */
   export function receiveAutoFile(path: string): void {
-    const next = autoOpen(descriptor.paths, claim, path, maxSplits);
+    const next = autoOpen(descriptor.paths, claim, path, TAB_CAP);
     pane.autoIndex = next.autoIndex;
     pane.autoPath = next.autoIndex === null ? null : next.paths[next.autoIndex];
-    if (next.paths !== descriptor.paths) setPaths(next.paths);
+    const at = next.paths.indexOf(path);
+    if (next.paths === descriptor.paths && at === descriptor.active) return;
+    pendingTab = false;
+    apply(resolveTabs(next.paths, at, descriptor.compare));
   }
 
   // Announce this pane as where an assistant-opened file lands, and stand down
@@ -235,12 +357,12 @@
   // object (side panes get one per render), which is a no-op re-registration.
   $effect(() => {
     context.registerFileTarget?.(receiveAutoFile);
-    // A surface the assistant CREATED: its one split is an auto-open that
-    // landed before this component existed, so the claim could not be recorded
-    // at the time. Without picking it up here the assistant's first read is
-    // stranded in a split it can never recycle, and its second read takes the
-    // other one — burning both on the flow that opens a Files pane in the
-    // first place. One-shot: asking consumes it.
+    // A surface the assistant CREATED: its one tab is an auto-open that landed
+    // before this component existed, so the claim could not be recorded at the
+    // time. Without picking it up here the assistant's first read is stranded
+    // in a tab it can never recycle, and its second read takes another —
+    // burning two on the flow that opens a Files pane in the first place.
+    // One-shot: asking consumes it.
     const created = context.takeAutoCreatedPath?.() ?? null;
     const at = created === null ? -1 : descriptor.paths.indexOf(created);
     // Gated on the VALIDATED claim, not the raw index: after a cross-ICM open
@@ -252,19 +374,171 @@
     }
     return () => context.registerFileTarget?.(null);
   });
+
+  /** What the content area renders: one file, or two when compare is on. */
+  const columns = $derived(
+    descriptor.paths.length === 0 || pendingTab
+      ? []
+      : compareShown && descriptor.compare !== null
+        ? [descriptor.paths[descriptor.active], descriptor.paths[descriptor.compare]]
+        : [descriptor.paths[descriptor.active]]
+  );
+
+  function basename(path: string): string {
+    return path.split('/').pop() ?? path;
+  }
 </script>
 
 <div bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+    {#if descriptor.paths.length > 0 || pendingTab}
+      <!-- The tab strip. Plain buttons rather than a `tablist`: these tabs own
+           no `tabpanel` to point at, and claiming the role would promise the
+           arrow-key navigation the APG pattern requires. `aria-current` is the
+           same marker `IcmTree` uses for the row you are reading.
+           No accent colour anywhere — switching a tab has no consequence, and
+           in this design system colour means one. -->
+      <div
+        class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-2 py-1"
+        aria-label="Open files"
+      >
+        {#each descriptor.paths as path, i (path)}
+          {@const showing = i === descriptor.active || (compareShown && i === descriptor.compare)}
+          <div
+            class={[
+              'group/tab relative flex h-8 min-w-0 max-w-[180px] flex-1 items-center rounded-md transition-colors',
+              showing ? 'bg-paper-card' : 'hover:bg-paper-pill'
+            ]}
+          >
+            <button
+              type="button"
+              title={path}
+              aria-current={i === descriptor.active ? 'true' : undefined}
+              onclick={() => showTab(i)}
+              class={[
+                'min-w-0 flex-1 truncate rounded-md py-1.5 pr-8 pl-2.5 text-left text-[12px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                showing ? 'text-ink-heading' : 'text-ink-meta group-hover/tab:text-ink-heading'
+              ]}
+            >
+              {basename(path)}
+            </button>
+            <!-- A sibling of the tab button, never nested inside it: a button
+                 within a button is invalid HTML and swallows the outer click
+                 target. `bg-inherit` takes the chip's own background so the ✕
+                 sits cleanly over the truncated end of a long name. -->
+            <button
+              type="button"
+              title="Close tab"
+              aria-label={`Close ${basename(path)}`}
+              onclick={() => closeAt(i)}
+              class={[
+                'text-ink-meta hover:text-ink-heading focus-visible:ring-ring/50 absolute top-0 right-0 flex size-8 items-center justify-center rounded-r-md bg-inherit transition-colors outline-none focus-visible:opacity-100 focus-visible:ring-2',
+                showing ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100'
+              ]}
+            >
+              <X class="size-3" strokeWidth={1.5} />
+            </button>
+          </div>
+        {/each}
+
+        {#if pendingTab}
+          <div
+            class="bg-paper-card group/tab relative flex h-8 min-w-0 max-w-[180px] flex-1 items-center rounded-md"
+          >
+            <span
+              class="text-ink-meta min-w-0 flex-1 truncate py-1.5 pr-8 pl-2.5 text-[12px] italic"
+              aria-current="true"
+            >
+              New tab
+            </span>
+            <button
+              type="button"
+              title="Close tab"
+              aria-label="Close the new tab"
+              onclick={() => (pendingTab = false)}
+              class="text-ink-meta hover:text-ink-heading focus-visible:ring-ring/50 absolute top-0 right-0 flex size-8 items-center justify-center rounded-r-md bg-inherit transition-colors outline-none focus-visible:ring-2"
+            >
+              <X class="size-3" strokeWidth={1.5} />
+            </button>
+          </div>
+        {/if}
+
+        <button
+          type="button"
+          title="New tab"
+          aria-label="New tab"
+          onclick={newTab}
+          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+        >
+          <Plus class="size-3.5" strokeWidth={1.5} />
+        </button>
+      </div>
+    {/if}
+
+    {#if columns.length === 0}
+      <p class="text-ink-meta m-auto px-6 text-[12.5px]">Pick a file to read it.</p>
+    {:else if columns.length === 1}
+      <!-- One file, the whole content area, at any pane width. That is the
+           point of the tab strip above it. -->
+      <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <FileView
+          bind:this={views[knowledgeHref(descriptor.mountKey, columns[0])]}
+          mountKey={descriptor.mountKey}
+          path={columns[0]}
+          onVanished={() => fileVanished(columns[0])}
+        />
+      </div>
+    {:else}
+      <PaneGroup
+        direction="horizontal"
+        class="min-h-0 flex-1"
+        onLayoutChange={(l) => {
+          if (l.length === 2 && Number.isFinite(l[0])) saveFilesSplit(l[0]);
+        }}
+      >
+        {#each columns as path, i (path)}
+          {#if i > 0}
+            <PaneResizer
+              aria-label="Resize the compared files"
+              class="bg-paper-hairline hover:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize transition-colors"
+            />
+          {/if}
+          <Pane
+            order={i + 1}
+            defaultSize={i === 0 ? loadFilesSplit() : undefined}
+            minSize={20}
+            class="flex min-h-0 min-w-0 flex-col"
+          >
+            <!-- Which column is which. The strip above names both files, but
+                 not which side each landed on, and that is the one thing a
+                 comparison has to be unambiguous about. No ✕ here: closing a
+                 file is the tab's job, and compare must not be a second way to
+                 lose one. -->
+            <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+              <span class="text-ink-meta min-w-0 flex-1 truncate font-mono text-[11px]">{path}</span>
+            </div>
+            <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <FileView
+                bind:this={views[knowledgeHref(descriptor.mountKey, path)]}
+                mountKey={descriptor.mountKey}
+                {path}
+                onVanished={() => fileVanished(path)}
+              />
+            </div>
+          </Pane>
+        {/each}
+      </PaneGroup>
+    {/if}
+  </div>
+
   {#if treeShown}
-    <!-- Fixed `TREE_W` and deliberately not resizable: it is a navigator, not a
-         second reading surface, and a draggable edge here would compete with
-         the split divider a few hundred pixels to its right. The width is the
-         constant the fit arithmetic reasons about, not a literal beside it —
-         `splitsThatFit` subtracts exactly this many pixels. -->
-    <div
-      style:width="{TREE_W}px"
-      class="border-paper-hairline shrink-0 overflow-y-auto border-r"
-    >
+    <!-- The tree sits on the RIGHT of the content, not the left: the tab strip
+         belongs above the file it names, and a navigator between the strip and
+         its content would cut the two apart. Fixed `TREE_W` and deliberately
+         not resizable — it is a navigator, not a second reading surface, and
+         the width is the constant the fit arithmetic reasons about rather than
+         a literal beside it. -->
+    <div style:width="{TREE_W}px" class="border-paper-hairline shrink-0 overflow-y-auto border-l">
       <!-- `entryMenus` is explicit because this tree drives selection through
            `onSelect` (a click rewrites the descriptor, it does not navigate)
            and IcmTree reads that as picker mode, which suppresses the
@@ -273,66 +547,14 @@
       <IcmTree
         nodes={treeNav}
         {activePaths}
+        {currentPath}
         entryMenus
         onBeforeMutate={beforeMutate}
-        onSelect={(sel) => openFirst(sel.path)}
-        onOpenBeside={(sel) => openBeside(sel.path)}
+        onSelect={(sel) => openFromTree(sel.path)}
+        onOpenInTab={(sel) => openInTab(sel.path)}
         onDeleted={entryDeleted}
-        openBesideDisabled={besideDisabled}
+        openInTabDisabled={newTabDisabled}
       />
     </div>
-  {/if}
-
-  {#if descriptor.paths.length === 0}
-    <p class="text-ink-meta m-auto px-6 text-[12.5px]">Pick a file to read it.</p>
-  {:else}
-    <PaneGroup
-      direction="horizontal"
-      class="min-h-0 flex-1"
-      onLayoutChange={(l) => {
-        if (l.length === 2 && Number.isFinite(l[0])) saveFilesSplit(l[0]);
-      }}
-    >
-      {#each descriptor.paths as path, i (path)}
-        {#if i > 0}
-          <PaneResizer
-            aria-label="Resize split"
-            class="bg-paper-hairline hover:bg-paper-chip-border w-[3px] shrink-0 cursor-col-resize transition-colors"
-          />
-        {/if}
-        <Pane
-          order={i + 1}
-          defaultSize={i === 0 && descriptor.paths.length === 2 ? loadFilesSplit() : undefined}
-          minSize={20}
-          class="flex min-h-0 min-w-0 flex-col"
-        >
-          {#if descriptor.paths.length > 1}
-            <!-- A per-split strip exists only while there are two: with one
-                 file the pane header already names it, and a second row
-                 saying the same thing would just eat reading height. -->
-            <div class="border-paper-hairline flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
-              <span class="text-ink-meta min-w-0 flex-1 truncate font-mono text-[11px]">{path}</span>
-              <button
-                type="button"
-                title="Close this split"
-                aria-label={`Close ${path}`}
-                onclick={() => closeAt(i)}
-                class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
-              >
-                <X class="size-3.5" strokeWidth={1.5} />
-              </button>
-            </div>
-          {/if}
-          <div class="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-            <FileView
-              bind:this={views[knowledgeHref(descriptor.mountKey, path)]}
-              mountKey={descriptor.mountKey}
-              {path}
-              onVanished={() => fileVanished(path)}
-            />
-          </div>
-        </Pane>
-      {/each}
-    </PaneGroup>
   {/if}
 </div>

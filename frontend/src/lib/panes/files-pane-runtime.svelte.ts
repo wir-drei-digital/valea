@@ -55,6 +55,24 @@ export class FilesPaneState {
    */
   treeBlocked = $state<string | null>(null);
 
+  /**
+   * The compare escape, written by the pane BODY for the same reason
+   * `treeBlocked` is: the header holds the control and can measure nothing.
+   *
+   * `compareShown` is what is ON SCREEN, never the descriptor — below the
+   * width threshold the body falls back to the active tab alone without
+   * rewriting the URL, so a control reading the descriptor would announce
+   * `aria-pressed="true"` over a single column.
+   */
+  compareShown = $state(false);
+  /** Why compare cannot act — too narrow, or fewer than two tabs — or `null`. */
+  compareBlocked = $state<string | null>(null);
+  /**
+   * Registered by the pane body, which owns the descriptor rewrite. The header
+   * cannot do it itself: it never sees `PaneContext`.
+   */
+  toggleCompare = $state<(() => void) | null>(null);
+
   /** What is actually rendered: the preference, unless the width overrides it. */
   get treeShown(): boolean {
     return this.treeVisible && this.treeBlocked === null;

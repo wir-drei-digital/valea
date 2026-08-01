@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { NavTreeItem } from '$lib/shell/nav';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import Columns2 from '@lucide/svelte/icons/columns-2';
+  import SquarePlus from '@lucide/svelte/icons/square-plus';
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
   import { fileLeafLabel } from '$lib/components/knowledge/file-leaf';
@@ -11,23 +11,31 @@
   let {
     nodes,
     activePaths = [],
+    currentPath = null,
     linkSearch = '',
     entryMenus,
     onBeforeMutate,
     onDeleted,
     onSelect,
-    onOpenBeside,
-    openBesideDisabled = null
+    onOpenInTab,
+    openInTabDisabled = null
   }: {
     nodes: NavTreeItem[];
     /**
      * EVERY open href, not "the one open page" (composable views): a Files
-     * pane can hold two splits at once, and both of their rows have to read
-     * as open. A single active path stopped being expressible the moment a
-     * pane could show a pair, so this replaces the old `activePath` string
-     * rather than sitting beside it.
+     * pane holds up to six tabs at once, and every one of their rows has to
+     * read as open. A single active path stopped being expressible the moment
+     * a pane could show more than one file, so this replaced the old
+     * `activePath` string rather than sitting beside it.
      */
     activePaths?: string[];
+    /**
+     * Of those, the one being READ — the active tab. Marked more strongly than
+     * the rest and the only row that carries `aria-current`, because "six
+     * files are open" and "this is the one on screen" are different facts and
+     * a tree that renders them identically answers neither.
+     */
+    currentPath?: string | null;
     /**
      * Query string appended to every leaf link's `href` (side-panes pass —
      * e.g. `?pane=chat:<id>`): browsing the tree with a chat pane open keeps
@@ -83,34 +91,59 @@
      */
     onSelect?: (sel: { mountKey: string; path: string }) => void;
     /**
-     * "Open beside" — a leaf row's hover-revealed second split affordance.
-     * Only leaf rows offer it: a folder click expands the folder and never
-     * takes a split, so there is nothing to place beside anything.
+     * "Open in a new tab" — a leaf row's hover-revealed affordance. Only leaf
+     * rows offer it: a folder click expands the folder and never opens
+     * anything, so there is nothing to put in a tab.
+     *
+     * It used to be "Open beside", a second split. Splits are gone; a plain
+     * row click now replaces the tab you are reading, and this is how you keep
+     * it and open another.
      */
-    onOpenBeside?: (sel: { mountKey: string; path: string }) => void;
+    onOpenInTab?: (sel: { mountKey: string; path: string }) => void;
     /**
-     * Why "Open beside" cannot act, or null when it can. The tree has no idea
-     * how wide its host is, so the host computes this and hands it down.
+     * Why "Open in a new tab" cannot act, or null when it can. The tree has no
+     * idea how many tabs its host has open, so the host computes this and
+     * hands it down. Width is no longer ever the reason — a tab takes none.
      *
      * When set, the control still RENDERS — disabled, carrying this string as
      * its tooltip. A disabled control with a reason teaches; a missing one
      * just leaves the user wondering where it went. Same rule the spec sets
      * for the shell's own `＋ Pane`.
      */
-    openBesideDisabled?: string | null;
+    openInTabDisabled?: string | null;
   } = $props();
 
   const showMenus = $derived(entryMenus ?? onSelect === undefined);
 
   // The leaf row's right gutter holds 0, 1 or 2 size-8 controls; its padding
   // has to clear them or a long filename runs underneath.
-  const gutterControls = $derived((onOpenBeside ? 1 : 0) + (showMenus ? 1 : 0));
+  const gutterControls = $derived((onOpenInTab ? 1 : 0) + (showMenus ? 1 : 0));
   const leafPad = $derived(
     gutterControls === 0 ? 'pr-2' : gutterControls === 1 ? 'pr-9' : 'pr-[68px]'
   );
 
   function isActive(href: string): boolean {
     return activePaths.includes(href);
+  }
+
+  /**
+   * The row on screen right now. Hosts that pass no `currentPath` keep the
+   * behaviour they had — every open row reads as current — so the popover
+   * pickers and the route's own tree are untouched.
+   */
+  function isCurrent(href: string): boolean {
+    return currentPath === null ? isActive(href) : currentPath === href;
+  }
+
+  /**
+   * Two levels of "open", without reaching for colour: the tab being read
+   * carries the tree's active background, the other open tabs carry ink weight
+   * alone. Being open is not a consequence, so nothing here is accented.
+   */
+  function rowTone(href: string): string {
+    if (isCurrent(href)) return 'bg-paper-tree-active text-ink-heading';
+    if (isActive(href)) return 'text-ink-heading';
+    return 'text-ink-secondary';
   }
 
   /**
@@ -163,11 +196,11 @@
           <button
             type="button"
             onclick={() => toggle(node)}
-            aria-current={isActive(node.href) ? 'page' : undefined}
+            aria-current={isCurrent(node.href) ? 'page' : undefined}
             aria-expanded={treeOpenState.isOpen(node.href)}
             class={[
               'flex w-full items-center gap-1 rounded-md py-[3px] pr-9 pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
-              isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+              rowTone(node.href)
             ]}
           >
             <ChevronRight
@@ -202,13 +235,14 @@
               <IcmTree
                 nodes={node.children}
                 {activePaths}
+                {currentPath}
                 {linkSearch}
                 {entryMenus}
                 {onBeforeMutate}
                 {onDeleted}
                 {onSelect}
-                {onOpenBeside}
-                {openBesideDisabled}
+                {onOpenInTab}
+                {openInTabDisabled}
               />
             {:else}
               <p class="text-ink-meta px-2 py-[3px] text-[12px] italic">Empty</p>
@@ -226,11 +260,11 @@
               type="button"
               data-tree-href={node.href}
               onclick={() => onSelect?.({ mountKey: node.mountKey, path: node.path })}
-              aria-current={isActive(node.href) ? 'page' : undefined}
+              aria-current={isCurrent(node.href) ? 'page' : undefined}
               class={[
                 'flex w-full items-center gap-1 rounded-md py-[3px] pl-2 text-left text-[12.5px] transition-colors hover:bg-paper-pill',
                 leafPad,
-                isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+                rowTone(node.href)
               ]}
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
@@ -248,11 +282,11 @@
             <a
               href={node.href + linkSearch}
               data-tree-href={node.href}
-              aria-current={isActive(node.href) ? 'page' : undefined}
+              aria-current={isCurrent(node.href) ? 'page' : undefined}
               class={[
                 'flex items-center gap-1 rounded-md py-[3px] pl-2 text-[12.5px] transition-colors hover:bg-paper-pill',
                 leafPad,
-                isActive(node.href) ? 'bg-paper-tree-active text-ink-heading' : 'text-ink-secondary'
+                rowTone(node.href)
               ]}
             >
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
@@ -272,7 +306,7 @@
                invalid HTML and swallows the row's own click target. -->
           {#if gutterControls > 0}
             <div class="absolute top-1/2 right-0.5 flex -translate-y-1/2 items-center">
-              {#if onOpenBeside}
+              {#if onOpenInTab}
                 <!-- `aria-disabled`, not the `disabled` attribute: a truly
                      disabled button takes no pointer events, so its `title`
                      never appears — which would turn "disabled with the reason
@@ -281,27 +315,27 @@
                      reason, which is strictly better. -->
                 <button
                   type="button"
-                  title={openBesideDisabled ?? 'Open beside'}
-                  aria-label={`Open ${node.label} beside`}
-                  aria-disabled={openBesideDisabled ? 'true' : undefined}
+                  title={openInTabDisabled ?? 'Open in a new tab'}
+                  aria-label={`Open ${node.label} in a new tab`}
+                  aria-disabled={openInTabDisabled ? 'true' : undefined}
                   onclick={(event) => {
                     event.stopPropagation();
-                    if (openBesideDisabled) return;
-                    onOpenBeside?.({ mountKey: node.mountKey, path: node.path });
+                    if (openInTabDisabled) return;
+                    onOpenInTab?.({ mountKey: node.mountKey, path: node.path });
                   }}
                   class={[
                     'text-ink-meta flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
-                    openBesideDisabled ? 'cursor-default' : 'hover:bg-paper-card hover:text-ink-heading'
+                    openInTabDisabled ? 'cursor-default' : 'hover:bg-paper-card hover:text-ink-heading'
                   ]}
                 >
                   <!-- The unavailable state dims the ICON, never the button:
                        the button's opacity is the row's hover reveal, and a
                        second `group-hover:opacity-*` on the same element would
                        be a same-specificity fight decided by stylesheet order.
-                       Nothing here reaches for accent colour — being too narrow
-                       is not a consequence, it is a fact. -->
-                  <Columns2
-                    class={['size-3.5', openBesideDisabled ? 'opacity-40' : '']}
+                       Nothing here reaches for accent colour — the strip being
+                       full is not a consequence, it is a fact. -->
+                  <SquarePlus
+                    class={['size-3.5', openInTabDisabled ? 'opacity-40' : '']}
                     strokeWidth={1.5}
                   />
                 </button>
