@@ -42,6 +42,7 @@
     threadCountBadge,
     threadUnread
   } from './mail-shapes';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
   import type { MailMessageSummary } from '$lib/stores/mail.svelte';
 
   let {
@@ -50,7 +51,8 @@
     account,
     density = 'comfortable',
     showSnippets = true,
-    onSelect
+    onSelect,
+    linkUrl
   }: {
     messages: (MailMessageSummary & { snippet?: string })[];
     selectedId: string | null;
@@ -71,7 +73,22 @@
      * unique WITHIN an account — the same reason the href is qualified.
      */
     onSelect?: (account: string, msgId: string) => void;
+    /**
+     * The host route's current URL, so a row link keeps whatever panes are
+     * open. `messageHref` builds `/mail?account=…&message=…` from nothing, so
+     * without this every click on a message silently closed the chat sitting
+     * beside it — reading a message is an in-route move.
+     *
+     * Omitted by hosts that pass `onSelect` instead of navigating (the Mail
+     * pane), where there is no href to carry anything.
+     */
+    linkUrl?: URL;
   } = $props();
+
+  function rowHref(msgId: string): string {
+    const href = messageHref(account, msgId);
+    return linkUrl ? hrefWithPanes(href, linkUrl) : href;
+  }
 </script>
 
 <!-- The row's interior is a snippet so the link and the button forms cannot
@@ -129,7 +146,7 @@
         </button>
       {:else}
         <a
-          href={messageHref(account, message.msgId)}
+          href={rowHref(message.msgId)}
           class="block border-l-[3px] pr-4 pl-3.5 transition-colors hover:bg-paper-pill"
           class:py-3={density === 'comfortable'}
           class:py-2={density === 'compact'}

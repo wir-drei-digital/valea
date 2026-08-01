@@ -39,6 +39,7 @@
     type ReadFilter
   } from '$lib/components/mail/mail-shapes';
   import { watchMailSelection } from '$lib/components/mail/mail-selection.svelte';
+  import { hrefWithPanes } from '$lib/panes/pane-route';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { composeHref } from '$lib/components/mail/compose';
@@ -284,7 +285,8 @@
                     <Button
                       type="button"
                       size="sm"
-                      onclick={() => void goto(composeHref(mailStore.selectedAccount, null))}
+                      onclick={() =>
+                        void goto(hrefWithPanes(composeHref(mailStore.selectedAccount, null), page.url))}
                     >
                       Compose
                     </Button>
@@ -308,7 +310,9 @@
                     </DropdownMenu.Trigger>
                     <DropdownMenu.Content align="end" class="w-52">
                       {#if mailStore.selectedAccount}
-                        <DropdownMenu.Item onSelect={() => void goto('/mail?drafts=1')}>
+                        <DropdownMenu.Item
+                          onSelect={() => void goto(hrefWithPanes('/mail?drafts=1', page.url))}
+                        >
                           <FileText class="size-3.5" strokeWidth={1.5} />
                           Drafts
                           {#if draftsCount > 0}
@@ -404,6 +408,7 @@
                     messages={mailStore.searchResults}
                     {selectedId}
                     account={mailStore.selectedAccount ?? ''}
+                    linkUrl={page.url}
                   />
                   {#if mailStore.searchResults.length === 0}
                     <!-- A search that FAILED and one that found nothing look
@@ -421,7 +426,12 @@
                     </p>
                   {/if}
                 {:else}
-                  <MessageList messages={visibleMessages} {selectedId} account={mailStore.selectedAccount ?? ''} />
+                  <MessageList
+                    messages={visibleMessages}
+                    {selectedId}
+                    account={mailStore.selectedAccount ?? ''}
+                    linkUrl={page.url}
+                  />
                   <!-- The filtered-empty note and the "Load older" row are exclusive:
                        under a note explaining that the filter hid everything, a "Load
                        older" button reads as the way to get those messages back, which

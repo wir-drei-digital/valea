@@ -772,11 +772,15 @@ export function messageHref(account: string, msgId: string): string {
  * account — and switch straight back. The URL leads; the store follows.
  *
  * Any open `?message=` is dropped (a msg id belongs to the account it was
- * opened from); `?drafts=1` survives, since that panel spans accounts.
+ * opened from); `?drafts=1` survives, since that panel spans accounts, and so
+ * does the pane composition — switching mailbox is an IN-ROUTE move, and
+ * whatever sits beside the reader has nothing to do with which account is
+ * open. Rebuilding the URL from scratch is what silently closed it.
  */
 export function accountSwitchHref(url: URL, slug: string): string {
   const params = new URLSearchParams({ account: slug });
   if (url.searchParams.get('drafts') === '1') params.set('drafts', '1');
+  for (const pane of url.searchParams.getAll('pane')) params.append('pane', pane);
   return `/mail?${params.toString()}`;
 }
 
