@@ -111,11 +111,11 @@
       // page nested under it) leaves a surface pointing at nothing.
       //
       // `followMutation` asks that question of EVERY surface, not just the
-      // route's pathname: the primary's second split (`?split=`) and any Files
+      // route's pathname: the primary's other tabs (`?tabs=`) and any Files
       // pane (`?pane=files:…`) can be showing it too, and neither is visible
       // to a pathname comparison. Per the spec's per-subject rule it drops the
-      // one file and keeps the rest — a sibling split survives, and a Files
-      // pane left with nothing stays open as its tree rather than closing and
+      // one file and keeps the rest — sibling tabs survive, and a Files pane
+      // left with nothing stays open as its tree rather than closing and
       // taking the navigator with it. `?pane=` rides along on the primary's
       // fallback exactly as the route's own `onVanished` does; the two paths
       // must not disagree about whether an open session survives.

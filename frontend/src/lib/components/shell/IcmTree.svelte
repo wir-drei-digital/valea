@@ -77,9 +77,9 @@
     /**
      * A row's Delete succeeded, naming the entry that went. Both dialogs
      * follow a mutation by rewriting every surface showing it — the route
-     * pathname, `?split=`, and each `?pane=files:…` — directly in the URL
-     * (`follow-mutation.ts`), which means a host holding per-split state has
-     * no other way to learn that its list was renumbered under it. The Files
+     * pathname, `?tabs=`, and each `?pane=files:…` — directly in the URL
+     * (`follow-mutation.ts`), which means a host holding per-tab state has no
+     * other way to learn that its strip was renumbered under it. The Files
      * pane uses it to re-map the assistant's auto-open claim.
      *
      * A delete only: a rename maps paths in place and renumbers nothing. The

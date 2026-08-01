@@ -234,24 +234,25 @@
    * own.
    */
   function openFromTree(path: string): void {
-    const opening = pane.pendingTab || !descriptor.paths.includes(path);
+    // Only an OPEN releases the claim. Both openers ACTIVATE rather than place
+    // when the file is already in a tab, and releasing a claim for a click that
+    // touched no file would cost the assistant its recycling for nothing —
+    // which is the same reason `showTab` releases nothing. Read before the
+    // rules run, because they are what would make it look like an open.
+    const placed = !descriptor.paths.includes(path);
     const next = pane.pendingTab ? openInNewTab(tabs, path) : openInActiveTab(tabs, path);
     pane.pendingTab = false;
-    // Only an OPEN releases the claim. Clicking the row of a file that is
-    // already in a tab merely activates it, which places nothing — releasing a
-    // claim there would cost the assistant its recycling for a click that did
-    // not touch a file, and it is the same reason `showTab` releases nothing.
-    if (opening) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    if (placed) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
     apply(next);
   }
 
   /** The row's "Open in a new tab" affordance. Same claim release for the tab it lands in. */
   function openInTab(path: string): void {
     if (newTabDisabled) return;
-    const opening = !descriptor.paths.includes(path);
+    const placed = !descriptor.paths.includes(path);
     const next = openInNewTab(tabs, path);
     pane.pendingTab = false;
-    if (opening) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    if (placed) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
     apply(next);
   }
 

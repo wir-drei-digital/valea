@@ -707,8 +707,10 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
   tab lands on its neighbour; compare resolution and its fallback
 - `files-url.test.ts` — the primary's URL both ways, including the two
   encoding layers a literal pipe in a filename needs
-- `auto-open.test.ts` — recycles its own split; never evicts a user's; falls
-  back to a free slot; no-ops when full; a user open clears the mark
+- `auto-open.test.ts` — recycles its own TAB; never evicts a user's; falls back
+  to a free slot; no-ops when every tab is the user's; a user open clears the
+  mark; the claim survives each removal path through the real `closeTab` and
+  `dropSubject`
 - `pane-memory.test.ts` — save/load; URL wins over memory; route keys are
   param-free; a `v` mismatch or unparseable descriptor is dropped and
   rewritten; storage failure degrades silently (the pattern `pane-split.ts`

@@ -251,7 +251,7 @@ export function withPanes(url: URL, panes: PaneDescriptor[]): string {
  * keeps the composition. Renaming the page you are reading, or following a
  * deleted file back to the index, must not close the chat sitting beside it.
  *
- * Any params `href` carries of its own survive (`?split=`); any pane params it
+ * Any params `href` carries of its own survive (`?tabs=`); any pane params it
  * carries are replaced, since `url`'s are the live ones.
  */
 export function hrefWithPanes(href: string, url: URL): string {
