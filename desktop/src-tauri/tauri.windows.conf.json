@@ -1,4 +1,23 @@
 {
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Valea",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 1080,
+        "minHeight": 700,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "decorations": false,
+        "shadow": true
+      }
+    ]
+  },
   "bundle": {
     "targets": ["nsis"],
     "externalBin": ["binaries/valea-server", "binaries/valea-spawn"]
