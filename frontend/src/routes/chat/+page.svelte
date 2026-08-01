@@ -193,7 +193,7 @@
   };
 </script>
 
-<AppFrame {primaryDescriptor}>
+<AppFrame>
   {#snippet main()}
     <!-- The doctor override deliberately sits OUTSIDE `PaneHost`: it replaces
          the whole content area (it's the "the assistant isn't wired up"

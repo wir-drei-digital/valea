@@ -251,7 +251,7 @@
   }
 </script>
 
-<AppFrame {primaryDescriptor}>
+<AppFrame>
   {#snippet main()}
     <PaneHost
       {primaryDescriptor}
@@ -270,7 +270,7 @@
           <section
             class="border-paper-hairline bg-paper-panel w-[300px] max-w-[340px] min-w-[250px] shrink-0 overflow-y-auto border-r"
           >
-            <ListPane title="Files">
+            <ListPane title="Files" gutter>
               {#snippet action()}
                 {#if selectedMountKey}
                   {@const mountKey = selectedMountKey}

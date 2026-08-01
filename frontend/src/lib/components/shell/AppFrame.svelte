@@ -4,43 +4,41 @@
   import { page } from '$app/state';
   import { AppShell, Sidebar } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
-  import { mailStore } from '$lib/stores/mail.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { resolveActiveMountKey } from '$lib/shell/icm-route';
-  import type { PaneDescriptor } from '$lib/panes/pane-route';
 
   // Thin per-page composition of AppShell + Sidebar, shared by every route
   // beyond Today (which still wires this inline — see +page.svelte). Each
-  // route supplies `main` and, if it hosts panes, the descriptor its own
-  // primary view is showing; the sidebar's ICM project groups +
-  // active-mount highlighting are wired once here since every route needs
-  // them.
+  // route supplies `main`; the sidebar's ICM project groups + active-mount
+  // highlighting are wired once here since every route needs them.
   //
   // `list` and `rail` are gone — see `AppShell`'s header. A route that wants
   // a fixed navigator column renders it inside its own `main` snippet.
+  //
+  // `primaryDescriptor` is gone with the ＋ Pane menu, which was the only
+  // thing the shell ever did with it — every route still computes its own and
+  // hands it to `PaneHost`, where it belongs.
   let {
     main,
-    primaryDescriptor = null,
     onBeforeMutateActive
   }: {
     main: Snippet;
-    /** Forwarded to `AppShell` — what the route's primary view is showing. */
-    primaryDescriptor?: PaneDescriptor | null;
     /** Forwarded to `Sidebar` — see `WorkspaceSwitcher`'s doc comment. */
     onBeforeMutateActive?: () => Promise<void>;
   } = $props();
 
   onMount(() => {
     void icmStore.refetch();
-    // The ＋ Pane menu reasons about mounts and mail accounts from EVERY
-    // route, not just the two that own those stores, and it must only ever
-    // assert availability from LOADED data — an unfetched store looks
-    // identical to an empty workspace. Both are one-shot: the routes that own
-    // them refresh unconditionally on their own mount, so this is the cold
-    // path only.
+    // A mounted `ChatView` names the ICM a session runs in out of
+    // `mountsStore`, on any route that can host one, so the cold fetch stays
+    // here rather than in the two routes that own the store. One-shot: those
+    // routes refresh unconditionally on their own mount.
+    //
+    // The mail-status cold fetch that used to sit beside it went with the
+    // ＋ Pane menu — the only consumer that needed mail loaded on routes that
+    // show no mail. `MailPane` and `/mail` each ask for themselves.
     if (!mountsStore.loaded) void mountsStore.refresh();
-    if (!mailStore.statusLoaded) void mailStore.refreshStatus();
   });
 
   // Task 9.3: the sidebar no longer renders a file tree (Knowledge owns
@@ -55,7 +53,7 @@
   );
 </script>
 
-<AppShell {main} {primaryDescriptor}>
+<AppShell {main}>
   {#snippet sidebar()}
     <Sidebar {activeMountKey} {onBeforeMutateActive} />
   {/snippet}

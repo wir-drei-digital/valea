@@ -139,7 +139,9 @@
 <AppFrame>
   {#snippet main()}
     <div class="relative flex min-h-0 flex-1 flex-col">
-      <header class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4">
+      <!-- `ps-12`: the shell's nav toggle floats over the content column's
+           top-left corner — see `NavToggle.svelte`. -->
+      <header class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-6 pe-7 pb-4 ps-12">
         <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">
           {title}
         </h1>

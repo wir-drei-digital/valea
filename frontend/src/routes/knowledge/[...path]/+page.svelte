@@ -286,7 +286,7 @@
   };
 </script>
 
-<AppFrame {primaryDescriptor} onBeforeMutateActive={flushBeforeMutate}>
+<AppFrame onBeforeMutateActive={flushBeforeMutate}>
   {#snippet main()}
     <PaneHost
       {primaryDescriptor}
@@ -305,8 +305,10 @@
                `ownsTitle` suppresses it in the host: the strip names the file.
                The controls carry the "Files" label themselves when nothing is
                open, so the pane is never nameless. -->
+          <!-- `ps-11`: this band is the content column's top-left, and the
+               shell's nav toggle floats over it — see `NavToggle.svelte`. -->
           <div
-            class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
+            class="border-paper-hairline flex shrink-0 items-center gap-1 border-b pt-3 pe-3 pb-2 ps-11"
           >
             {#if primaryDescriptor?.kind === 'files'}
               <FilesPaneControls descriptor={primaryDescriptor} state={primaryFilesState} />

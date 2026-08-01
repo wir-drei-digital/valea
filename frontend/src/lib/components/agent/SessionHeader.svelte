@@ -42,7 +42,8 @@
     onDelete,
     filesCount = 0,
     onShowFiles,
-    filesPanel
+    filesPanel,
+    gutter = false
   }: {
     icmName: string | null;
     ended: boolean;
@@ -60,6 +61,14 @@
      * affordance never disappears with the layout; it defers.
      */
     filesPanel?: Snippet;
+    /**
+     * This header is the top-left of the content column (a session rendered as
+     * a route's PRIMARY), so the shell's nav toggle floats over its first row —
+     * indent the folder line out from under it. A session in a side pane sits
+     * to the right of the toggle and must not gain the indent. See
+     * `NavToggle.svelte`.
+     */
+    gutter?: boolean;
   } = $props();
 
   let menuOpen = $state(false);
@@ -73,7 +82,12 @@
 </script>
 
 {#if icmName || onArchive || onDelete}
-  <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
+  <div
+    class={[
+      'border-paper-hairline flex items-center gap-1.5 border-b pe-4 pb-2',
+      gutter ? 'ps-11' : 'ps-4'
+    ]}
+  >
     {#if icmName}
       <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
       <span class="text-ink-meta text-[12px]">

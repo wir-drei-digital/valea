@@ -620,6 +620,7 @@
       icmName={openIcmName}
       ended={false}
       archiving={false}
+      gutter={context.placement === 'primary'}
     />
     <div class="min-h-0 flex-1 overflow-y-auto">
       <p class="text-ink-meta mx-auto w-full max-w-[660px] px-8 py-5 text-[13px]">
@@ -666,6 +667,7 @@
         filesCount={fileActivities.length}
         onShowFiles={railCanShow && !railOpen ? reopenRail : undefined}
         filesPanel={!railCanShow ? filesPopover : undefined}
+        gutter={context.placement === 'primary'}
       />
       {#if archiveError}
         <p class="text-warn-ink mx-auto w-full max-w-[660px] px-8 pt-1 text-[11.5px]" role="alert">
