@@ -256,6 +256,14 @@
   // trigger.
   const pickerDisabled = $derived(roomRefusal(panes.length, paneRoom.slots));
 
+  // The rows answer for their OWN kind. The trigger cannot: `chat-new` and
+  // `chat` are different kinds to `dedupeSurfaces`, so with a new-session pane
+  // already open "New session" is refused while any recent session is not.
+  // Until these existed the popover carried the cap and the width but not
+  // "already open", and picking a row left the URL byte-identical.
+  const newSessionRefusal = $derived(wiring.besideRefusal('chat-new'));
+  const openSessionRefusal = $derived(wiring.besideRefusal('chat'));
+
   // Reopen whatever was last beside the file browser, but only when the URL
   // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
   watchPaneMemory({
@@ -319,6 +327,8 @@
                 onOpenSession={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
                 onNewSession={() => wiring.openBeside({ kind: 'chat-new', mountKey })}
                 disabledReason={pickerDisabled}
+                {newSessionRefusal}
+                {openSessionRefusal}
               />
             {/if}
             <NewEntryButton onNew={openNew} />
