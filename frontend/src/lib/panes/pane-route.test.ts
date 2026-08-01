@@ -229,6 +229,21 @@ describe('chat-new origin', () => {
     expect(parsePaneParam(raw)).toBeNull();
   });
 
+  // The label is display-only and the mount feeds `includeMounts`, so the two
+  // must never swap slots. An absent mount with a present label therefore
+  // keeps its empty segment: collapsing it (dropping every empty rather than
+  // only the trailing ones) would slide the untrusted label into the mount
+  // position — into the grant slot — and still round-trip clean.
+  it('keeps the empty mount slot when a label follows it', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'Label' }
+    };
+    expect(serializePaneParam(d)).toBe('chat:new:life/page/n.md//Label');
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
   it('caps a hostile label', () => {
     const long = 'x'.repeat(500);
     const parsed = parsePaneParam(`chat:new:life/page/n.md//${long}`);
@@ -250,6 +265,43 @@ describe('chat-new origin', () => {
       from: { kind: 'mail-message', path: 'views/INBOX/2.md' }
     };
     expect(paneIdentity(a)).not.toBe(paneIdentity(b));
+  });
+
+  // The path alone does not identify an origin. The same path can name a
+  // different subject under a different kind (one Knowledge entry opened as
+  // `page` vs as `file`) or a different mount (the same message id in two
+  // mailboxes) — and recycling across either is the same "A stays attached
+  // while the URL says B" bug.
+  it('separates two origins that differ only in kind', () => {
+    const asPage: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md' }
+    };
+    const asFile: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'file', path: 'n.md' }
+    };
+    expect(paneIdentity(asPage)).not.toBe(paneIdentity(asFile));
+  });
+
+  it('separates two origins that differ only in mount', () => {
+    const inA: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'n.md', mount: 'mail-a' }
+    };
+    const inB: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'n.md', mount: 'mail-b' }
+    };
+    expect(paneIdentity(inA)).not.toBe(paneIdentity(inB));
+    // ...and an absent mount is its own case, not a match for either.
+    expect(paneIdentity(inA)).not.toBe(
+      paneIdentity({ kind: 'chat-new', mountKey: 'life', from: { kind: 'mail-message', path: 'n.md' } })
+    );
   });
 });
 

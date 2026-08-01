@@ -265,11 +265,20 @@ export function paneIdentity(d: PaneDescriptor): string {
       return `files:${d.mountKey}`;
     case 'chat':
       return `chat:${d.sessionId}`;
-    case 'chat-new':
-      // The ORIGIN is part of the subject: a composer opened on message A is
-      // not the same pane as one opened on message B, and recycling would
-      // leave A attached while the URL says B.
-      return `chat-new:${d.mountKey}:${d.from?.path ?? ''}`;
+    case 'chat-new': {
+      // The WHOLE origin is part of the subject, not just its path: a composer
+      // opened on message A is not the same pane as one opened on message B,
+      // and recycling would leave A attached while the URL says B. The same
+      // path under a different kind (one entry opened as `page` and as `file`)
+      // or a different mount (one message id in two mailboxes) names a
+      // different subject too, so all three fields have to count. Mount and
+      // path are encoded so a `:` inside either cannot borrow the separator
+      // and make two different origins look like one.
+      if (!d.from) return `chat-new:${d.mountKey}:`;
+      const { kind, mount, path } = d.from;
+      const origin = `${kind}:${encodeURIComponent(mount ?? '')}:${encodeURIComponent(path)}`;
+      return `chat-new:${d.mountKey}:${origin}`;
+    }
     case 'mail':
       return `mail:${d.account}`;
   }
