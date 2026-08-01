@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { dropSubject, replaceAt } from './pane-edit';
-import type { PaneDescriptor } from './pane-route';
+import type { FilesPaneDescriptor, PaneDescriptor } from './pane-route';
 
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
 const mail: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: '8842' };
-const filesTwo: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['A.md', 'B.md'] };
-const filesOne: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['A.md'] };
+function files(paths: string[], active = 0, compare: number | null = null): FilesPaneDescriptor {
+  return { kind: 'files', mountKey: 'life', paths, active, compare };
+}
+
+const filesTwo = files(['A.md', 'B.md']);
+const filesOne = files(['A.md']);
 
 describe('replaceAt', () => {
   it('replaces the pane at the index', () => {
@@ -39,16 +43,31 @@ describe('replaceAt', () => {
 });
 
 describe('dropSubject', () => {
-  it('drops one split and keeps its sibling', () => {
-    expect(dropSubject(filesTwo, 'A.md')).toEqual({
-      kind: 'files',
-      mountKey: 'life',
-      paths: ['B.md']
-    });
+  it('drops one tab and keeps its siblings', () => {
+    expect(dropSubject(filesTwo, 'A.md')).toEqual(files(['B.md']));
   });
 
   it('leaves a Files pane open as its tree when the last file goes', () => {
-    expect(dropSubject(filesOne, 'A.md')).toEqual({ kind: 'files', mountKey: 'life', paths: [] });
+    expect(dropSubject(filesOne, 'A.md')).toEqual(files([]));
+  });
+
+  // The cursor is an INDEX into a list this shortens, so it has to move with
+  // it: a stale `active` renders the wrong file, and a stale `compare` puts a
+  // file beside itself or points past the end.
+  it('renumbers the active tab and compare around the tab it drops', () => {
+    expect(dropSubject(files(['A.md', 'B.md', 'C.md'], 2, 1), 'A.md')).toEqual(
+      files(['B.md', 'C.md'], 1, 0)
+    );
+  });
+
+  it('falls back to the neighbour when the tab being read is the one dropped', () => {
+    expect(dropSubject(files(['A.md', 'B.md', 'C.md'], 1), 'B.md')).toEqual(
+      files(['A.md', 'C.md'], 0)
+    );
+  });
+
+  it('turns compare off when the file beside the active tab is the one dropped', () => {
+    expect(dropSubject(files(['A.md', 'B.md'], 0, 1), 'B.md')).toEqual(files(['A.md'], 0));
   });
 
   it('closes a single-subject pane outright', () => {

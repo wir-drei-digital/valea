@@ -135,7 +135,13 @@ describe('default pane layouts', () => {
 });
 
 describe('the layout a pane row opens at', () => {
-  const files: PaneDescriptor = { kind: 'files', mountKey: 'work', paths: ['notes.md'] };
+  const files: PaneDescriptor = {
+    kind: 'files',
+    mountKey: 'work',
+    paths: ['notes.md'],
+    active: 0,
+    compare: null
+  };
   const chat: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
 
   beforeEach(() => {
@@ -154,9 +160,11 @@ describe('the layout a pane row opens at', () => {
   it('reads the same stored arrangement whatever the panes contain', () => {
     savePaneLayout(2, [80, 20]);
     expect(paneRowLayout([chat])).toEqual([80, 20]);
-    expect(paneRowLayout([{ kind: 'files', mountKey: 'work', paths: ['other.md'] }])).toEqual([
-      80, 20
-    ]);
+    expect(
+      paneRowLayout([
+        { kind: 'files', mountKey: 'work', paths: ['other.md'], active: 0, compare: null }
+      ])
+    ).toEqual([80, 20]);
   });
 
   it('falls back to the count default when this count was never dragged', () => {

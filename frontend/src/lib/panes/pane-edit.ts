@@ -9,6 +9,7 @@
  * the full chain). Handing the host a mutated array is the bug; handing it a
  * fresh one is the fix, and it is cheap enough to be unconditional.
  */
+import { closeTabPath } from './files-pane-state';
 import type { PaneDescriptor } from './pane-route';
 
 /**
@@ -30,14 +31,19 @@ export function replaceAt(
  * What a pane becomes when ONE of its subjects vanishes — `null` meaning "the
  * host should close it".
  *
- * Per subject, not per pane: a Files descriptor can name two files, and
+ * Per subject, not per pane: a Files descriptor can name six files, and
  * closing the whole pane because one of them was deleted would discard the
- * other file and any pending edit in it. So a deleted split is dropped and its
- * sibling stays, and a Files pane with nothing left survives as its tree —
+ * others and any pending edit in them. So a deleted tab is dropped and its
+ * siblings stay, and a Files pane with nothing left survives as its tree —
  * taking the navigator away as collateral for one deleted file is a worse
  * answer than leaving it there. Chat and Mail hold one subject each and so
  * close outright: a layout that quietly shrinks is less alarming than one
  * carrying a dead panel.
+ *
+ * The drop goes through `closeTab`, not through a bare `filter`, because
+ * removing a tab RENUMBERS the ones after it: `active` and `compare` are
+ * indexes into that list, and a stale one either renders the wrong file or
+ * renders none at all.
  *
  * Returns the pane UNCHANGED (same identity) when the subject was not one of
  * its own, which is how a caller tells "nothing happened" from "something did"
@@ -46,5 +52,5 @@ export function replaceAt(
 export function dropSubject(pane: PaneDescriptor, subject: string): PaneDescriptor | null {
   if (pane.kind !== 'files') return null;
   if (!pane.paths.includes(subject)) return pane;
-  return { ...pane, paths: pane.paths.filter((p) => p !== subject) };
+  return { ...pane, ...closeTabPath(pane, subject) };
 }

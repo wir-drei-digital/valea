@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { panesThatFit, splitsThatFit, treeFits, truncateToFit } from './pane-fit';
 import type { PaneDescriptor } from '$lib/panes/pane-route';
 
-const a: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [] };
+const a: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null };
 const b: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
 
 describe('panesThatFit', () => {

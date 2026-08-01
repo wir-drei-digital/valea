@@ -1,142 +1,245 @@
 import { describe, expect, it } from 'vitest';
-import { canOpenBeside, closeSplit, openAsSecond, openInFirst } from './files-pane-state';
+import {
+  TAB_CAP,
+  activateTab,
+  canOpenInNewTab,
+  closeTab,
+  closeTabPath,
+  compareTarget,
+  openInActiveTab,
+  openInNewTab,
+  resolveTabs,
+  type TabState
+} from './files-pane-state';
 
-describe('openInFirst', () => {
-  it('opens into an empty pane', () => {
-    expect(openInFirst([], 'A.md', 2)).toEqual(['A.md']);
+/** Reads as the wire form does: paths, which one is showing, what is beside it. */
+function tabs(paths: string[], active = 0, compare: number | null = null): TabState {
+  return { paths, active, compare };
+}
+
+const six = ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md'];
+
+describe('resolveTabs', () => {
+  it('keeps a valid triple as it is', () => {
+    expect(resolveTabs(['a.md', 'b.md'], 1, 0)).toEqual(tabs(['a.md', 'b.md'], 1, 0));
   });
 
-  it('replaces the first split, leaving the second alone', () => {
-    expect(openInFirst(['A.md', 'B.md'], 'C.md', 2)).toEqual(['C.md', 'B.md']);
+  // A repeated path is a duplicate `{#each}` key, which Svelte throws on during
+  // render — the whole app blanks, no nav, no bar, no error page.
+  it('dedupes, because a duplicate path is a render throw', () => {
+    expect(resolveTabs(['a.md', 'b.md', 'a.md'], 0, null).paths).toEqual(['a.md', 'b.md']);
   });
 
-  it('is a no-op when the file is already in the first split', () => {
-    expect(openInFirst(['A.md'], 'A.md', 2)).toEqual(['A.md']);
+  it('truncates past the cap rather than refusing the whole list', () => {
+    expect(resolveTabs([...six, 'g.md', 'h.md'], 0, null).paths).toEqual(six);
   });
 
-  it('moves focus rather than duplicating when the file is already in the second split', () => {
-    expect(openInFirst(['A.md', 'B.md'], 'B.md', 2)).toEqual(['A.md', 'B.md']);
+  it('clamps an out-of-range active index to the first tab', () => {
+    expect(resolveTabs(['a.md', 'b.md'], 9, null).active).toBe(0);
+    expect(resolveTabs(['a.md', 'b.md'], -1, null).active).toBe(0);
+    expect(resolveTabs([], 3, null).active).toBe(0);
   });
 
-  // `maxSplits` is width-derived (`splitsThatFit`), so a pane that narrowed to
-  // one split must shed the second on the next tree click rather than keep
-  // rendering a split that no longer fits.
-  it('drops the second split when the width now allows only one', () => {
-    expect(openInFirst(['A.md', 'B.md'], 'C.md', 1)).toEqual(['C.md']);
+  it('drops a compare that cannot be honoured', () => {
+    expect(resolveTabs(['a.md', 'b.md'], 0, 9).compare).toBeNull();
+    expect(resolveTabs(['a.md', 'b.md'], 1, 1).compare).toBeNull();
+    expect(resolveTabs(['a.md'], 0, 1).compare).toBeNull();
+    expect(resolveTabs(['a.md', 'b.md'], 0, -1).compare).toBeNull();
   });
 
-  // A descriptor carrying three paths serializes to `files:m/a|b|c`, which
-  // `parsePaneParam` rejects — the pane would silently vanish from the URL.
-  // The cap is absolute, not merely whatever the caller passed.
-  it('never grows past the hard split cap even when told a larger maximum', () => {
-    expect(openInFirst(['A.md', 'B.md'], 'C.md', 3)).toEqual(['C.md', 'B.md']);
-    expect(openInFirst(['A.md', 'B.md', 'C.md'], 'D.md', 3)).toEqual(['D.md', 'B.md']);
-  });
-
-  // THE laptop bug. `splitsThatFit` needs TREE_W + SPLIT_MIN = 480px of pane
-  // before ONE split fits, which a SIDE pane in a two-pane row does not reach
-  // until a 1439px window — so on a 1280x800 the cap is 0 and every click in
-  // the pane's own tree used to do nothing at all. A 1440x900 clears it by
-  // four tenths of a pixel now, and did not when the requirement was 540px
-  // (threshold 1589px), which is when this was found.
-  it('opens the first file even when the width allows no split at all', () => {
-    expect(openInFirst([], 'A.md', 0)).toEqual(['A.md']);
-  });
-
-  // The floor is for the FIRST file only: it must not become a back door that
-  // grows a second split the width cannot hold.
-  it('still refuses a second split at that width, replacing instead', () => {
-    expect(openInFirst(['A.md'], 'B.md', 0)).toEqual(['B.md']);
-  });
-});
-
-describe('openAsSecond', () => {
-  it('adds a second split', () => {
-    expect(openAsSecond(['A.md'], 'B.md', 2)).toEqual(['A.md', 'B.md']);
-  });
-
-  it('replaces the second when both are taken', () => {
-    expect(openAsSecond(['A.md', 'B.md'], 'C.md', 2)).toEqual(['A.md', 'C.md']);
-  });
-
-  it('behaves like openInFirst on an empty pane', () => {
-    expect(openAsSecond([], 'A.md', 2)).toEqual(['A.md']);
-  });
-
-  it('refuses to exceed the width-derived cap', () => {
-    expect(openAsSecond(['A.md'], 'B.md', 1)).toEqual(['B.md']);
-  });
-
-  it('never duplicates an already-open file', () => {
-    expect(openAsSecond(['A.md'], 'A.md', 2)).toEqual(['A.md']);
-  });
-
-  // Same vanishing-descriptor hazard as above, on the function most likely to
-  // grow the list: two open files plus a bogus maximum must still yield two.
-  it('never grows past the hard split cap even when told a larger maximum', () => {
-    expect(openAsSecond(['A.md', 'B.md'], 'C.md', 3)).toEqual(['A.md', 'C.md']);
-  });
-
-  // Reversed deliberately (this test previously asserted `[]`). "Open beside"
-  // on a row of an EMPTY pane is the same click as the row itself, and the
-  // width cap governs how many files sit side by side — not whether the pane
-  // may show one. See the module header for the widths this stranded.
-  it('opens the first file even when the width allows no split at all', () => {
-    expect(openAsSecond([], 'A.md', 0)).toEqual(['A.md']);
-  });
-
-  it('still refuses to add a second split at that width, replacing instead', () => {
-    expect(openAsSecond(['A.md'], 'B.md', 0)).toEqual(['B.md']);
+  it('never hands back the array it was given', () => {
+    const paths = ['a.md'];
+    expect(resolveTabs(paths, 0, null).paths).not.toBe(paths);
   });
 });
 
-describe('canOpenBeside', () => {
-  // THE laptop case. A side pane needs a 2039px window for two splits and a
-  // tree, so below that the cap is under 2 and
-  // `openAsSecond(['A'], 'B', 0)` returns ['B'] — the control named "Open
-  // beside" would destroy the split it was meant to sit beside. The row
-  // disables itself and says why instead.
-  it('is false when the pane shows a file and is too narrow for a second', () => {
-    expect(canOpenBeside(['A.md'], 0)).toBe(false);
-    expect(canOpenBeside(['A.md'], 1)).toBe(false);
-    expect(canOpenBeside(['A.md', 'B.md'], 1)).toBe(false);
+describe('openInActiveTab', () => {
+  it('opens the first tab in an empty pane', () => {
+    expect(openInActiveTab(tabs([]), 'a.md')).toEqual(tabs(['a.md']));
   });
 
-  // Nothing to sit beside yet, so the click is simply an open — under the same
-  // first-file floor `openInFirst` takes. Disabling here would leave a narrow
-  // pane with no way to open anything from this control at all.
-  it('is true on an empty pane at any width', () => {
-    expect(canOpenBeside([], 0)).toBe(true);
-    expect(canOpenBeside([], 2)).toBe(true);
+  // The tree drives the OPEN TAB — this is the behaviour the tab model implies,
+  // and it is what makes browsing cost no tabs at all.
+  it('replaces the active tab’s file, leaving every other tab alone', () => {
+    expect(openInActiveTab(tabs(['a.md', 'b.md', 'c.md'], 1), 'z.md')).toEqual(
+      tabs(['a.md', 'z.md', 'c.md'], 1)
+    );
   });
 
-  // Replacing the SECOND split when both are occupied is deliberate — it is
-  // how you retarget it — so a full pane at a width that holds two stays live.
-  it('is true when a second split genuinely fits, full pane or not', () => {
-    expect(canOpenBeside(['A.md'], 2)).toBe(true);
-    expect(canOpenBeside(['A.md', 'B.md'], 2)).toBe(true);
+  it('activates an already-open file rather than opening it twice', () => {
+    expect(openInActiveTab(tabs(['a.md', 'b.md', 'c.md'], 0), 'c.md')).toEqual(
+      tabs(['a.md', 'b.md', 'c.md'], 2)
+    );
   });
 
-  // The width figure is a suggestion; `SPLIT_CAP` is the law. It cannot be
-  // talked into believing a third split fits.
-  it('is governed by the hard cap, not by an inflated width figure', () => {
-    expect(canOpenBeside(['A.md', 'B.md'], 5)).toBe(true);
-    expect(canOpenBeside(['A.md'], 5)).toBe(true);
+  it('is a no-op on the file already showing', () => {
+    expect(openInActiveTab(tabs(['a.md', 'b.md'], 1), 'b.md')).toEqual(tabs(['a.md', 'b.md'], 1));
+  });
+
+  // Width used to govern this: a pane too narrow for two splits shed one on
+  // every tree click. A tab costs no width, so nothing here can drop a file.
+  it('never shortens the strip, however many tabs are open', () => {
+    expect(openInActiveTab(tabs(six, 3), 'z.md').paths).toHaveLength(TAB_CAP);
+  });
+
+  it('leaves compare on, now showing the new file beside the same partner', () => {
+    expect(openInActiveTab(tabs(['a.md', 'b.md'], 0, 1), 'z.md')).toEqual(
+      tabs(['z.md', 'b.md'], 0, 1)
+    );
   });
 });
 
-describe('closeSplit', () => {
-  it('removes the split at the index', () => {
-    expect(closeSplit(['A.md', 'B.md'], 0)).toEqual(['B.md']);
-    expect(closeSplit(['A.md', 'B.md'], 1)).toEqual(['A.md']);
+describe('openInNewTab', () => {
+  it('appends a tab and shows it', () => {
+    expect(openInNewTab(tabs(['a.md'], 0), 'b.md')).toEqual(tabs(['a.md', 'b.md'], 1));
   });
 
-  it('leaves a tree-only pane when the last split closes', () => {
-    expect(closeSplit(['A.md'], 0)).toEqual([]);
+  it('opens the first tab in an empty pane', () => {
+    expect(openInNewTab(tabs([]), 'a.md')).toEqual(tabs(['a.md']));
+  });
+
+  it('activates an already-open file rather than opening it twice', () => {
+    expect(openInNewTab(tabs(['a.md', 'b.md'], 0), 'b.md')).toEqual(tabs(['a.md', 'b.md'], 1));
+  });
+
+  // The cap rule: a seventh tab replaces the OLDEST INACTIVE one — lowest
+  // index, which is open order. There is no scrolling strip to hold a seventh.
+  it('replaces the oldest inactive tab at the cap', () => {
+    expect(openInNewTab(tabs(six, 3), 'g.md')).toEqual(
+      tabs(['g.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md'], 0)
+    );
+  });
+
+  it('never evicts the tab you are reading', () => {
+    expect(openInNewTab(tabs(six, 0), 'g.md')).toEqual(
+      tabs(['a.md', 'g.md', 'c.md', 'd.md', 'e.md', 'f.md'], 1)
+    );
+  });
+
+  // Replacing IN PLACE is what lets the assistant's auto-open claim survive an
+  // eviction without every caller having to re-map it — see `auto-open.ts`.
+  it('renumbers nothing: every surviving tab keeps its index', () => {
+    const after = openInNewTab(tabs(six, 5), 'g.md');
+    expect(after.paths).toHaveLength(TAB_CAP);
+    expect(after.paths[5]).toBe('f.md');
+    expect(after.paths.indexOf('b.md')).toBe(1);
+  });
+
+  it('keeps compare pointing at the same file when it was not the one evicted', () => {
+    expect(openInNewTab(tabs(six, 5, 4), 'g.md').compare).toBe(4);
+  });
+});
+
+describe('canOpenInNewTab', () => {
+  // Width is no longer a reason for anything here: a tab takes none. The tree
+  // row's affordance disables at the cap and says why, rather than silently
+  // destroying a tab the user opened from a hover control.
+  it('is true below the cap', () => {
+    expect(canOpenInNewTab(tabs([]))).toBe(true);
+    expect(canOpenInNewTab(tabs(six.slice(0, 5), 0))).toBe(true);
+  });
+
+  it('is false at the cap', () => {
+    expect(canOpenInNewTab(tabs(six, 0))).toBe(false);
+  });
+});
+
+describe('activateTab', () => {
+  it('shows the tab', () => {
+    expect(activateTab(tabs(['a.md', 'b.md'], 0), 1)).toEqual(tabs(['a.md', 'b.md'], 1));
   });
 
   it('ignores an out-of-range index', () => {
-    expect(closeSplit(['A.md'], 3)).toEqual(['A.md']);
-    expect(closeSplit(['A.md'], -1)).toEqual(['A.md']);
+    const state = tabs(['a.md', 'b.md'], 0);
+    expect(activateTab(state, 5)).toBe(state);
+    expect(activateTab(state, -1)).toBe(state);
+  });
+
+  // Turning a comparison off because you clicked one half of it is a control
+  // undoing itself; swapping the columns is what the click actually meant.
+  it('swaps the columns when the compare partner is the tab clicked', () => {
+    expect(activateTab(tabs(['a.md', 'b.md'], 0, 1), 1)).toEqual(tabs(['a.md', 'b.md'], 1, 0));
+  });
+});
+
+describe('closeTab', () => {
+  it('removes the tab', () => {
+    expect(closeTab(tabs(['a.md', 'b.md'], 0), 1)).toEqual(tabs(['a.md']));
+  });
+
+  it('leaves a tree-only pane when the last tab closes', () => {
+    expect(closeTab(tabs(['a.md'], 0), 0)).toEqual(tabs([]));
+  });
+
+  it('returns the same state for an out-of-range index', () => {
+    const state = tabs(['a.md'], 0);
+    expect(closeTab(state, 3)).toBe(state);
+    expect(closeTab(state, -1)).toBe(state);
+  });
+
+  it('activates the left neighbour when the active tab closes', () => {
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 2), 2)).toEqual(tabs(['a.md', 'b.md'], 1));
+  });
+
+  it('activates the right neighbour when the FIRST tab closes', () => {
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 0), 0)).toEqual(tabs(['b.md', 'c.md'], 0));
+  });
+
+  // The claim-shaped bug, in the other direction: an index that does not move
+  // with the list stops naming the file it named.
+  it('renumbers the active tab when a tab BEFORE it closes', () => {
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 2), 0)).toEqual(tabs(['b.md', 'c.md'], 1));
+  });
+
+  it('leaves the active tab alone when a tab AFTER it closes', () => {
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 0), 2)).toEqual(tabs(['a.md', 'b.md'], 0));
+  });
+
+  it('renumbers compare, and drops it when its own tab closes', () => {
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 2, 0), 1)).toEqual(tabs(['a.md', 'c.md'], 1, 0));
+    expect(closeTab(tabs(['a.md', 'b.md', 'c.md'], 2, 0), 0)).toEqual(tabs(['b.md', 'c.md'], 1));
+  });
+
+  it('never mutates the list it was given', () => {
+    const state = tabs(['a.md', 'b.md'], 0);
+    closeTab(state, 1);
+    expect(state.paths).toEqual(['a.md', 'b.md']);
+  });
+});
+
+describe('closeTabPath', () => {
+  it('closes by file', () => {
+    expect(closeTabPath(tabs(['a.md', 'b.md'], 1), 'a.md')).toEqual(tabs(['b.md'], 0));
+  });
+
+  it('returns the same state for a file that is not open', () => {
+    const state = tabs(['a.md'], 0);
+    expect(closeTabPath(state, 'z.md')).toBe(state);
+  });
+});
+
+describe('compareTarget', () => {
+  it('is the previously active tab', () => {
+    expect(compareTarget(tabs(['a.md', 'b.md', 'c.md'], 2), 0)).toBe(0);
+  });
+
+  // History is absent after a reload, and the control is visibly available —
+  // refusing there would be a dead button with no reason to give.
+  it('falls back to the left neighbour without history', () => {
+    expect(compareTarget(tabs(['a.md', 'b.md', 'c.md'], 2), null)).toBe(1);
+  });
+
+  it('falls back to the RIGHT neighbour when the first tab is active', () => {
+    expect(compareTarget(tabs(['a.md', 'b.md'], 0), null)).toBe(1);
+  });
+
+  it('ignores a stale previous index', () => {
+    expect(compareTarget(tabs(['a.md', 'b.md'], 1), 9)).toBe(0);
+    expect(compareTarget(tabs(['a.md', 'b.md'], 1), 1)).toBe(0);
+  });
+
+  it('is null with fewer than two tabs', () => {
+    expect(compareTarget(tabs(['a.md'], 0), null)).toBeNull();
+    expect(compareTarget(tabs([]), null)).toBeNull();
   });
 });

@@ -13,69 +13,135 @@ import {
   promoteTarget,
   serializePaneParam,
   withPanes,
+  type FilesPaneDescriptor,
   type PaneDescriptor
 } from './pane-route';
 
-const filesEmpty: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [] };
-const filesOne: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['AGENTS.md'] };
-const filesTwo: PaneDescriptor = {
-  kind: 'files',
-  mountKey: 'life',
-  paths: ['planning/CONTEXT.md', 'AGENTS.md']
-};
+/** A Files descriptor with the cursor spelled out, so every case reads as one line. */
+function files(
+  paths: string[],
+  active = 0,
+  compare: number | null = null,
+  mountKey = 'life'
+): FilesPaneDescriptor {
+  return { kind: 'files', mountKey, paths, active, compare };
+}
+
+const filesEmpty = files([]);
+const filesOne = files(['AGENTS.md']);
+const filesTwo = files(['planning/CONTEXT.md', 'AGENTS.md']);
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 'sess-123' };
 const chatNew: PaneDescriptor = { kind: 'chat-new', mountKey: 'life' };
 const mailList: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: null };
 const mailMsg: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: '8842' };
 
 describe('serialize/parse round-trips', () => {
-  it.each([filesEmpty, filesOne, filesTwo, chat, chatNew, mailList, mailMsg])('%j', (d) => {
+  it.each([
+    filesEmpty,
+    filesOne,
+    filesTwo,
+    files(['a.md', 'b.md', 'c.md'], 2),
+    files(['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md'], 5),
+    files(['a.md', 'b.md'], 0, 1),
+    files(['a.md', 'b.md', 'c.md'], 2, 0),
+    chat,
+    chatNew,
+    mailList,
+    mailMsg
+  ])('%j', (d) => {
     expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
   });
 
   it('round-trips a literal pipe in a filename without splitting on it', () => {
-    const d: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['a|b.md'] };
+    const d = files(['a|b.md']);
     expect(serializePaneParam(d)).toContain('%7C');
     expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
   });
 
-  it('round-trips unicode and slashes in file paths', () => {
-    const d: PaneDescriptor = {
-      kind: 'files',
-      mountKey: 'm.key',
-      paths: ['ä folder/ünïcode/100%.md']
-    };
+  // The whole reason `@` is safe as the cursor separator: `encodeURIComponent`
+  // escapes it, so it can never appear inside an encoded path segment.
+  it('round-trips a literal @ in a filename without reading it as a cursor', () => {
+    const d = files(['mail@work.md', 'b.md'], 1);
+    expect(serializePaneParam(d)).toContain('%40');
     expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  it('round-trips unicode and slashes in file paths', () => {
+    const d = files(['ä folder/ünïcode/100%.md'], 0, null, 'm.key');
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  // The cursor is omitted when it says nothing, so every URL already in the
+  // wild keeps its exact current form.
+  it('writes no cursor for the default one', () => {
+    expect(serializePaneParam(filesOne)).toBe('files:life/AGENTS.md');
+    expect(serializePaneParam(files(['a.md', 'b.md']))).toBe('files:life/a.md|b.md');
+    expect(serializePaneParam(files(['a.md', 'b.md'], 1))).toBe('files:life/a.md|b.md@1');
+    expect(serializePaneParam(files(['a.md', 'b.md'], 1, 0))).toBe('files:life/a.md|b.md@1+0');
   });
 });
 
-describe('parsePaneParam dedupes a split pair', () => {
+describe('parsePaneParam — the tab cursor', () => {
+  it('defaults the active tab to the first when there is no cursor', () => {
+    expect(parsePaneParam('files:life/a.md|b.md')).toEqual(files(['a.md', 'b.md']));
+  });
+
+  it('reads the active tab', () => {
+    expect(parsePaneParam('files:life/a.md|b.md|c.md@1')).toEqual(
+      files(['a.md', 'b.md', 'c.md'], 1)
+    );
+  });
+
+  it('reads compare as the active tab plus the one beside it', () => {
+    expect(parsePaneParam('files:life/a.md|b.md@0+1')).toEqual(files(['a.md', 'b.md'], 0, 1));
+  });
+
+  // Clamped rather than refused: the tabs are still perfectly good content,
+  // and dropping the pane over a number would cost the user every one of them.
+  it('clamps an out-of-range active index to the first tab', () => {
+    expect(parsePaneParam('files:life/a.md|b.md@7')).toEqual(files(['a.md', 'b.md']));
+  });
+
+  it('drops a compare that cannot be honoured, keeping the tabs', () => {
+    // Out of range.
+    expect(parsePaneParam('files:life/a.md|b.md@0+9')).toEqual(files(['a.md', 'b.md']));
+    // The same tab twice is not a comparison.
+    expect(parsePaneParam('files:life/a.md|b.md@1+1')).toEqual(files(['a.md', 'b.md'], 1));
+    // Fewer than two tabs.
+    expect(parsePaneParam('files:life/a.md@0+1')).toEqual(files(['a.md']));
+  });
+
+  // Truncation, not refusal — same posture as the pane cap.
+  it('truncates a list longer than the tab cap to the first six', () => {
+    expect(parsePaneParam('files:life/a.md|b.md|c.md|d.md|e.md|f.md|g.md|h.md')).toEqual(
+      files(['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md'])
+    );
+  });
+
+  it('clamps an active index that the truncation put out of range', () => {
+    expect(parsePaneParam('files:life/a.md|b.md|c.md|d.md|e.md|f.md|g.md@6')).toEqual(
+      files(['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md'])
+    );
+  });
+});
+
+describe('parsePaneParam dedupes tabs', () => {
   // `FilesPane` keys its `{#each}` on the path, so a repeated one is a
   // duplicate key — Svelte throws during render and the whole app blanks
   // (no nav, no bar, no error page). Reachable from any hand-written or
   // shared link, so the codec is where it has to stop.
-  it('collapses the same file named twice to one split', () => {
-    expect(parsePaneParam('files:life/AGENTS.md|AGENTS.md')).toEqual({
-      kind: 'files',
-      mountKey: 'life',
-      paths: ['AGENTS.md']
-    });
+  it('collapses the same file named twice to one tab', () => {
+    expect(parsePaneParam('files:life/AGENTS.md|AGENTS.md')).toEqual(files(['AGENTS.md']));
   });
 
   it('collapses a pair that only matches once decoded', () => {
-    expect(parsePaneParam('files:life/planning%2FA.md|planning/A.md')).toEqual({
-      kind: 'files',
-      mountKey: 'life',
-      paths: ['planning/A.md']
-    });
+    expect(parsePaneParam('files:life/planning%2FA.md|planning/A.md')).toEqual(
+      files(['planning/A.md'])
+    );
   });
 
   it('leaves two genuinely different files alone', () => {
-    expect(parsePaneParam('files:life/A.md|B.md')).toEqual({
-      kind: 'files',
-      mountKey: 'life',
-      paths: ['A.md', 'B.md']
-    });
+    expect(parsePaneParam('files:life/A.md|B.md')).toEqual(files(['A.md', 'B.md']));
   });
 });
 
@@ -94,7 +160,17 @@ describe('parsePaneParam fails closed', () => {
     'mail:/8842',
     ':x',
     'files:m/%E0%A4%A',
-    'files:m/a|b|c'
+    // A cursor we cannot READ is not a number to guess at — unlike one that is
+    // merely out of range, which clamps.
+    'files:m/a.md@',
+    'files:m/a.md@x',
+    'files:m/a.md@1+',
+    'files:m/a.md@1+x',
+    'files:m/a.md@-1',
+    'files:m/a.md@1.5',
+    'files:m/a.md@1@2',
+    // The cursor without a path list is a descriptor naming nothing.
+    'files:m/@1'
   ])('%s -> null', (raw) => {
     expect(parsePaneParam(raw as string | null)).toBeNull();
   });
@@ -133,7 +209,7 @@ describe('parsePanes', () => {
   });
 
   it('collapses two panes of the same kind', () => {
-    const other: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['CONTEXT.md'] };
+    const other = files(['CONTEXT.md']);
     expect(parsePanes(params(serializePaneParam(filesOne), serializePaneParam(other)))).toEqual([
       filesOne
     ]);
@@ -168,11 +244,11 @@ describe('hrefWithPanes', () => {
   });
 
   it('keeps the params the href itself carries', () => {
-    // The rename/delete follow path rebuilds a two-split primary, so `?split=`
-    // has to survive the pane re-attachment rather than be replaced by it.
+    // The rename/delete follow path rebuilds the primary's whole tab strip, so
+    // `?tabs=` has to survive the pane re-attachment rather than be replaced.
     const url = new URL(`https://x/knowledge/life/A.md?pane=${serializePaneParam(chat)}`);
-    const out = new URL(hrefWithPanes('/knowledge/life/B.md?split=C.md', url), 'https://x');
-    expect(out.searchParams.get('split')).toBe('C.md');
+    const out = new URL(hrefWithPanes('/knowledge/life/B.md?tabs=B.md|C.md', url), 'https://x');
+    expect(out.searchParams.get('tabs')).toBe('B.md|C.md');
     expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(chat)]);
   });
 
@@ -212,7 +288,7 @@ describe('paneSearchSuffix', () => {
 
 describe('dedupeSurfaces', () => {
   it('drops a pane whose kind matches the primary, even with a different subject', () => {
-    const primary: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['README.md'] };
+    const primary = files(['README.md']);
     expect(dedupeSurfaces(primary, [filesOne, chat])).toEqual([chat]);
   });
 
@@ -249,7 +325,7 @@ describe('paneIdentity', () => {
 
   it('separates two ICMs, two mailboxes and two sessions', () => {
     expect(paneIdentity(filesOne)).not.toBe(
-      paneIdentity({ kind: 'files', mountKey: 'valea', paths: ['AGENTS.md'] })
+      paneIdentity(files(['AGENTS.md'], 0, null, 'valea'))
     );
     expect(paneIdentity(mailMsg)).not.toBe(
       paneIdentity({ kind: 'mail', account: 'other@example.com', msgId: '8842' })
@@ -298,6 +374,11 @@ describe('chatNavigatorFromUrl', () => {
 });
 
 describe('paneTitle', () => {
+  // The strip names every open file; the header names the one being read.
+  it('names the ACTIVE tab, not the first', () => {
+    expect(paneTitle(files(['a/one.md', 'b/two.md', 'three.md'], 2))).toBe('three.md');
+  });
+
   it('titles', () => {
     expect(paneTitle(filesEmpty)).toBe('Files');
     expect(paneTitle(filesTwo)).toBe('CONTEXT.md');
@@ -324,17 +405,26 @@ describe('promoteTarget', () => {
   });
 
   it('suppresses a surviving pane whose kind matches the new primary', () => {
-    const otherFiles: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['B.md'] };
+    const otherFiles = files(['B.md']);
     const url = new URL('https://x/chat?session=a91f');
     const out = new URL(promoteTarget(filesOne, url, [filesOne, otherFiles]), 'https://x');
     expect(out.searchParams.getAll('pane')).toEqual([]);
   });
 
-  it('carries both Files splits onto the route via ?split=', () => {
+  it('carries the whole tab strip onto the route, active tab in the pathname', () => {
     const url = new URL('https://x/chat?session=a91f');
     const out = new URL(promoteTarget(filesTwo, url, [filesTwo]), 'https://x');
     expect(out.pathname).toBe('/knowledge/life/planning/CONTEXT.md');
-    expect(out.searchParams.get('split')).toBe('AGENTS.md');
+    expect(out.searchParams.get('tabs')).toBe('planning/CONTEXT.md|AGENTS.md');
+  });
+
+  it('promotes onto the tab that was showing, not onto the first one', () => {
+    const url = new URL('https://x/chat?session=a91f');
+    const pane = files(['a.md', 'b.md', 'c.md'], 2, 0);
+    const out = new URL(promoteTarget(pane, url, [pane]), 'https://x');
+    expect(out.pathname).toBe('/knowledge/life/c.md');
+    expect(out.searchParams.get('tabs')).toBe('a.md|b.md|c.md');
+    expect(out.searchParams.get('compare')).toBe('0');
   });
 
   it('promotes a Files pane with no file to the mount index', () => {

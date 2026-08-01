@@ -35,7 +35,7 @@ function removeLocalStorage(): void {
 }
 
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 's1' };
-const files: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['A.md'] };
+const files: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: ['A.md'], active: 0, compare: null };
 
 describe('restoreTarget', () => {
   const mail: PaneDescriptor = { kind: 'mail', account: 'a@b.c', msgId: null };

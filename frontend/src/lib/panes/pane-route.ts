@@ -7,27 +7,44 @@
  * the mount key and each path segment independently `encodeURIComponent`-encoded
  * (mirroring `knowledgeHref`):
  *
- *   files:<mountKey>                  (mount index, no file open)
- *   files:<mountKey>/<p1>             (one file)
- *   files:<mountKey>/<p1>|<p2>        (a split pair inside the pane)
+ *   files:<mountKey>                  (mount index, no tabs)
+ *   files:<mountKey>/<p1>             (one tab, active)
+ *   files:<mountKey>/<p1>|<p2>|<p3>@1 (three tabs, the second showing)
+ *   files:<mountKey>/<p1>|<p2>@0+1    (compare on: tabs 0 and 1 side by side)
  *   chat:<sessionId>
  *   chat:new:<mountKey>               (new-session composer scoped to that ICM;
  *                                      rewritten to chat:<id> once it starts)
  *   mail:<account>                    (mailbox list)
  *   mail:<account>/<msgId>            (one message)
  *
- * `|` is safe as the split separator because `encodeURIComponent('|') === '%7C'`,
- * so a literal pipe in a filename never collides with it.
+ * `|` is safe as the tab separator, and `@` as the cursor separator, because
+ * `encodeURIComponent` escapes both (`%7C`, `%40`) — so neither can appear
+ * inside an encoded path segment however a file is named.
  *
  * Invalid input parses to null — the caller renders what is left, never an error.
+ * Two Files cases deliberately REPAIR instead: more than `TAB_CAP` tabs
+ * truncates, and an out-of-range cursor index clamps. Both still describe
+ * perfectly good subjects, and dropping the whole pane over a number would cost
+ * the user every tab in it. Malformed cursor SYNTAX (`@x`, `@1+`) still fails
+ * closed: a number we cannot read is not a number we may guess at.
  */
-import { encodePath, knowledgeHref } from '$lib/shell/nav';
+import { encodePath } from '$lib/shell/nav';
+import { TAB_CAP, resolveTabs } from './files-pane-state';
+import { filesPrimaryHref } from './files-url';
 
 /** How many side panes may sit beside the primary view. */
 export const PANE_CAP = 2;
-const SPLIT_SEP = '|';
+const TAB_SEP = '|';
+const CURSOR_SEP = '@';
 
-export type FilesPaneDescriptor = { kind: 'files'; mountKey: string; paths: string[] };
+export type FilesPaneDescriptor = {
+  kind: 'files';
+  mountKey: string;
+  /** Open tabs in strip order — see `files-pane-state.ts`'s `TabState`. */
+  paths: string[];
+  active: number;
+  compare: number | null;
+};
 export type ChatPaneDescriptor = { kind: 'chat'; sessionId: string };
 export type ChatNewPaneDescriptor = { kind: 'chat-new'; mountKey: string };
 export type MailPaneDescriptor = { kind: 'mail'; account: string; msgId: string | null };
@@ -53,6 +70,16 @@ function decodePath(raw: string): string | null {
   return (segments as string[]).join('/');
 }
 
+/**
+ * The `@<i>` / `@<i>+<j>` cursor. `null` for anything that is not exactly one
+ * index, or an index and a compare partner — the whole descriptor fails on it.
+ */
+function parseCursor(raw: string): { active: number; compare: number | null } | null {
+  const match = /^(\d+)(?:\+(\d+))?$/.exec(raw);
+  if (!match) return null;
+  return { active: Number(match[1]), compare: match[2] === undefined ? null : Number(match[2]) };
+}
+
 export function parsePaneParam(raw: string | null): PaneDescriptor | null {
   if (!raw) return null;
   const colon = raw.indexOf(':');
@@ -65,21 +92,30 @@ export function parsePaneParam(raw: string | null): PaneDescriptor | null {
     const mountRaw = slash === -1 ? rest : rest.slice(0, slash);
     const mountKey = mountRaw ? tryDecode(mountRaw) : null;
     if (!mountKey) return null;
-    if (slash === -1) return { kind: 'files', mountKey, paths: [] };
+    if (slash === -1) return { kind: 'files', mountKey, paths: [], active: 0, compare: null };
 
     const tail = rest.slice(slash + 1);
     if (tail === '') return null;
-    const rawPaths = tail.split(SPLIT_SEP);
-    if (rawPaths.length > 2) return null;
-    const paths = rawPaths.map(decodePath);
+    const parts = tail.split(CURSOR_SEP);
+    // A second `@` cannot come from an encoded path, so it is a malformed
+    // cursor rather than a filename — fail closed.
+    if (parts.length > 2) return null;
+    const cursor = parts.length === 2 ? parseCursor(parts[1]) : { active: 0, compare: null };
+    if (!cursor) return null;
+    const paths = parts[0].split(TAB_SEP).map(decodePath);
     if (paths.some((p) => p === null)) return null;
-    // DEDUPED, and this is not tidiness. `FilesPane` keys its `{#each}` on the
-    // path, so `files:life/A.md|A.md` — reachable from any hand-written or
-    // shared link — is a duplicate key, which Svelte throws on during render:
-    // the whole app blanks, no nav, no bar, no error page. One file named
-    // twice is one file, so the honest reading is a single split rather than
-    // a refusal that would drop a perfectly good subject.
-    return { kind: 'files', mountKey, paths: [...new Set(paths as string[])] };
+    // `resolveTabs` DEDUPES, and this is not tidiness. `FilesPane` keys its
+    // `{#each}` on the path, so `files:life/A.md|A.md` — reachable from any
+    // hand-written or shared link — is a duplicate key, which Svelte throws on
+    // during render: the whole app blanks, no nav, no bar, no error page. One
+    // file named twice is one file, so the honest reading is a single tab
+    // rather than a refusal that would drop a perfectly good subject. It also
+    // truncates past `TAB_CAP` and clamps the cursor, for the same reason.
+    return {
+      kind: 'files',
+      mountKey,
+      ...resolveTabs(paths as string[], cursor.active, cursor.compare)
+    };
   }
 
   if (kind === 'chat') {
@@ -109,7 +145,16 @@ export function serializePaneParam(d: PaneDescriptor): string {
     case 'files': {
       const mount = encodeURIComponent(d.mountKey);
       if (d.paths.length === 0) return `files:${mount}`;
-      return `files:${mount}/${d.paths.map(encodePath).join(SPLIT_SEP)}`;
+      // The cursor is omitted when it says nothing: `@0` with no compare is
+      // the default, and writing it would make every one-tab URL longer than
+      // the ones already in the wild for no gain.
+      const cursor =
+        d.compare !== null
+          ? `${CURSOR_SEP}${d.active}+${d.compare}`
+          : d.active === 0
+            ? ''
+            : `${CURSOR_SEP}${d.active}`;
+      return `files:${mount}/${d.paths.slice(0, TAB_CAP).map(encodePath).join(TAB_SEP)}${cursor}`;
     }
     case 'chat':
       return `chat:${encodeURIComponent(d.sessionId)}`;
@@ -236,7 +281,9 @@ export function chatNavigatorFromUrl(url: URL): boolean {
 export function paneTitle(d: PaneDescriptor): string {
   switch (d.kind) {
     case 'files':
-      return d.paths.length ? (d.paths[0].split('/').pop() ?? 'Files') : 'Files';
+      // The tab strip names every open file; the pane header names the one
+      // being read.
+      return d.paths.length ? (d.paths[d.active]?.split('/').pop() ?? 'Files') : 'Files';
     case 'chat':
       return 'Chat';
     case 'chat-new':
@@ -273,11 +320,14 @@ export function promoteTarget(
 
 function routeFor(d: PaneDescriptor): string {
   switch (d.kind) {
-    case 'files': {
-      if (d.paths.length === 0) return `/knowledge?icm=${encodeURIComponent(d.mountKey)}`;
-      const base = knowledgeHref(d.mountKey, d.paths[0]);
-      return d.paths.length > 1 ? `${base}?split=${encodePath(d.paths[1])}` : base;
-    }
+    case 'files':
+      // A pane with no tabs promotes to the mount INDEX rather than the mount
+      // root: `＋ Pane → Files` opens a browser with nothing picked, and
+      // landing on a bare folder route would be the same empty screen with the
+      // index's create and doctor actions taken away.
+      return d.paths.length === 0
+        ? `/knowledge?icm=${encodeURIComponent(d.mountKey)}`
+        : filesPrimaryHref(d.mountKey, d);
     case 'chat':
       return `/chat?session=${encodeURIComponent(d.sessionId)}`;
     case 'chat-new':
