@@ -354,7 +354,15 @@ same precedent (`routes/chat/+page.svelte:241-247`).
 ## Width behaviour
 
 Chat plus a Files pane with a tree and two splits needs
-236 + 380 + 240 + 300 + 300 = 1456px. When less is available, what gets
+236 + 380 + 240 + 240 + 240 = 1336px.
+
+**AMENDMENT (2026-08-01, Daniel): `SPLIT_MIN` is 240, not 300.** At 300 the
+arithmetic put two files side by side out of reach on every laptop — a side
+Files pane cleared it only at 2560px with the tree shown, or 1920px hidden,
+and with the `＋ Split` control deleted there was no other route to a second
+split. That contradicted one of this feature's originating asks. 240px is
+narrow but genuinely readable against the 596px prose cap: it degrades rather
+than blocking. When less is available, what gets
 dropped is decided from the outside in — side panes right to left, so the
 primary is last to give up space, and within a Files pane the second split
 before the tree.

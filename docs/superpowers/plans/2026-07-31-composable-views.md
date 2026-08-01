@@ -17,7 +17,7 @@
 - **NEVER run prettier or any formatter on `frontend/`.** The frontend has no prettier config; running it bare reformats the entire tree. The backend's `mix format` hook does not apply here.
 - **No component render harness.** The codebase convention is pure logic extracted into `.ts` with a `.test.ts` sibling (`pane-route.test.ts`, `pane-split.test.ts`, `icm-route.test.ts`). Components are verified by `bun run check` plus browser verification, never by a mounting test.
 - **Pane cap: 2** side panes beside the primary. **Split cap: 2** files inside a Files pane.
-- **Widths:** nav 236px · primary min 380px · side pane min 300px · Files tree 240px fixed · file split min 300px.
+- **Widths:** nav 236px · primary min 380px · side pane min 300px · Files tree 240px fixed · file split min **240px** (lowered from 300 on 2026-08-01 — see amendment 4 in the banner above).
 - **Light theme only** (standing decision). Colour tokens come from `frontend/src/routes/layout.css`: `--paper-*` surfaces, `--ink-*` text, `--act`/`--suggest`/`--warn` for consequence.
 - **No accent colour on the bottom bar.** In this design system colour means consequence (`PRODUCT.md` principle 1) and opening a view has none. Inactive `text-ink-meta`, active `text-ink-heading`.
 - **Hit targets** ≥ 32px in dense lists, 36px elsewhere.
@@ -49,6 +49,11 @@ disagree with this list, **this list governs.**
    near-verbatim in `MailPane.svelte` and `routes/mail/+page.svelte`, into one
    `mail-selection` helper used by both. This is an obligation, not a
    completed fact.
+
+4. **`SPLIT_MIN` is 240, not 300** (Daniel, 2026-08-01). At 300, two files side
+   by side was unreachable on any laptop — a side Files pane needed 2560px with
+   the tree shown, 1920px hidden — which contradicted an originating ask for
+   the feature. `TREE_W` stays 240; the tree holds deep ICM paths.
 
 3. **The first file always opens**, regardless of width. `openInFirst` and
    `openAsSecond` floor `paths.length === 0`. Without this the Files pane's
