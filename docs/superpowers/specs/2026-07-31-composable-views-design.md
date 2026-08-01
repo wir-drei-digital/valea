@@ -76,7 +76,7 @@ nothing outside the Files pane can observe that relationship.
 
 ```
 ┌────────┬──────────────────────────────────────────────────┐
-│        │ ▣ Working in life        ⊞ ⋯ │ Files    ⧉ ⤢ ✕ │  │
+│        │ Working in life          ⊞ ⋯ │ Files    ⧉ ⤢ ✕ │  │
 │        │ ┌──────────────┬─────────────────────────────┐   │
 │  Nav   │ │  Chat        │ [AGENTS] [CONTEXT ✕] │      │   │
 │  236   │ │  (primary)   ├──────────────────────┤ tree │   │
@@ -84,19 +84,19 @@ nothing outside the Files pane can observe that relationship.
 │ height)│ │              │                      │      │   │
 │        │ └──────────────┴──────────────────────┴──────┘   │
 └────────┴──────────────────────────────────────────────────┘
-   ▣ = nav collapse, at the primary header's left edge
    ⊞ = "Open files beside this session"
+   (no nav-collapse control — see "Opening a pane")
              └── shell sees 1 pane; 2 visible columns ──┘
 ```
 
-`AppShell` is nav, the route's content column, and the one control that
-outlived the bar:
+`AppShell` is nav plus the route's content column, and nothing else:
 
 ```svelte
 <div class="flex h-screen">
-  <aside class="w-[236px] shrink-0 …">{@render nav()}</aside>
-  <div class="relative flex min-w-0 flex-1 flex-col">
-    <NavToggle … />
+  {#if navVisible}
+    <aside class="w-[236px] shrink-0 …">{@render nav()}</aside>
+  {/if}
+  <div class="flex min-w-0 flex-1 flex-col">
     <main>{@render main()}</main>
   </div>
 </div>
@@ -576,17 +576,35 @@ changes, and it reads as broken. The one route-owned control that opens a pane
 without naming a kind up front (Knowledge's picker offers a new session *or*
 any recent one) uses the room half alone.
 
-**Nav collapse moves to the left edge of the primary pane header.** That header
-is always present and sits against the nav edge, so the control stays in the
-same physical place whether the nav is shown or hidden — a control inside the
-nav would vanish with it. It is `AppShell`'s, absolutely positioned at the
-content column's top-left rather than threaded through nine routes, because
-every route's top-left is a different component and each would be free to
-forget it; routes whose first row would sit underneath it carry a left gutter
-(`SessionHeader`/`ListPane`'s `gutter` prop, `MainColumn`'s top padding, the
-Knowledge and Calendar header bands). The preference stays persisted — every
-route mounts its own `AppShell`, so a collapse held in component state would
-spring back open on the next navigation.
+**Nav collapse is PARKED — no control is rendered** (Daniel, 2026-08-01, after
+using it). The machinery is untouched and still tested: `valea.nav-visible`,
+`paneRoom.navVisible`, and its part in `panesThatFit`, which still subtracts the
+nav's 236px from every "may another pane open". `NavToggle.svelte` is kept and
+referenced from `AppShell` behind a single `NAV_TOGGLE_PARKED` constant, so the
+component and the shell cannot be deleted independently of each other.
+
+Two things are recorded here because they cost a round trip each:
+
+- **There is no universal "primary pane header" to put it back on.** The
+  original decision was "the left edge of the primary pane header, which is
+  always present". It is not: `/chat` renders no header at all with no session
+  selected, `/mail` and `/knowledge` open with a `ListPane` title, and Today,
+  Tasks, Calendar, Audit and Sources have neither a header band nor a
+  `PaneHost`. A control living in a primary header would vanish on exactly the
+  five routes where the nav is the only way out. While it shipped it was one
+  absolutely-positioned control owned by `AppShell` at the content column's
+  top-left, and that is the shape to restore.
+- **No route carries a gutter for it, and none should while it is parked.**
+  `SessionHeader` and `ListPane` briefly grew a `gutter` prop and `MainColumn` a
+  taller top padding, to clear the floating control; all of it was reverted with
+  the control. Re-adding a gutter for a control that is not rendered indents
+  every list pane and session header for nothing.
+
+The preference stays persisted — every route mounts its own `AppShell`, so a
+collapse held in component state would spring back open on the next navigation.
+Because nothing can toggle it while it is parked, `AppShell` also reconciles a
+`false` left by an earlier build on mount: without that, anyone who had
+collapsed the nav opens the app to no navigation and no way back.
 
 Styling is deliberately furniture, not feature: inactive `text-ink-meta`,
 active `text-ink-heading`, 32px hit target. **No accent colour** — in this
@@ -694,8 +712,8 @@ New:
   of `routes/knowledge/[...path]/+page.svelte`
 - `lib/shell/pane-fit.ts` — width → how many panes and splits fit; consulted
   only when something is added or restored, never on resize
-- `lib/components/shell/NavToggle.svelte` — the one control that outlived the
-  bar
+- `lib/components/shell/NavToggle.svelte` — the nav collapse, PARKED: kept and
+  referenced from `AppShell` behind `NAV_TOGGLE_PARKED`, rendered nowhere
 - `lib/panes/pane-offer.ts` — pure: may another pane open, and if not why
 
 Retired: `SessionHeader`'s popover file tree and `ChatView`'s
@@ -773,11 +791,13 @@ One pass, internally ordered so each step is separately reviewable:
 *(Nothing below is outstanding. The two notes are kept as the record of how
 each was decided.)*
 
-*(Nav collapse was the last open item and is now settled: **kept**, default on,
-toggled from the LEFT EDGE OF THE PRIMARY PANE HEADER — the bar's far left
-until 2026-08-01, when the bar was retired. "Fixed anchor" governs the nav's
-position — full height, with the content column beside it rather than under
-it — not whether it can be hidden.)*
+*(Nav collapse was the last open item, was settled as "kept, default on,
+toggled from the bar's far left", and outlived two homes: the bar was retired on
+2026-08-01 and the control moved to the content column's top-left, then Daniel
+parked it entirely the same day. The machinery is kept either way. "Fixed
+anchor" governs the nav's position — full height, with the content column
+beside it rather than under it — not whether it can be hidden. See "Opening a
+pane" for what a re-mount has to account for.)*
 *(Stale mail panes were an open item and are now settled under Memory: any
 pane whose subject vanishes closes and is dropped from storage, mail
 included.)*

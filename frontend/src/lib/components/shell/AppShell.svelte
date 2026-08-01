@@ -16,31 +16,48 @@
   // the session header's "Open files", Knowledge's session picker), which is
   // what lets each control name an outcome instead of a kind.
   //
-  // NAV COLLAPSE IS HIDDEN, NOT REMOVED (Daniel, 2026-08-01, after using it):
-  // `NavToggle.svelte` is parked unrendered, and everything behind it stays
-  // live and tested — `valea.nav-visible`, `paneRoom.navVisible`, and its part
-  // in `panesThatFit`'s arithmetic, which still reads the persisted preference
-  // on every "may another pane open". Re-rendering the control is one line;
-  // where it should go is the open question.
+  // NAV COLLAPSE IS PARKED, NOT REMOVED (Daniel, 2026-08-01, after using it).
+  // See `NAV_TOGGLE_PARKED` below — the three parts of that decision are next
+  // to each other on purpose.
   //
   // Structurally there is ONE path, not two: every route renders through this
   // component, and a route that hosts no panes simply never has any.
   import type { Snippet } from 'svelte';
   import { onMount } from 'svelte';
+  import NavToggle from './NavToggle.svelte';
   import { paneRoom } from '$lib/shell/pane-room.svelte';
 
   let { sidebar, main }: { sidebar: Snippet; main: Snippet } = $props();
 
-  // Parking the control leaves one trap that has to be closed rather than
-  // documented: a `false` persisted by an earlier build could no longer be
-  // undone, so anyone who collapsed the nav while it WAS toggleable would open
-  // the app to no navigation and nothing to bring it back. Reconcile instead of
-  // stranding. Idempotent — after the first correction the branch never runs —
-  // and it goes through `toggleNav`, so the preference, the storage key and the
-  // fit arithmetic all stay exactly as they were. Delete this alongside
-  // re-mounting `NavToggle`.
+  /**
+   * The nav collapse is parked: the control is not rendered, everything behind
+   * it stays live and tested — `valea.nav-visible`, `paneRoom.navVisible`, and
+   * its part in `panesThatFit`'s arithmetic, which still subtracts the nav's
+   * 236px on every "may another pane open".
+   *
+   * A FLAG, deliberately, rather than deleting the import and leaving
+   * `NavToggle.svelte` referenced by nobody. Parked and orphaned look identical
+   * to a dead-code sweep, and a sweep that deleted the component would very
+   * likely take the reconciliation below with it — re-creating the trap it
+   * exists to close. This way the two cannot be deleted independently: remove
+   * the file and `bun run check` fails on line 1 of this import.
+   *
+   * Un-parking is deleting this constant, the `{#if}` it gates, and the
+   * `onMount` below. Where the control should GO is the open question — see the
+   * spec's "Opening a pane", which records why there is no universal "primary
+   * pane header" to hang it on.
+   */
+  const NAV_TOGGLE_PARKED = true;
+
+  // The other half of parking, and a trap closed rather than documented: with
+  // nothing left to toggle it, a `false` persisted by an earlier build could no
+  // longer be undone, so anyone who collapsed the nav while it WAS toggleable
+  // would open the app to no navigation and nothing to bring it back.
+  // Reconcile instead of stranding. Idempotent — after the first correction the
+  // branch never runs — and it goes through `toggleNav`, so the preference, the
+  // storage key and the fit arithmetic all stay exactly as they were.
   onMount(() => {
-    if (!paneRoom.navVisible) paneRoom.toggleNav();
+    if (NAV_TOGGLE_PARKED && !paneRoom.navVisible) paneRoom.toggleNav();
   });
 
   // The window measurement and the nav collapse both live in `paneRoom`, not
@@ -66,7 +83,10 @@
       {@render sidebar()}
     </aside>
   {/if}
-  <div class="flex min-w-0 flex-1 flex-col">
+  <div class={['flex min-w-0 flex-1 flex-col', NAV_TOGGLE_PARKED ? '' : 'relative']}>
+    {#if !NAV_TOGGLE_PARKED}
+      <NavToggle {navVisible} onToggle={() => paneRoom.toggleNav()} />
+    {/if}
     <main class="flex min-h-0 min-w-0 flex-1 flex-col">{@render main()}</main>
   </div>
 </div>

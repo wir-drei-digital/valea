@@ -4,8 +4,14 @@
    * out of the UI for now, while everything behind it stays live —
    * `valea.nav-visible`, `paneRoom.navVisible` and its part in `panesThatFit`.
    * A hidden nav is still a wider row, and every refusal still counts it. This
-   * file is kept because the decision was about PLACEMENT, not about the
-   * feature; mount it from `AppShell` to bring it back.
+   * file is kept because the decision was about PLACEMENT, not the feature.
+   *
+   * NOT ORPHANED — do not sweep it. `AppShell` imports this component and gates
+   * it behind `NAV_TOGGLE_PARKED`, so the reference is real and deleting this
+   * file breaks the build there. Read that constant's comment before touching
+   * either: the same decision also put a nav-visible RECONCILIATION in
+   * `AppShell`'s `onMount`, and deleting this without it strands anyone who had
+   * collapsed the nav while the control still existed.
    *
    * Collapse/restore the navigation. It used to sit at the far left of the
    * content area's bottom bar; the bar is retired, so it moved to the TOP left
