@@ -165,12 +165,17 @@
            line. size-8/-my-1.5 buttons keep >=32px hit targets without
            growing the band. -->
       <div class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2">
-        <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] leading-6 font-medium">
-          {paneTitle(pane)}
-        </span>
+        <!-- A kind whose controls name the pane themselves renders no title:
+             the Files tab strip IS the title, and the band has room for one or
+             the other, not both. Everything else keeps the plain label. -->
+        {#if !entry.ownsTitle}
+          <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] leading-6 font-medium">
+            {paneTitle(pane)}
+          </span>
+        {/if}
         {#if entry.controls && state}
           {@const Controls = entry.controls}
-          <Controls {state} />
+          <Controls descriptor={pane} {state} />
         {/if}
         <button
           type="button"

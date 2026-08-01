@@ -34,8 +34,21 @@ export type PaneState = FilesPaneState | ChatPaneState;
 
 export type PaneEntry = {
   view: Component<{ descriptor: PaneDescriptor; context: PaneContext; state?: PaneState }>;
-  controls?: Component<{ state: PaneState }>;
+  /**
+   * Rendered inside `PaneHost`'s header. Takes the descriptor as well as the
+   * state, because a control can be about the pane's CONTENT (the Files tab
+   * strip) and not only about its chrome.
+   */
+  controls?: Component<{ descriptor: PaneDescriptor; state: PaneState }>;
   createState?: (descriptor: PaneDescriptor) => PaneState;
+  /**
+   * The controls render the pane's own name, so the host must not render a
+   * title beside them. True for `files`, whose tab strip names the file being
+   * read — a title as well would be the same file twice in one band, and
+   * stacking the strip under the header was two rules across the row where the
+   * rest of the app has one.
+   */
+  ownsTitle?: boolean;
 };
 
 // The `as unknown as` casts are the documented cost of the uniform map: each
@@ -46,7 +59,8 @@ export const paneEntries: Record<PaneDescriptor['kind'], PaneEntry> = {
   files: {
     view: FilesPane as unknown as PaneEntry['view'],
     controls: FilesPaneControls as unknown as PaneEntry['controls'],
-    createState: createFilesPaneState as unknown as PaneEntry['createState']
+    createState: createFilesPaneState as unknown as PaneEntry['createState'],
+    ownsTitle: true
   },
   chat: {
     view: ChatPane as unknown as PaneEntry['view'],

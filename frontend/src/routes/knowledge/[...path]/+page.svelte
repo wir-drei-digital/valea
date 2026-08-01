@@ -298,17 +298,19 @@
       {#snippet primary()}
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
           <!-- The primary's own header band. `PaneHost` renders one around
-               every SIDE pane; the primary has none, so the tree toggle and
-               the two route actions that used to live in the list-pane header
-               sit here instead. Same vertical band as the pane headers, so
-               every header rule across the row reads as one line. -->
+               every SIDE pane; the primary has none, so the tab strip, the two
+               toggles and the two route actions sit here instead. Same
+               vertical band as the pane headers, so every header rule across
+               the row reads as one line — and no title, for the same reason
+               `ownsTitle` suppresses it in the host: the strip names the file.
+               The controls carry the "Files" label themselves when nothing is
+               open, so the pane is never nameless. -->
           <div
             class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
           >
-            <span class="text-ink-secondary min-w-0 flex-1 truncate text-[12px] leading-6 font-medium">
-              Files
-            </span>
-            <FilesPaneControls state={primaryFilesState} />
+            {#if primaryDescriptor?.kind === 'files'}
+              <FilesPaneControls descriptor={primaryDescriptor} state={primaryFilesState} />
+            {/if}
             {#if mountKey}
               <SessionPickerPopover
                 {mountKey}

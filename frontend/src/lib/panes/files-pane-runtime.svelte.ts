@@ -9,12 +9,15 @@
  * Files panes never share an auto-open claim. Only the tree preference is
  * shared, and that goes through `pane-memory`, not through here.
  *
- * It carries no width FIGURE and no add-split action any more: both existed for
- * a header "open a second file" button that has been removed, because a header
- * control has no file to name and could only guess one. The split cap is purely
- * local to the pane body now. What does cross back up is `treeBlocked` — a
- * width-derived REASON rather than a measurement, and only because the control
- * it governs lives in the header.
+ * It carries no width FIGURE and no add-split action: both existed for a header
+ * "open a second file" button that was removed, because a header control has no
+ * file to name and could only guess one. What DOES cross back up is a reason or
+ * an action, never a measurement — `treeBlocked`, `compareBlocked`, and the two
+ * handler slots the header's controls call, all of which exist because the
+ * control lives in the header while the thing it governs lives in the body.
+ *
+ * The TAB STRIP is in the header band too (it is the pane's title now), so
+ * `pendingTab` lives here rather than in the body: both halves render it.
  */
 import { loadChrome, saveChrome } from './pane-memory';
 import type { PaneDescriptor } from './pane-route';
@@ -68,10 +71,23 @@ export class FilesPaneState {
   /** Why compare cannot act — too narrow, or fewer than two tabs — or `null`. */
   compareBlocked = $state<string | null>(null);
   /**
-   * Registered by the pane body, which owns the descriptor rewrite. The header
-   * cannot do it itself: it never sees `PaneContext`.
+   * A tab the user asked for but has not filled yet — ＋, then a file.
+   *
+   * Deliberately not in the URL: it holds nothing, so there is nothing to
+   * address, and a reload legitimately loses it. At most one exists at a time,
+   * so ＋ while one is waiting is a no-op rather than a strip full of identical
+   * empty chips. While it is showing, NOTHING is on screen — no tab chip and no
+   * tree row may read as current.
+   */
+  pendingTab = $state(false);
+
+  /**
+   * Registered by the pane body, which owns every descriptor rewrite. The
+   * header cannot do any of them itself: it never sees `PaneContext`.
    */
   toggleCompare = $state<(() => void) | null>(null);
+  showTab = $state<((index: number) => void) | null>(null);
+  closeTab = $state<((index: number) => void) | null>(null);
 
   /** What is actually rendered: the preference, unless the width overrides it. */
   get treeShown(): boolean {

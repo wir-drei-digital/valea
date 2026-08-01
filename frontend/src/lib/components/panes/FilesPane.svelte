@@ -77,16 +77,6 @@
   });
 
   /**
-   * A tab the user asked for but has not filled yet — `＋`, then a file.
-   *
-   * Deliberately LOCAL and not in the URL: it holds nothing, so there is
-   * nothing to address, and a reload legitimately loses it. At most one exists
-   * at a time, so ＋ while one is waiting is a no-op rather than a strip full
-   * of identical empty chips.
-   */
-  let pendingTab = $state(false);
-
-  /**
    * The tab that was showing before this one, as a PATH rather than an index —
    * the list renumbers under it, and an index that survived a close would name
    * whatever slid into the slot. It is what Compare puts beside the active tab.
@@ -140,7 +130,16 @@
    * pressed state would announce a second column that is not on screen.
    */
   const compareFits = $derived(splitsThatFit(paneWidth, treeShown) >= 2);
-  const compareShown = $derived(descriptor.compare !== null && compareFits);
+  // ORDER IS LOAD-BEARING. `compareFits` first, so `paneWidth` is read on every
+  // evaluation and is therefore a dependency of this derived even while
+  // compare is off. With `descriptor.compare !== null` first, a pane that
+  // mounts with compare OFF short-circuits before `compareFits` is ever read,
+  // and narrowing the window afterwards did not re-evaluate this: two columns
+  // of 185px and 226px survived a drop to 900px — well under `SPLIT_MIN`, the
+  // exact starvation tabs exist to end — while the header button reported
+  // both `aria-pressed="true"` and `aria-disabled="true"`. Found in a live
+  // browser; no unit test in this repo can see it.
+  const compareShown = $derived(compareFits && descriptor.compare !== null);
   $effect(() => {
     pane.compareShown = compareShown;
     pane.compareBlocked = !compareFits
@@ -159,7 +158,7 @@
   // the empty state, and a tree row claiming to be on screen over it would be
   // the same lie `treeBlocked` and `compareShown` exist to prevent.
   const currentPath = $derived(
-    descriptor.paths.length === 0 || pendingTab
+    descriptor.paths.length === 0 || pane.pendingTab
       ? null
       : knowledgeHref(descriptor.mountKey, descriptor.paths[descriptor.active])
   );
@@ -235,18 +234,24 @@
    * own.
    */
   function openFromTree(path: string): void {
-    const next = pendingTab ? openInNewTab(tabs, path) : openInActiveTab(tabs, path);
-    pendingTab = false;
-    pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    const opening = pane.pendingTab || !descriptor.paths.includes(path);
+    const next = pane.pendingTab ? openInNewTab(tabs, path) : openInActiveTab(tabs, path);
+    pane.pendingTab = false;
+    // Only an OPEN releases the claim. Clicking the row of a file that is
+    // already in a tab merely activates it, which places nothing — releasing a
+    // claim there would cost the assistant its recycling for a click that did
+    // not touch a file, and it is the same reason `showTab` releases nothing.
+    if (opening) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
     apply(next);
   }
 
   /** The row's "Open in a new tab" affordance. Same claim release for the tab it lands in. */
   function openInTab(path: string): void {
     if (newTabDisabled) return;
+    const opening = !descriptor.paths.includes(path);
     const next = openInNewTab(tabs, path);
-    pendingTab = false;
-    pane.autoIndex = clearAuto(pane.autoIndex, next.active);
+    pane.pendingTab = false;
+    if (opening) pane.autoIndex = clearAuto(pane.autoIndex, next.active);
     apply(next);
   }
 
@@ -255,7 +260,7 @@
    * The assistant may go on recycling the tab it made while you read another.
    */
   function showTab(index: number): void {
-    pendingTab = false;
+    pane.pendingTab = false;
     const next = activateTab(tabs, index);
     if (next !== tabs) apply(next);
   }
@@ -269,15 +274,6 @@
   function closeAt(index: number): void {
     pane.autoIndex = shiftAuto(pane.autoIndex, index);
     apply(closeTab(tabs, index));
-  }
-
-  /**
-   * ＋. A tab that holds nothing yet, showing the same empty state a Files
-   * pane with no tabs shows. It is deliberately not a descriptor rewrite:
-   * there is nothing to write.
-   */
-  function newTab(): void {
-    pendingTab = true;
   }
 
   function toggleCompare(): void {
@@ -294,10 +290,20 @@
     apply(resolveTabs(tabs.paths, tabs.active, target));
   }
 
+  /**
+   * The header's controls live in `PaneHost`'s band and never see
+   * `PaneContext`, so every action of theirs that rewrites the descriptor is
+   * registered here. ＋ and closing a pending tab are NOT among them: they only
+   * set `pane.pendingTab`, which both halves read.
+   */
   $effect(() => {
     pane.toggleCompare = toggleCompare;
+    pane.showTab = showTab;
+    pane.closeTab = closeAt;
     return () => {
       pane.toggleCompare = null;
+      pane.showTab = null;
+      pane.closeTab = null;
     };
   });
 
@@ -347,11 +353,20 @@
    */
   export function receiveAutoFile(path: string): void {
     const next = autoOpen(descriptor.paths, claim, path, TAB_CAP);
+    const at = next.paths.indexOf(path);
+    // `autoOpen` DECLINES when every tab is one the user opened (rule 3): it
+    // hands back the same array, no claim, and the file is nowhere in it, so
+    // `indexOf` is -1. Declining has to mean NOTHING HAPPENS. Falling through
+    // would hand `resolveTabs` that -1, which clamps to 0 — so a citation the
+    // pane correctly refused to open would still yank the reader from tab 4 to
+    // tab 0 and drop a comparison pinned there. The claim is left alone too:
+    // a refusal is not a reason to release one.
+    if (at === -1) return;
     pane.autoIndex = next.autoIndex;
     pane.autoPath = next.autoIndex === null ? null : next.paths[next.autoIndex];
-    const at = next.paths.indexOf(path);
+    // Already the tab on screen — nothing to navigate for.
     if (next.paths === descriptor.paths && at === descriptor.active) return;
-    pendingTab = false;
+    pane.pendingTab = false;
     apply(resolveTabs(next.paths, at, descriptor.compare));
   }
 
@@ -380,108 +395,17 @@
 
   /** What the content area renders: one file, or two when compare is on. */
   const columns = $derived(
-    descriptor.paths.length === 0 || pendingTab
+    descriptor.paths.length === 0 || pane.pendingTab
       ? []
       : compareShown && descriptor.compare !== null
         ? [descriptor.paths[descriptor.active], descriptor.paths[descriptor.compare]]
         : [descriptor.paths[descriptor.active]]
   );
 
-  function basename(path: string): string {
-    return path.split('/').pop() ?? path;
-  }
 </script>
 
 <div bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    {#if descriptor.paths.length > 0 || pendingTab}
-      <!-- The tab strip. Plain buttons rather than a `tablist`: these tabs own
-           no `tabpanel` to point at, and claiming the role would promise the
-           arrow-key navigation the APG pattern requires. `aria-current` is the
-           same marker `IcmTree` uses for the row you are reading.
-           No accent colour anywhere — switching a tab has no consequence, and
-           in this design system colour means one. -->
-      <div
-        class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-2 py-1"
-        aria-label="Open files"
-      >
-        {#each descriptor.paths as path, i (path)}
-          <!-- "Showing" is what is ON SCREEN: the active tab, plus the compare
-               partner while two columns are rendered, and NEITHER while a
-               pending tab holds the content area. -->
-          {@const showing =
-            !pendingTab && (i === descriptor.active || (compareShown && i === descriptor.compare))}
-          <div
-            class={[
-              'group/tab relative flex h-8 min-w-0 max-w-[180px] flex-1 items-center rounded-md transition-colors',
-              showing ? 'bg-paper-card' : 'hover:bg-paper-pill'
-            ]}
-          >
-            <button
-              type="button"
-              title={path}
-              aria-current={!pendingTab && i === descriptor.active ? 'true' : undefined}
-              onclick={() => showTab(i)}
-              class={[
-                'min-w-0 flex-1 truncate rounded-md py-1.5 pr-8 pl-2.5 text-left text-[12px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                showing ? 'text-ink-heading' : 'text-ink-meta group-hover/tab:text-ink-heading'
-              ]}
-            >
-              {basename(path)}
-            </button>
-            <!-- A sibling of the tab button, never nested inside it: a button
-                 within a button is invalid HTML and swallows the outer click
-                 target. `bg-inherit` takes the chip's own background so the ✕
-                 sits cleanly over the truncated end of a long name. -->
-            <button
-              type="button"
-              title="Close tab"
-              aria-label={`Close ${basename(path)}`}
-              onclick={() => closeAt(i)}
-              class={[
-                'text-ink-meta hover:text-ink-heading focus-visible:ring-ring/50 absolute top-0 right-0 flex size-8 items-center justify-center rounded-r-md bg-inherit transition-colors outline-none focus-visible:opacity-100 focus-visible:ring-2',
-                showing ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100'
-              ]}
-            >
-              <X class="size-3" strokeWidth={1.5} />
-            </button>
-          </div>
-        {/each}
-
-        {#if pendingTab}
-          <div
-            class="bg-paper-card group/tab relative flex h-8 min-w-0 max-w-[180px] flex-1 items-center rounded-md"
-          >
-            <span
-              class="text-ink-meta min-w-0 flex-1 truncate py-1.5 pr-8 pl-2.5 text-[12px] italic"
-              aria-current="true"
-            >
-              New tab
-            </span>
-            <button
-              type="button"
-              title="Close tab"
-              aria-label="Close the new tab"
-              onclick={() => (pendingTab = false)}
-              class="text-ink-meta hover:text-ink-heading focus-visible:ring-ring/50 absolute top-0 right-0 flex size-8 items-center justify-center rounded-r-md bg-inherit transition-colors outline-none focus-visible:ring-2"
-            >
-              <X class="size-3" strokeWidth={1.5} />
-            </button>
-          </div>
-        {/if}
-
-        <button
-          type="button"
-          title="New tab"
-          aria-label="New tab"
-          onclick={newTab}
-          class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill focus-visible:ring-ring/50 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
-        >
-          <Plus class="size-3.5" strokeWidth={1.5} />
-        </button>
-      </div>
-    {/if}
-
     {#if columns.length === 0}
       <p class="text-ink-meta m-auto px-6 text-[12.5px]">Pick a file to read it.</p>
     {:else if columns.length === 1}
