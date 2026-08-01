@@ -35,17 +35,22 @@
   // exactly where the brand lockup would sit — hence the empty 48px band,
   // which carries `data-tauri-drag-region` itself because Tauri's drag
   // handler only fires on the element the mousedown lands on.
+  //
+  // On Linux the app does NOT own its frame yet (no `tauri.linux.conf.json`,
+  // so `decorations` is still the base config's `true`), and the band is
+  // still the dead space beside a native title bar that it was on Windows
+  // before `decorations: false`. Rendering it there is pre-existing
+  // behaviour this refactor deliberately preserves, not a new claim.
   const chrome = windowChrome();
 
   let settingsOpen = $state(false);
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Brand header. Wherever the app owns its frame this band is chromeless
-       — no mark, no wordmark (on macOS the traffic lights live here instead;
-       the brand shows on the onboarding screen) — but it stays as that
-       clearance and as a window-drag surface. In the browser it carries the
-       lockup. -->
+  <!-- Brand header. In the DESKTOP app this band is chromeless — no mark, no
+       wordmark (on macOS the traffic lights live here instead; the brand
+       shows on the onboarding screen) — but it stays as that clearance and
+       as a window-drag surface. In the browser it carries the lockup. -->
   {#if chrome !== 'browser'}
     <div data-tauri-drag-region class="h-12 shrink-0"></div>
   {:else}

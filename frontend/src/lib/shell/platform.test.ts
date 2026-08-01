@@ -9,15 +9,29 @@ vi.mock('../keychain', () => ({ inDesktop: vi.fn(() => false) }));
 import { inDesktop } from '../keychain';
 import { overlayChrome, windowChrome } from './platform';
 
-// Real strings from the three webviews Valea ships in (WKWebView,
-// WebView2, WebKitGTK) — the mac one is the only ARM/Intel-agnostic
-// "Macintosh" carrier.
+// The three webviews Valea ships in, in the shape each actually reports:
+// WKWebView, WebView2 (Chromium, and it always appends the `Edg/` token that
+// plain desktop Chrome lacks), WebKitGTK (same `AppleWebKit/605.1.15 …
+// Version/x Safari/605.1.15` shape as WKWebView — which is exactly why
+// "Macintosh", carried by neither of the other two and by both Apple
+// silicon and Intel, is the token that separates them). Version numbers
+// drift with the OS and the runtime; only the first parenthesis is
+// load-bearing here.
 const MAC_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
 const WINDOWS_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0';
 const LINUX_UA =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/8.0 Safari/605.1.15';
+
+// WebKitGTK is not Linux-only: on a BSD the UA keeps `X11` and drops the
+// `Linux` token altogether. Not a platform Valea ships to, but it is the
+// realistic shape of a UA that reaches the `X11` half of `windowChrome`'s
+// disjunct — `LINUX_UA` carries both tokens and `||` short-circuits, so
+// without this string deleting `|| ua.includes('X11')` leaves the suite
+// green.
+const BSD_X11_UA =
+  'Mozilla/5.0 (X11; FreeBSD amd64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/8.0 Safari/605.1.15';
 
 beforeEach(() => {
   vi.mocked(inDesktop).mockReset().mockReturnValue(false);
@@ -39,13 +53,13 @@ describe('overlayChrome', () => {
     expect(overlayChrome()).toBe(true);
   });
 
-  it('is false in the desktop app on Windows (native decorations — no dead strip)', () => {
+  it('is false in the desktop app on Windows (frameless, but not an overlay)', () => {
     vi.mocked(inDesktop).mockReturnValue(true);
     vi.stubGlobal('navigator', { userAgent: WINDOWS_UA });
     expect(overlayChrome()).toBe(false);
   });
 
-  it('is false in the desktop app on Linux (native decorations)', () => {
+  it('is false in the desktop app on Linux (not an overlay either)', () => {
     vi.mocked(inDesktop).mockReturnValue(true);
     vi.stubGlobal('navigator', { userAgent: LINUX_UA });
     expect(overlayChrome()).toBe(false);
@@ -77,6 +91,13 @@ describe('windowChrome', () => {
     vi.stubGlobal('navigator', { userAgent: WINDOWS_UA });
     expect(windowChrome()).toBe('windows');
     vi.stubGlobal('navigator', { userAgent: LINUX_UA });
+    expect(windowChrome()).toBe('linux');
+  });
+
+  // Pins the `X11` half of the disjunct on its own — see `BSD_X11_UA`.
+  it('names linux from X11 alone, with no Linux token', () => {
+    vi.mocked(inDesktop).mockReturnValue(true);
+    vi.stubGlobal('navigator', { userAgent: BSD_X11_UA });
     expect(windowChrome()).toBe('linux');
   });
 

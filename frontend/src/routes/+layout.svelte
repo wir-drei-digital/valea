@@ -15,11 +15,12 @@
 
   let { children } = $props();
 
-  // Wherever the app owns its frame — macOS overlay, frameless Windows and
-  // Linux — no native title bar offers a grab handle, so a thin strip along
-  // the very top edge is always a drag region. This is what makes the
-  // window draggable on every screen, onboarding included (the sidebar's
-  // brand band is a second, larger drag surface once the shell renders).
+  // Wherever the app owns its frame — the macOS overlay, frameless Windows,
+  // and Linux once `tauri.linux.conf.json` lands — no native title bar
+  // offers a grab handle, so a thin strip along the very top edge is always
+  // a drag region. This is what makes the window draggable on every screen,
+  // onboarding included (the sidebar's brand band is a second, larger drag
+  // surface once the shell renders).
   // 12px tall: inside every pane's own top padding, so it never sits over
   // anything interactive. Keyed on `windowChrome()` rather than
   // `inDesktop()` because the strip answers to the chrome, not the runtime.
