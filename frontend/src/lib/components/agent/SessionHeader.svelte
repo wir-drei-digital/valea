@@ -1,15 +1,16 @@
 <script lang="ts">
-  // The chat session's header line (extracted from the chat route,
-  // side-panes pass): which ICM the session works in, an archive affordance,
-  // and — when the host can open files — the folder name becomes a popover
-  // file tree for opening a file beside the chat.
+  // The chat session's header line: which ICM the session works in, an
+  // archive affordance, and the file-activity pill.
   //
   // Presentational: every piece of state (which ICM, whether the session
   // ended, whether an archive call is in flight) arrives as a prop, so the
-  // same header renders for a route primary and for a session inside a side
-  // pane. The popover half only exists when the host actually passes
-  // `onOpenFile` — a host with nowhere to put a file renders the plain
-  // static folder line the route always had.
+  // same header renders for a route primary and for a session inside a pane.
+  //
+  // It carried a popover FILE TREE here, on the folder name. That is retired:
+  // the tree is a pane now (`FilesPane`), reachable from the bar's ＋ Pane
+  // beside any chat, where it is a real browser with rename, delete, two
+  // splits and persistent expansion rather than a menu that closed on every
+  // click. The folder line is a plain label again.
   //
   // `onArchive` is the "there is a session here" signal (the route's old
   // `selectedId` gate): a host in new-session mode has no session yet and
@@ -30,11 +31,7 @@
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import * as Popover from '$lib/components/ui/popover';
-  import { IcmTree } from '$lib/components/shell';
-  import { icmStore } from '$lib/stores/icm.svelte';
-  import { icmToNav } from '$lib/shell/nav';
 
   let {
     icmName,
@@ -44,7 +41,6 @@
     deleting = false,
     onArchive,
     onDelete,
-    onOpenFile,
     filesCount = 0,
     onShowFiles,
     filesPanel
@@ -56,7 +52,6 @@
     deleting?: boolean;
     onArchive?: () => void;
     onDelete?: () => void;
-    onOpenFile?: (sel: { mountKey: string; path: string }) => void;
     filesCount?: number;
     onShowFiles?: () => void;
     /**
@@ -69,7 +64,6 @@
     filesPanel?: Snippet;
   } = $props();
 
-  let treeOpen = $state(false);
   let menuOpen = $state(false);
   // Delete is irreversible — the menu item arms a confirm row instead of
   // firing directly; closing the popover always disarms it.
@@ -78,48 +72,15 @@
   $effect(() => {
     if (!menuOpen) confirmingDelete = false;
   });
-  // `icmStore.groups` is keyed by `mount` (the stable mount key) — the same
-  // key sessions carry as `icmMount`. Folders inside the popover lazy-load
-  // through `IcmTree`'s own `loadDir` calls; the mount's ROOT level is the
-  // caller's concern (see `ChatView`'s tree-load effect).
-  const treeNav = $derived(icmToNav(icmStore.groups.find((g) => g.mount === mountKey)?.tree ?? []));
-  const canBrowse = $derived(Boolean(onOpenFile && mountKey));
 </script>
 
 {#if icmName || onArchive || onDelete}
   <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
     {#if icmName}
-      {#if canBrowse}
-        <Popover.Root bind:open={treeOpen}>
-          <Popover.Trigger
-            class="hover:bg-paper-pill -mx-1 flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors"
-          >
-            <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-            <span class="text-ink-meta text-[12px]">
-              Working in <span class="text-ink-secondary font-medium">{icmName}</span>
-            </span>
-            <ChevronDown class="text-ink-meta size-3 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-          </Popover.Trigger>
-          <Popover.Content class="max-h-96 overflow-y-auto p-2">
-            {#if treeNav.length}
-              <IcmTree
-                nodes={treeNav}
-                onSelect={(sel) => {
-                  treeOpen = false;
-                  onOpenFile?.(sel);
-                }}
-              />
-            {:else}
-              <p class="text-ink-meta px-2 py-1 text-[12px]">No files yet.</p>
-            {/if}
-          </Popover.Content>
-        </Popover.Root>
-      {:else}
-        <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-        <span class="text-ink-meta text-[12px]">
-          Working in <span class="text-ink-secondary font-medium">{icmName}</span>
-        </span>
-      {/if}
+      <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+      <span class="text-ink-meta text-[12px]">
+        Working in <span class="text-ink-secondary font-medium">{icmName}</span>
+      </span>
     {/if}
     <span class="min-w-0 flex-1" aria-hidden="true"></span>
     {#if filesCount > 0 && (onShowFiles || filesPanel)}

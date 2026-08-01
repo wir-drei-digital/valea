@@ -1,110 +1,92 @@
 <script lang="ts">
-  // Chat route (spec Task 18): sessions list + live transcript + composer,
-  // with a doctor fallback when the agent harness isn't ready. Composed the
-  // same way as `/knowledge` (AppFrame + ListPane), but the main pane's
-  // content is driven by the `?session=<id>` query param rather than a path
-  // segment, since sessions aren't part of the ICM file tree.
+  // Chat route: the transcript and its optional all-sessions navigator are
+  // ONE surface now — `ChatPane` — and this route renders it as its primary
+  // pane, with `?pane=` panes beside it. Everything that used to be the
+  // shell's `list` column (grouping, per-row archive, the include-scheduled
+  // toggle) moved into that component, so a chat mounted in a PANE has a
+  // navigator too.
+  //
+  // What is left here is the ROUTE's own business: which session is selected
+  // (`?session=`), whether the navigator shows (`?all=1`), starting a
+  // session, and the doctor fallback.
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { AppFrame, ListPane, EmptyState } from '$lib/components/shell';
+  import { AppFrame, EmptyState } from '$lib/components/shell';
   import { Button } from '$lib/components/ui/button/index.js';
   import MessageSquare from '@lucide/svelte/icons/message-square';
-  import Archive from '@lucide/svelte/icons/archive';
-  import { groupAllSessions } from '$lib/components/shell/icm-projects';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
-  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { sessionsListStore } from '$lib/stores/sessions-list.svelte';
   import { resolveIcmSelection } from '$lib/shell/icm-route';
-  import { sessionsListStore, type AgentSessionSummary } from '$lib/stores/sessions-list.svelte';
   import { DoctorPanel } from '$lib/components/agent';
-  import ChatView from '$lib/components/views/ChatView.svelte';
+  import ChatPane from '$lib/components/panes/ChatPane.svelte';
   import PaneHost from '$lib/components/panes/PaneHost.svelte';
+  import { ChatPaneState } from '$lib/panes/chat-pane-runtime.svelte';
   import {
-    parsePaneParam,
-    withPaneParam,
-    hrefWithPane,
-    promoteHref,
+    chatNavigatorFromUrl,
+    dedupeSurfaces,
+    hrefWithPanes,
+    parsePanes,
     type PaneDescriptor
   } from '$lib/panes/pane-route';
-
-  // The open transcript lives in `ChatView` (side-panes pass) — everything
-  // below is the ROUTE's own business: which session is selected (`?session=`),
-  // the optional all-sessions list pane (`?all=1`), starting a session, and
-  // the doctor fallback. The flat session list is the MODULE SINGLETON now
-  // (it used to be a route-local `new SessionsListStore(api)`), so the list
-  // pane here and the `ChatView`(s) mounted by this route — or, from Task 8,
-  // by a side pane — all read and refresh ONE list.
+  import { paneWiring } from '$lib/panes/pane-wiring';
+  import type { PaneContext } from '$lib/panes/context';
 
   onMount(() => {
+    // The flat session list is a MODULE SINGLETON, read by the navigator in
+    // every mounted `ChatPane` — the primary's and any pane's — so one
+    // refresh here serves all of them.
     void sessionsListStore.refresh();
-    // `mountsStore` has no other consumer before this page unless Knowledge
-    // was already visited this session (it's a shared singleton — see
-    // `mounts.svelte.ts`) — `startSession` needs `mounts` populated to pick
-    // a primary ICM, so refresh it here too.
+    // `startSession` needs `mounts` populated to pick a primary ICM.
+    // `AppFrame` cold-starts it, but only when nothing has loaded it yet;
+    // this route refreshes unconditionally because it is one of the two that
+    // own the store.
     void mountsStore.refresh();
   });
 
-  // Task 9.4 formalizes the `?icm` / `?session` route scheme: `?icm=<key>`
-  // ONLY ever selects the ICM for a brand-new session (`resolveIcmSelection`,
-  // shared with Knowledge's identical default — see `icm-route.ts`),
-  // falling back to the first enabled, non-degraded mount (config order)
-  // when absent. `primaryMountKey` is only ever called from `startSession`
-  // — i.e. only when CREATING a session (the empty state's "Start a
-  // session", the list pane's "New session", and "Start a follow-up
-  // session") — so it deliberately never looks at `?session=`: a currently
-  // open transcript (whatever `selectedId`/`store` below are showing) is
-  // never reassigned by either query param; starting a new session is a
-  // wholly independent action from whatever happens to already be open.
+  // Task 9.4's route scheme: `?icm=<key>` ONLY ever selects the ICM for a
+  // brand-new session (`resolveIcmSelection`, shared with Knowledge's
+  // identical default), falling back to the first enabled, non-degraded mount
+  // in config order when absent. Only ever called from `startSession` — i.e.
+  // only when CREATING a session — so it deliberately never looks at
+  // `?session=`: a currently open transcript is never reassigned by either
+  // query param.
   function primaryMountKey(): string | null {
-    const enabledMountKeys = mountsStore.mounts.filter((m) => m.enabled && !m.degraded).map((m) => m.mountKey);
+    const enabledMountKeys = mountsStore.mounts
+      .filter((m) => m.enabled && !m.degraded)
+      .map((m) => m.mountKey);
     return resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys);
   }
 
-  // Authoritative for the open transcript (Task 9.4) — driven ENTIRELY by
-  // `?session=`; `?icm=` is never consulted here, so it can never reassign
-  // which session's channel this page joins.
+  // Authoritative for the open transcript — driven ENTIRELY by `?session=`;
+  // `?icm=` is never consulted here, so it can never reassign which session's
+  // channel this page joins.
   const selectedId = $derived(page.url.searchParams.get('session'));
 
-  // `?all=1` opens the all-sessions pane (the sidebar's "Show all" row) —
-  // by default the chat route renders WITHOUT a list pane, since the main
-  // nav's project groups already carry the recent sessions.
-  const showAllPane = $derived(page.url.searchParams.get('all') === '1');
-  // `visibleSessions`, not `sessions`: scheduled runs stay out of this pane
-  // unless its own toggle asks for them (see `SessionsListStore` for why the
-  // flat list itself must stay unfiltered — it's also the open transcript's
-  // title index).
-  const allGroups = $derived(groupAllSessions(sessionsListStore.visibleSessions));
+  // `?all=1` opens the primary's sessions navigator (the sidebar's "Show all"
+  // row). By default the chat route renders without one, since the main nav's
+  // project groups already carry the recent sessions.
+  const showAllPane = $derived(chatNavigatorFromUrl(page.url));
 
-  /**
-   * Keeps `?all=1` AND `?pane=` sticky across in-pane navigation.
-   *
-   * The pane half is final review, I4: both knowledge routes already carry
-   * the pane through every in-route navigation (tree links, all three
-   * dialogs, `onVanished`, the last-opened restore), and the feature's whole
-   * intent is that the pane STAYS while you move within a route — switching
-   * sessions from the all-sessions list is exactly such a move. This builds
-   * an href for a link; the three imperative `goto`s below do the same.
-   */
-  function sessionHref(id: string): string {
-    return hrefWithPane(showAllPane ? `/chat?all=1&session=${id}` : `/chat?session=${id}`, page.url);
-  }
+  // The primary's chrome state. A side pane's is created by `PaneHost` and
+  // toggled from its header; the primary has no header, so its navigator is
+  // route state — `?all=1` — exactly as it has always been.
+  const primaryChatState = new ChatPaneState();
 
-  // True whenever the most recent "start a session" attempt (from either the
-  // list footer or the empty state) hit `harness_unavailable`, or the user
-  // followed the empty state's quiet "Run checks" link — shown in place of
-  // whatever the main pane would otherwise render, regardless of whether a
-  // session id is currently selected. Reset by the selection effect below
-  // whenever the selected id actually changes (a fresh session was created,
-  // or the user picked a different one from the list).
+  $effect(() => {
+    primaryChatState.sessionsVisible = showAllPane;
+  });
+
+  // True whenever the most recent "start a session" attempt hit
+  // `harness_unavailable`, or the user followed the empty state's quiet "Run
+  // checks" link — shown in place of whatever the main pane would otherwise
+  // render. Reset whenever the selected id changes (a fresh session was
+  // created, or a different one was picked).
   let doctorOverride = $state(false);
   let startError = $state<string | null>(null);
 
-  // A fresh selection clears the doctor override — a new session was created,
-  // or the user picked a different one from the list. Stays here (not in
-  // `ChatView`): the override replaces whatever the MAIN PANE would render,
-  // selected session or not, so it's the route's state, not a view's.
   $effect(() => {
     void selectedId;
     doctorOverride = false;
@@ -122,7 +104,7 @@
       const data = result.data as { id: string };
       doctorOverride = false;
       await sessionsListStore.refresh();
-      void goto(hrefWithPane(`/chat?session=${data.id}`, page.url));
+      void goto(hrefWithPanes(`/chat?session=${data.id}`, page.url));
     } else if (result.error === 'harness_unavailable') {
       doctorOverride = true;
     } else {
@@ -146,212 +128,48 @@
     }
   }
 
-  function sessionTitle(session: AgentSessionSummary): string {
-    if (session.title && session.title.trim().length > 0) return session.title;
-    // Untitled workflow runs show a plain title here — the workflow's file
-    // path renders as its own mono line under the title, so repeating it as
-    // the title would double it up.
-    if (session.kind === 'workflow') return 'Workflow run';
-    return 'Chat session';
-  }
-
-  function relativeTime(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return '';
-    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-    const deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
-    const abs = Math.abs(deltaSeconds);
-    if (abs < 60) return rtf.format(deltaSeconds, 'second');
-    if (abs < 3600) return rtf.format(Math.round(deltaSeconds / 60), 'minute');
-    if (abs < 86400) return rtf.format(Math.round(deltaSeconds / 3600), 'hour');
-    return rtf.format(Math.round(deltaSeconds / 86400), 'day');
-  }
-
-  // --- Archive from a LIST ROW. Live sessions archive too — the backend
-  // stops a running session first, then archives
-  // (`Valea.Agents.archive_session/1`), so the row offers the button
-  // unconditionally. Archiving the session that's currently OPEN is
-  // `ChatView`'s own affordance (its header) with its own in-flight/error
-  // state; this path is the all-sessions pane's per-row button, which can
-  // archive any session, including the open one — hence the navigation below.
-
-  let archiving: Record<string, boolean> = $state({});
-  let archiveError = $state<string | null>(null);
-
-  async function archiveSession(id: string): Promise<void> {
-    archiveError = null;
-    archiving = { ...archiving, [id]: true };
-    const result = await api.archiveAgentSession(id, workspaceStore.generation ?? 0);
-    archiving = { ...archiving, [id]: false };
-
-    if (!result.ok) {
-      archiveError = 'Could not archive the session. Please try again.';
-      return;
-    }
-
-    void sessionsListStore.refresh();
-    void recentSessionsStore.refresh();
-    if (selectedId === id) {
-      void goto(hrefWithPane(showAllPane ? '/chat?all=1' : '/chat', page.url));
-    }
-  }
-
   /**
-   * Where the main pane goes once `ChatView` archives the session it has
-   * open. Deselects the session but KEEPS the side pane (final review, I4)
-   * — archiving is an in-route move, and whatever file is open beside the
-   * transcript is unaffected by it.
+   * Where the primary goes once its session is archived — from `ChatView`'s
+   * own header, or from the navigator's per-row button when the archived row
+   * is the open one. Deselects the session but KEEPS the panes: archiving is
+   * an in-route move, and whatever is open beside the transcript is
+   * unaffected by it.
    */
   function afterArchive(): void {
-    void goto(hrefWithPane(showAllPane ? '/chat?all=1' : '/chat', page.url));
+    void goto(hrefWithPanes(showAllPane ? '/chat?all=1' : '/chat', page.url));
   }
 
-  // --- Side pane (`?pane=`) ---
+  // --- Panes (`?pane=`) ------------------------------------------------------
   //
-  // The URL is the ONE source of truth for what's open beside the chat, so a
-  // split view is linkable, survives reload, and the back button closes the
-  // pane. `parsePaneParam` fails closed (invalid → null → primary alone), and
-  // `PaneHost` additionally drops a pane that duplicates the primary view.
-  // Every navigation below keeps focus and scroll: opening a file from a tool
-  // chip mid-stream must not yank the transcript or blur the composer.
-  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
+  // The URL is the ONE source of truth for what sits beside the transcript, so
+  // a composition is linkable, survives reload, and Back closes a pane.
+  // `dedupeSurfaces` drops a pane that would duplicate this route's own chat
+  // surface, and always allocates — which is what keeps `PaneHost` re-deriving
+  // its row layout rather than writing stale sizes back over a dragged ratio.
   const primaryDescriptor = $derived<PaneDescriptor | null>(
     selectedId ? { kind: 'chat', sessionId: selectedId } : null
   );
+  const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 
-  /** Tool chips and the session header's file tree both land here. */
-  function openFilePane(sel: { mountKey: string; path: string }): void {
-    void goto(withPaneParam(page.url, { kind: 'file', ...sel }), { keepFocus: true, noScroll: true });
-  }
+  // No `openInPrimary`: the primary here is a transcript, so a file opened
+  // from a tool chip lands in the Files pane — creating one if there is none.
+  const wiring = paneWiring({ url: () => page.url, panes: () => panes });
 
-  function closePane(): void {
-    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
-  }
-
-  // `chat:new:<mount>` has no entry point on this route today (Knowledge owns
-  // that one — Task 9), but the registry maps the kind, so a hand-written or
-  // shared URL can mount it here. Wiring the rewrite is what keeps the first
-  // typed message alive: the composer clears on send, and the view hands the
-  // created id back expecting its host to re-point it at `chat:<id>` so the
-  // stashed prompt actually fires.
-  // `replaceState` so Back doesn't step through the dead composer state
-  // (final review, I5 — both knowledge routes already pass it on this same
-  // `chat-new` → `chat:<id>` rewrite).
-  function replacePaneWithSession(id: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
-      replaceState: true,
-      keepFocus: true,
-      noScroll: true
-    });
-  }
-
-  /** "Open as full view" — the pane's subject becomes a route of its own. */
-  function promotePane(d: PaneDescriptor): void {
-    void goto(promoteHref(d));
-  }
+  // Stable identity on purpose: `ChatView` derives from `context.openFile`,
+  // and a fresh object every render would churn that for no reason.
+  const primaryContext: PaneContext = {
+    placement: 'primary',
+    openFile: wiring.openFileSurface,
+    onArchived: afterArchive
+  };
 </script>
 
-<!-- The all-sessions pane (sidebar "Show all", `?all=1`): EVERY session,
-     grouped by project, most recently active first — the default chat
-     route renders with NO list pane, since the main nav's project groups
-     already carry the recent sessions. -->
-{#snippet allSessions()}
-  <ListPane title="All sessions">
-    {#snippet action()}
-      <Button type="button" variant="outline" size="sm" onclick={() => void startSession()}>
-        New session
-      </Button>
-    {/snippet}
-    {#snippet children()}
-      <!-- "include scheduled runs" (tasks+schedules spec §Scheduled-session
-           visibility): scheduled runs are hidden by default — they're reached
-           through the run history under their schedule, and one hourly
-           schedule would otherwise own this list. The toggle also re-fetches
-           the NAV feed with `include_scheduled: true`, which is filtered
-           backend-side before its per-group limit; this flat list is filtered
-           client-side on purpose (see `SessionsListStore.visibleSessions`).
-
-           Both stores hold the flag as STATE (review round 1, M1) — the nav
-           feed is refreshed by a dozen callers that know nothing about this
-           checkbox, so passing it as a one-shot argument let the very next
-           refresh drop scheduled runs while the box stayed ticked. -->
-      <label class="text-ink-meta flex items-center gap-2 px-3.5 py-2 text-[11.5px]">
-        <input
-          type="checkbox"
-          checked={sessionsListStore.includeScheduled}
-          onchange={(event) => {
-            const next = event.currentTarget.checked;
-            sessionsListStore.includeScheduled = next;
-            recentSessionsStore.includeScheduled = next;
-            void recentSessionsStore.refresh();
-          }}
-        />
-        Include scheduled runs{sessionsListStore.scheduledCount > 0
-          ? ` (${sessionsListStore.scheduledCount})`
-          : ''}
-      </label>
-
-      {#if allGroups.length === 0}
-        <p class="text-ink-meta px-3.5 py-3 text-[12.5px]">
-          {sessionsListStore.sessions.length === 0 ? 'No sessions yet.' : 'No chat sessions yet.'}
-        </p>
-      {:else}
-        {#each allGroups as group (group.mountKey)}
-          <section class="pb-1">
-            <p class="text-overline px-3.5 pt-3 pb-1">{group.name}</p>
-            <ul class="flex flex-col">
-              {#each group.sessions as session (session.id)}
-                {@const selected = session.id === selectedId}
-                <li class="group/row relative" class:opacity-75={!session.live && !selected}>
-                  <a
-                    href={sessionHref(session.id)}
-                    class="block border-l-[3px] py-2 pr-9 pl-3.5 transition-colors hover:bg-paper-pill"
-                    class:border-act={selected}
-                    class:border-transparent={!selected}
-                    class:bg-paper-card={selected}
-                  >
-                    <span class="flex items-baseline justify-between gap-3">
-                      <span class="flex min-w-0 items-center gap-1.5">
-                        {#if session.live}
-                          <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
-                        {/if}
-                        <span class="text-ink-heading truncate text-[13px] [font-weight:650]">
-                          {sessionTitle(session)}
-                        </span>
-                      </span>
-                      <span class="text-ink-meta shrink-0 text-[11px]">{relativeTime(session.startedAt)}</span>
-                    </span>
-                  </a>
-                  <button
-                    type="button"
-                    aria-label={`Archive ${sessionTitle(session)}`}
-                    title={session.live ? 'Stop & archive' : 'Archive'}
-                    disabled={!!archiving[session.id]}
-                    onclick={() => void archiveSession(session.id)}
-                    class="text-ink-meta hover:text-ink-heading hover:bg-paper-card absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-visible:opacity-100"
-                  >
-                    <Archive class="size-3.5" strokeWidth={1.5} />
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/each}
-      {/if}
-      {#if archiveError}
-        <p class="text-warn-ink px-3.5 py-1 text-[11.5px]" role="alert">{archiveError}</p>
-      {/if}
-    {/snippet}
-  </ListPane>
-{/snippet}
-
-<AppFrame list={showAllPane ? allSessions : undefined}>
+<AppFrame {primaryDescriptor}>
   {#snippet main()}
     <!-- The doctor override deliberately sits OUTSIDE `PaneHost`: it replaces
-         the whole main pane (it's the "the assistant isn't wired up" screen),
-         so splitting it next to a file would be nonsense. `?pane=` survives
-         in the URL, so dismissing the override restores the split. -->
+         the whole content area (it's the "the assistant isn't wired up"
+         screen), so splitting it next to a file would be nonsense. `?pane=`
+         survives in the URL, so dismissing the override restores the row. -->
     {#if doctorOverride}
       <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
         <DoctorPanel />
@@ -359,49 +177,45 @@
     {:else}
       <PaneHost
         {primaryDescriptor}
-        pane={paneDescriptor}
-        paneContext={{
-          placement: 'pane',
-          sessionCreated: replacePaneWithSession,
-          onArchived: closePane
-        }}
-        onClose={closePane}
-        onPromote={promotePane}
+        {panes}
+        paneContext={wiring.paneContext}
+        onClose={wiring.closePane}
+        onPromote={wiring.promotePane}
       >
         {#snippet primary()}
-          {#if !selectedId}
-            <div class="mx-auto w-full max-w-[660px] px-8 py-8">
-              <EmptyState
-                icon={MessageSquare}
-                title="Your assistant"
-                body="Talk to your assistant about the business. Everything it knows is a file in your folder."
-              >
-                {#snippet actions()}
-                  <Button type="button" onclick={() => void startSession()}>Start a session</Button>
-                  <button
-                    type="button"
-                    class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
-                    onclick={() => (doctorOverride = true)}
-                  >
-                    Run checks
-                  </button>
-                  {#if startError}
-                    <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
-                  {/if}
-                {/snippet}
-              </EmptyState>
-            </div>
-          {:else}
-            <ChatView
-              descriptor={{ kind: 'chat', sessionId: selectedId }}
-              context={{
-                placement: 'primary',
-                openFile: openFilePane,
-                onArchived: afterArchive,
-                hasOpenPane: () => paneDescriptor !== null
-              }}
-            />
-          {/if}
+          <!-- A null descriptor is the "no session selected" state. The
+               navigator still renders beside it, because "Show all" lands
+               here with nothing selected and an empty state with no way to
+               pick a session would be a dead end. -->
+          <ChatPane
+            descriptor={primaryDescriptor?.kind === 'chat' ? primaryDescriptor : null}
+            context={primaryContext}
+            state={primaryChatState}
+          >
+            {#snippet empty()}
+              <div class="mx-auto w-full max-w-[660px] px-8 py-8">
+                <EmptyState
+                  icon={MessageSquare}
+                  title="Your assistant"
+                  body="Talk to your assistant about the business. Everything it knows is a file in your folder."
+                >
+                  {#snippet actions()}
+                    <Button type="button" onclick={() => void startSession()}>Start a session</Button>
+                    <button
+                      type="button"
+                      class="text-ink-secondary hover:text-ink-heading text-[12.5px]"
+                      onclick={() => (doctorOverride = true)}
+                    >
+                      Run checks
+                    </button>
+                    {#if startError}
+                      <p class="text-warn-ink text-[12.5px]" role="alert">{startError}</p>
+                    {/if}
+                  {/snippet}
+                </EmptyState>
+              </div>
+            {/snippet}
+          </ChatPane>
         {/snippet}
       </PaneHost>
     {/if}

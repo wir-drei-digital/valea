@@ -11,6 +11,7 @@
    * is no session to list until it has started — at which point the host
    * rewrites the descriptor to `chat:<id>` and it remounts with both.
    */
+  import type { Snippet } from 'svelte';
   import ChatView from '$lib/components/views/ChatView.svelte';
   import Archive from '@lucide/svelte/icons/archive';
   import { api } from '$lib/api/client';
@@ -31,18 +32,27 @@
   let {
     descriptor,
     context,
-    state: pane
+    state: pane,
+    empty
   }: {
-    descriptor: ChatPaneDescriptor | ChatNewPaneDescriptor;
+    /**
+     * `null` only from `/chat` with no `?session=`: the route needs the SAME
+     * navigator beside its empty state, since "Show all" lands there with
+     * nothing selected and a navigator-less empty state would be a dead end.
+     * A pane always has a subject — `PaneHost` mounts this from a descriptor.
+     */
+    descriptor: ChatPaneDescriptor | ChatNewPaneDescriptor | null;
     context: PaneContext;
     state?: ChatPaneState;
+    /** What fills the transcript column when there is no session. */
+    empty?: Snippet;
   } = $props();
 
   // `visibleSessions`, not `sessions`: scheduled runs stay out of this list
   // unless its own toggle asks for them — one hourly schedule would otherwise
   // own the whole column.
   const groups = $derived(groupAllSessions(sessionsListStore.visibleSessions));
-  const selectedId = $derived(descriptor.kind === 'chat' ? descriptor.sessionId : null);
+  const selectedId = $derived(descriptor?.kind === 'chat' ? descriptor.sessionId : null);
 
   // --- Archive from a LIST ROW. Live sessions archive too — the backend
   // stops a running session first, then archives — so the row offers the
@@ -159,5 +169,9 @@
       {/if}
     </div>
   {/if}
-  <ChatView {descriptor} {context} />
+  {#if descriptor}
+    <ChatView {descriptor} {context} />
+  {:else if empty}
+    <div class="min-h-0 flex-1 overflow-y-auto">{@render empty()}</div>
+  {/if}
 </div>
