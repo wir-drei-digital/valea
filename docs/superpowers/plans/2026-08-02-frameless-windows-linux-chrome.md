@@ -360,13 +360,10 @@ Create `frontend/src/lib/components/shell/window-controls.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { controlsLabel } from './window-controls';
+import { CONTROL_METRICS, controlsInset, controlsLabel } from './window-controls';
 
-// The pure half of the control cluster. There is no component render harness
-// in this repo, so what is worth testing lives here: the maximise control is
-// the one button whose meaning flips, and it flips from a state that changes
-// without a click (Win+Up, a window manager, a double-click on the drag
-// region) — so a label derived from the last click would go wrong.
+// The pure half of the control cluster. There is no component render harness in
+// this repo, so this is where the logic that can be checked lives.
 describe('controlsLabel', () => {
   it('offers to maximise a restored window', () => {
     expect(controlsLabel(false)).toBe('Maximise');
@@ -374,6 +371,32 @@ describe('controlsLabel', () => {
 
   it('offers to restore a maximised one', () => {
     expect(controlsLabel(true)).toBe('Restore');
+  });
+});
+
+// THE test that earns its keep. The inset every route header reserves and the
+// width the buttons actually occupy are two numbers that must agree, and
+// nothing in the browser will complain when they stop agreeing — the window
+// controls will simply sit on top of a route's own buttons. Deriving the inset
+// from the same metrics the component lays itself out from is what keeps them
+// in step; this asserts the derivation rather than a hand-copied total.
+describe('controlsInset', () => {
+  it('reserves exactly the cluster width on Windows: three buttons, no gaps', () => {
+    const { button, gap, padding } = CONTROL_METRICS.windows;
+    expect(controlsInset('windows')).toBe(`${button * 3 + gap * 2 + padding * 2}px`);
+  });
+
+  it('reserves the buttons plus gaps and padding on Linux', () => {
+    const { button, gap, padding } = CONTROL_METRICS.linux;
+    expect(controlsInset('linux')).toBe(`${button * 3 + gap * 2 + padding * 2}px`);
+  });
+
+  // The routes must pay nothing where the OS draws the controls, or every
+  // header on macOS and in the browser gains padding for furniture that is not
+  // there.
+  it('reserves nothing where the app does not draw the controls', () => {
+    expect(controlsInset('macos-overlay')).toBe('0px');
+    expect(controlsInset('browser')).toBe('0px');
   });
 });
 ```
@@ -388,14 +411,41 @@ Expected: FAIL — module not found.
 Create `frontend/src/lib/components/shell/window-controls.ts`:
 
 ```ts
+import type { WindowChrome } from '$lib/shell/platform';
+
 /**
- * The one piece of the window controls worth testing on its own: the maximise
- * button's meaning, which flips with a state that changes without any click of
- * ours (Win+Up, a window manager, a double-click on the drag region). The
- * component reads it from `onResized`, never from its own handler.
+ * The maximise button's meaning, which flips with a state that changes without
+ * any click of ours (Win+Up, a window manager, a double-click on the drag
+ * region). The component reads that state from `onResized`, never from its own
+ * handler.
  */
 export function controlsLabel(maximized: boolean): string {
   return maximized ? 'Restore' : 'Maximise';
+}
+
+/**
+ * The cluster's geometry, in one place because TWO things depend on it and
+ * they fail silently when they disagree: the component lays the buttons out
+ * from these numbers, and every route header reserves `controlsInset()` of
+ * right padding so its own controls do not end up underneath them. A width
+ * changed in the component and not in the inset is invisible until the window
+ * controls are sitting on top of a route's buttons.
+ *
+ * Windows is the platform convention: 46×32 caption buttons, flush to the
+ * corner, no gaps and no padding. Linux is GNOME-INSPIRED rather than matching
+ * — Linux has no single convention — so it gets round 24px buttons with
+ * ordinary spacing.
+ */
+export const CONTROL_METRICS = {
+  windows: { button: 46, height: 32, gap: 0, padding: 0, round: false },
+  linux: { button: 24, height: 24, gap: 8, padding: 8, round: true }
+} as const;
+
+/** How much right-hand room the route headers must leave for the cluster. */
+export function controlsInset(chrome: WindowChrome): string {
+  const m = chrome === 'windows' || chrome === 'linux' ? CONTROL_METRICS[chrome] : null;
+  if (!m) return '0px';
+  return `${m.button * 3 + m.gap * 2 + m.padding * 2}px`;
 }
 ```
 
@@ -566,15 +616,13 @@ Setting the real value needs an `$effect`, not an inline style: `+layout.svelte`
   // component that knows whether the controls render at all. Cleared on
   // destroy so a hot reload cannot leave a stale inset behind.
   //
-  // Widths: Windows is 3 × 46px buttons flush to the corner. Linux is 3 × 24px
-  // buttons with `gap-2` (8px) and `p-2` (8px each side), so
-  // 3×24 + 2×8 + 2×8 = 104.
-  const CONTROLS_WIDTH: Record<string, string> = { windows: '138px', linux: '104px' };
-
+  // The width comes from `controlsInset`, which derives it from the same
+  // metrics the component lays the buttons out from — a hand-copied total here
+  // would drift the moment a button width changed, and nothing would complain.
   $effect(() => {
-    const width = CONTROLS_WIDTH[chrome];
-    if (!width) return;
-    document.documentElement.style.setProperty('--window-controls-inset', width);
+    const inset = controlsInset(chrome);
+    if (inset === '0px') return;
+    document.documentElement.style.setProperty('--window-controls-inset', inset);
     return () => document.documentElement.style.removeProperty('--window-controls-inset');
   });
 ```
