@@ -167,3 +167,46 @@
   text-transform: uppercase;
   color: var(--ink-overline);
 }
+
+/* ── Refusals ──────────────────────────────────────────────────────────────
+   Put `refusable` on any control that can go `aria-disabled="true"` with a
+   reason. It is the ONE place the refused look is defined; call sites supply
+   the reason (`title` + `aria-label`) and the handler guard, nothing else.
+
+   Why not Tailwind's `disabled:` variant: that variant only matches the
+   `disabled` ATTRIBUTE, and every refusal-with-a-reason in the panes feature
+   is deliberately `aria-disabled` instead — a truly disabled button takes no
+   pointer events, so its `title` never appears, and it leaves the tab order,
+   so a keyboard user can never reach the reason either.
+
+   Why texture and not a fade. Measured on the real controls: `--ink-meta` is
+   already the lightest ink at 3.22:1 on `--paper-surface`, so there is no
+   headroom below it — a 10% fade lands at 2.80:1, and the 40% icon fade this
+   replaces measured 1.51:1, which is both invisible in place and unreadable
+   once found. A hatch costs no contrast at all, so the ink stays at full
+   `--ink-meta` and the "ruled out" reading comes from the texture.
+
+   Why not a flat fill: a flat paper fill is already spoken for — it is what
+   hover, the open popover, and the active tab all mean. And no accent
+   colour: a refusal is furniture, not consequence. */
+@utility refusable {
+  &[aria-disabled='true'] {
+    cursor: not-allowed;
+    color: var(--ink-meta);
+    background-color: transparent;
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent 0 3px,
+      var(--paper-chip-border) 3px 4px
+    );
+  }
+
+  /* Hover and focus paint are neutralised HERE rather than at each call site,
+     so a control cannot be refused and still light up. `.refusable[aria-…]:is(…)`
+     is (0,3,0) against a `hover:`/`focus:` utility's (0,2,0), so this wins
+     regardless of the order Tailwind emits them in. */
+  &[aria-disabled='true']:is(:hover, :focus, :focus-visible) {
+    color: var(--ink-meta);
+    background-color: transparent;
+  }
+}

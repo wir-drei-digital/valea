@@ -78,9 +78,9 @@
     title={disabledReason}
     aria-label={`Open a session beside this file — unavailable: ${disabledReason.toLowerCase()}`}
     onclick={(event) => event.preventDefault()}
-    class="text-ink-meta flex size-7 cursor-default items-center justify-center rounded-md"
+    class="refusable text-ink-meta flex size-7 items-center justify-center rounded-md"
   >
-    <MessageSquare class="size-4 opacity-40" strokeWidth={1.5} />
+    <MessageSquare class="size-4" strokeWidth={1.5} />
   </button>
 {:else}
   <Popover.Root bind:open>
@@ -114,10 +114,7 @@
           open = false;
           onNewSession();
         }}
-        class={[
-          'w-full rounded-md px-2 py-1.5 text-left text-[12.5px] [font-weight:650]',
-          newSessionRefusal ? 'text-ink-meta cursor-default' : 'hover:bg-paper-pill text-ink-heading'
-        ]}
+        class="refusable hover:bg-paper-pill text-ink-heading w-full rounded-md px-2 py-1.5 text-left text-[12.5px] [font-weight:650]"
       >
         New session
         {#if newSessionRefusal}
@@ -150,18 +147,19 @@
                   open = false;
                   onOpenSession(session.id);
                 }}
-                class={[
-                  'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left',
-                  openSessionRefusal ? 'cursor-default' : 'hover:bg-paper-pill'
-                ]}
+                class="refusable hover:bg-paper-pill flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left"
               >
                 {#if session.live}
                   <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
                 {/if}
+                <!-- `text-current`, so `refusable`'s colour on the button
+                     reaches the label; a `text-ink-*` class here would win
+                     against an inherited colour and the row would keep its
+                     available ink. -->
                 <span
                   class={[
                     'min-w-0 flex-1 truncate text-[12.5px]',
-                    openSessionRefusal ? 'text-ink-meta' : 'text-ink-secondary'
+                    openSessionRefusal ? 'text-current' : 'text-ink-secondary'
                   ]}
                 >
                   {title(session)}

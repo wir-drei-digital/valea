@@ -261,15 +261,11 @@
   aria-disabled={pane.compareBlocked ? 'true' : undefined}
   onclick={() => pane.toggleCompare?.()}
   class={[
-    'hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2',
-    pane.compareBlocked
-      ? 'text-ink-meta cursor-default hover:bg-transparent'
-      : pane.compareShown
-        ? 'text-ink-heading'
-        : 'text-ink-meta hover:text-ink-heading'
+    'refusable hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2',
+    pane.compareShown ? 'text-ink-heading' : 'text-ink-meta hover:text-ink-heading'
   ]}
 >
-  <Columns2 class={['size-3.5', pane.compareBlocked ? 'opacity-40' : '']} strokeWidth={1.5} />
+  <Columns2 class="size-3.5" strokeWidth={1.5} />
 </button>
 
 <!-- `aria-disabled`, not the `disabled` attribute — the same rule the tree row's
@@ -286,14 +282,10 @@
   aria-disabled={pane.treeBlocked ? 'true' : undefined}
   onclick={() => pane.toggleTree()}
   class={[
-    'hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2',
-    pane.treeBlocked
-      ? 'text-ink-meta cursor-default hover:bg-transparent'
-      : pane.treeShown
-        ? 'text-ink-heading'
-        : 'text-ink-meta hover:text-ink-heading'
+    'refusable hover:bg-paper-pill focus-visible:ring-ring/50 -my-1.5 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2',
+    pane.treeShown ? 'text-ink-heading' : 'text-ink-meta hover:text-ink-heading'
   ]}
 >
   <!-- `PanelRight`, because that is the edge the tree is on now. -->
-  <PanelRight class={['size-3.5', pane.treeBlocked ? 'opacity-40' : '']} strokeWidth={1.5} />
+  <PanelRight class="size-3.5" strokeWidth={1.5} />
 </button>

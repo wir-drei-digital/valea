@@ -134,9 +134,10 @@
       <!-- `aria-disabled`, not the `disabled` attribute: a truly disabled
            button takes no pointer events, so its `title` never appears, and it
            leaves the tab order, so a keyboard user could never reach the reason
-           either. The same shape `IcmTree`'s row affordance takes. The ICON
-           dims, never the button — this is a fact about the row, not a
-           consequence, so no accent colour and no alarm. -->
+           either. The same shape `IcmTree`'s row affordance takes. `refusable`
+           (layout.css) is what makes the refusal VISIBLE without hovering —
+           this is a fact about the session, not a consequence, so no accent
+           colour and no alarm. -->
       <button
         type="button"
         title={filesRefusal ?? 'Open files beside this session'}
@@ -148,16 +149,9 @@
           if (filesRefusal) return;
           onOpenFiles();
         }}
-        class={[
-          'text-ink-meta -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors',
-          filesRefusal ? 'cursor-default' : 'hover:bg-paper-pill hover:text-ink-heading'
-        ]}
+        class="refusable text-ink-meta hover:bg-paper-pill hover:text-ink-heading -my-1 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
       >
-        <PanelRight
-          class={['size-4', filesRefusal ? 'opacity-40' : '']}
-          strokeWidth={1.5}
-          aria-hidden="true"
-        />
+        <PanelRight class="size-4" strokeWidth={1.5} aria-hidden="true" />
       </button>
     {/if}
     {#if onArchive || onDelete}

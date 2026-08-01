@@ -332,21 +332,15 @@
                     if (openInTabDisabled) return;
                     onOpenInTab?.({ mountKey: node.mountKey, path: node.path });
                   }}
-                  class={[
-                    'text-ink-meta flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
-                    openInTabDisabled ? 'cursor-default' : 'hover:bg-paper-card hover:text-ink-heading'
-                  ]}
+                  class="refusable text-ink-meta hover:bg-paper-card hover:text-ink-heading flex size-8 shrink-0 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                 >
-                  <!-- The unavailable state dims the ICON, never the button:
-                       the button's opacity is the row's hover reveal, and a
-                       second `group-hover:opacity-*` on the same element would
-                       be a same-specificity fight decided by stylesheet order.
+                  <!-- `refusable` marks the unavailable state with a hatch and
+                       never with `opacity`: this button's opacity IS the row's
+                       hover reveal, and a second opacity rule on the same
+                       element would be a fight decided by stylesheet order.
                        Nothing here reaches for accent colour — the strip being
                        full is not a consequence, it is a fact. -->
-                  <SquarePlus
-                    class={['size-3.5', openInTabDisabled ? 'opacity-40' : '']}
-                    strokeWidth={1.5}
-                  />
+                  <SquarePlus class="size-3.5" strokeWidth={1.5} />
                 </button>
               {/if}
               {#if showMenus}

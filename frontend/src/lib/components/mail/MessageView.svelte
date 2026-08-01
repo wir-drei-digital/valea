@@ -918,7 +918,7 @@
       <Button
         type="button"
         variant="outline"
-        class={['ms-auto', sessionRefusal ? 'cursor-default opacity-60' : '']}
+        class="refusable ms-auto"
         disabled={starting}
         aria-disabled={sessionRefusal ? 'true' : undefined}
         title={sessionRefusal ?? 'Start a session beside this message'}
