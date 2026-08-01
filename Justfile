@@ -29,7 +29,7 @@ dev-desktop:
     export VITE_VALEA_CONTROL_TOKEN=valea-dev-token
     trap 'kill 0' EXIT
     (cd backend && mix phx.server) &
-    (cd desktop && bun tauri dev) &
+    (cd desktop && bun tauri dev --config src-tauri/tauri.dev.conf.json) &
     wait
 
 # Regenerate the typed RPC client (frontend/src/lib/api/ash_rpc.ts)
@@ -103,8 +103,29 @@ package-backend:
         ;;
     esac
 
-# Full desktop bundle
+# Full desktop bundle, built under the DEV identity: `Valea Dev.app`,
+# identifier `digital.wirdrei.valea.dev` (tauri.dev.conf.json).
+#
+# A locally built bundle used to be indistinguishable from an installed
+# release — same `digital.wirdrei.valea` identifier, so LaunchServices
+# registered both and resolved Spotlight/Dock/`open -b` to whichever it
+# felt like. Launching "Valea" could hand you a months-old build tree
+# bundle while /Applications held the current one, with nothing on screen
+# to tell them apart. A distinct identifier + name makes that impossible.
+#
+# The identifier also drives the sidecar's Burrito payload dir (see
+# start_sidecar in src-tauri/src/main.rs), so a local build can neither
+# serve, nor be served by, the installed app's unpacked backend.
+[doc('Desktop bundle under the dev identity (Valea Dev.app) — safe alongside an installed Valea')]
 desktop-bundle: package-backend
+    cd desktop && bun tauri build --config src-tauri/tauri.dev.conf.json
+
+# Release-identical bundle: production identifier and name, byte-for-byte
+# what CI ships. Use it only to smoke-test the real artifact — as far as
+# macOS is concerned this IS the installed app, so quit and remove any
+# installed Valea first or you are back to the ambiguity above.
+[doc('Release-identical bundle (production identifier) — exactly what CI ships')]
+desktop-bundle-release: package-backend
     cd desktop && bun tauri build
 
 # Throwaway Dovecot for manual mail E2E (mara / marapass, IMAPS-only,

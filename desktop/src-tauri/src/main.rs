@@ -16,6 +16,12 @@ mod winjob;
 
 const BACKEND_PORT: u16 = 4817;
 
+/// Suffix marking a locally built bundle (`digital.wirdrei.valea.dev`, from
+/// `tauri.dev.conf.json` via `just desktop-bundle`). A local build and an
+/// installed release are otherwise the same app to macOS AND to Burrito; this
+/// is the one bit that tells them apart at runtime.
+const DEV_IDENTIFIER_SUFFIX: &str = ".dev";
+
 /// Holds the sidecar process so it can be killed on exit.
 struct Backend(Mutex<Option<CommandChild>>);
 
@@ -173,6 +179,26 @@ fn start_sidecar(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
         .env("SECRET_KEY_BASE", secret)
         .env("VALEA_CONTROL_TOKEN", &token)
         .env("VALEA_READY_NONCE", &nonce);
+
+    // Burrito unpacks the sidecar to <base>/valea_desktop_erts-<erts>_<version>
+    // and skips extraction whenever that directory already exists — the check
+    // is bare existence, no payload hash (deps/burrito/src/wrapper.zig, "If the
+    // metadata file exists, don't install again"). The key contains the mix.exs
+    // version but NOT the bundle identifier, so a locally built bundle and an
+    // installed release at the same version share one unpacked backend:
+    // whichever launches first extracts, the other silently runs code it was
+    // not built with. Renaming the dev bundle alone does not fix that.
+    //
+    // So dev bundles get their own base dir. `data_dir` is already
+    // identifier-scoped (…/digital.wirdrei.valea.dev/), which makes this
+    // separation automatic rather than another string to keep in sync.
+    // Release builds are deliberately left on Burrito's default so their
+    // payload path stays exactly what shipped installs already use.
+    let cmd = if app.config().identifier.ends_with(DEV_IDENTIFIER_SUFFIX) {
+        cmd.env("VALEA_DESKTOP_INSTALL_DIR", data_dir.join("burrito"))
+    } else {
+        cmd
+    };
 
     #[cfg(windows)]
     let cmd = match &spawn_shim {
