@@ -90,6 +90,16 @@
     await views[href]?.flushPending?.();
   }
 
+  /**
+   * Flush EVERY open split, for a caller that is about to invalidate all of
+   * them at once rather than mutate one file — the workspace switch
+   * (`AppFrame`'s `onBeforeMutateActive`). `beforeMutate(href)` is the
+   * per-file half of the same contract.
+   */
+  export async function flushAll(): Promise<void> {
+    await Promise.all(Object.values(views).map((view) => view?.flushPending?.()));
+  }
+
   function setPaths(paths: string[]): void {
     context.openPane?.({ ...descriptor, paths });
   }

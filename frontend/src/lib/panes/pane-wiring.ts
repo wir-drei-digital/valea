@@ -18,7 +18,13 @@ import { goto } from '$app/navigation';
 import { autoOpen } from './auto-open';
 import { SPLIT_CAP } from './files-pane-state';
 import { dropSubject, replaceAt } from './pane-edit';
-import { PANE_CAP, promoteTarget, withPanes, type PaneDescriptor } from './pane-route';
+import {
+  PANE_CAP,
+  dedupeSurfaces,
+  promoteTarget,
+  withPanes,
+  type PaneDescriptor
+} from './pane-route';
 import type { PaneContext } from './context';
 
 export type FileSelection = { mountKey: string; path: string };
@@ -28,6 +34,12 @@ export type PaneWiring = {
   closePane: (index: number) => void;
   promotePane: (d: PaneDescriptor) => void;
   openFileSurface: (sel: FileSelection) => void;
+  /**
+   * Append a pane, for a route-owned control that opens one (the knowledge
+   * routes' session picker). The bar's ＋ Pane does the same thing from the
+   * shell. Deduped against the primary, and a no-op once the row is full.
+   */
+  openBeside: (d: PaneDescriptor) => void;
 };
 
 export function paneWiring(read: {
@@ -35,6 +47,8 @@ export function paneWiring(read: {
   url: () => URL;
   /** The live pane list, already deduped against the route's primary. */
   panes: () => PaneDescriptor[];
+  /** The route's own primary surface, so an appended pane cannot duplicate it. */
+  primary?: () => PaneDescriptor | null;
   /**
    * How THIS route opens a file when its own primary IS the Files surface
    * (both knowledge routes). Absent means the route has no Files surface of
@@ -118,6 +132,11 @@ export function paneWiring(read: {
     // A user closing a pane is an ordinary navigation: Back reopens it.
     closePane: (index) => go(replaceAt(read.panes(), index, null)),
     promotePane: (d) => void goto(promoteTarget(d, read.url(), read.panes())),
-    openFileSurface
+    openFileSurface,
+    openBeside: (d) => {
+      const panes = read.panes();
+      if (panes.length >= PANE_CAP) return;
+      go(dedupeSurfaces(read.primary?.() ?? null, [...panes, d]));
+    }
   };
 }

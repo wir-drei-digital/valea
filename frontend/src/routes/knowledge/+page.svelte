@@ -1,7 +1,14 @@
 <script lang="ts">
-  // Knowledge index. Task 9.3 relocated the sidebar's old flat/nested file
-  // tree here — this pane now shows exactly ONE ICM's full recursive tree at
-  // a time (`IcmTree`, reused from the shell — see its own doc comment),
+  // Knowledge index — workspace administration beside a tree column, and both
+  // together are this route's PRIMARY pane, with `?pane=` panes to the right
+  // of them. The tree column moved inside the primary when the shell's `list`
+  // slot went away: it is the route's own navigator, and clicking a file
+  // leaves the index for the page route (whose primary is a real `FilesPane`)
+  // rather than opening one here.
+  //
+  // Task 9.3 relocated the sidebar's old flat/nested file tree here — the
+  // column shows exactly ONE ICM's full recursive tree at a time
+  // (`IcmTree`, reused from the shell — see its own doc comment),
   // selected by `?icm=<mount-key>` (Task 9.4's route scheme; see
   // `resolveIcmSelection` in `icm-route.ts`). With no `?icm=` yet, the first
   // enabled mount (config order) is selected and reflected into the URL via
@@ -14,6 +21,7 @@
   import { page } from '$app/state';
   import { goto, replaceState } from '$app/navigation';
   import { AppFrame, ListPane, MainColumn, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
+  import { paneWiring } from '$lib/panes/pane-wiring';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -30,11 +38,10 @@
   import SessionPickerPopover from '$lib/components/knowledge/SessionPickerPopover.svelte';
   import PaneHost from '$lib/components/panes/PaneHost.svelte';
   import {
-    parsePaneParam,
-    paneLinkSearch,
-    hrefWithPane,
-    withPaneParam,
-    promoteHref,
+    dedupeSurfaces,
+    hrefWithPanes,
+    paneSearchSuffix,
+    parsePanes,
     type PaneDescriptor
   } from '$lib/panes/pane-route';
   import MountFromElsewhereDialog from '$lib/components/knowledge/MountFromElsewhereDialog.svelte';
@@ -76,61 +83,41 @@
     void icmStore.refetch();
   }
 
-  // --- Side pane (`?pane=`) — the reverse combo ---
+  // --- Panes (`?pane=`) ------------------------------------------------------
   //
-  // Same contract as the page route next door (see its comment): the URL owns
-  // what's open beside the index, `parsePaneParam` fails closed, and the
-  // primary descriptor is `null` because this route shows no single file — a
-  // chat pane beside the index is still perfectly valid.
-  const paneDescriptor = $derived(parsePaneParam(page.url.searchParams.get('pane')));
+  // This route's primary IS a Files surface — the tree column beside the
+  // index — so it names a `files:` descriptor with no file open. That is what
+  // stops a redundant second file browser opening beside it (`dedupeSurfaces`
+  // collapses one surface per kind, which `panesEqual` alone could not do
+  // here, since the index has no single file to compare identities with) and
+  // what makes the ＋ Pane menu show Files as already open. `dedupeSurfaces`
+  // also allocates, which is what keeps `PaneHost` re-deriving its row layout
+  // rather than writing stale sizes back over a dragged ratio.
+  //
+  // The index's own content — mount selection, degraded and deactivated
+  // mounts, create, unmount, the doctor — stays route-only. It is workspace
+  // administration, not file browsing, and has no pane representation.
+  const primaryDescriptor = $derived<PaneDescriptor | null>(
+    selectedMountKey ? { kind: 'files', mountKey: selectedMountKey, paths: [] } : null
+  );
+  const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 
-  // Suffix for this pane's tree links (`IcmTree`'s `linkSearch`) — opening a
-  // file from the index keeps whatever session is open beside it.
-  const paneSearch = $derived(paneLinkSearch(page.url));
+  const wiring = paneWiring({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor,
+    // The index shows no file, so opening one means LEAVING it for the page
+    // route — panes intact.
+    openInPrimary: (sel) =>
+      void goto(hrefWithPanes(knowledgeHref(sel.mountKey, sel.path), page.url), {
+        keepFocus: true,
+        noScroll: true
+      })
+  });
 
-  function openSessionPane(id: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
-      keepFocus: true,
-      noScroll: true
-    });
-  }
-
-  function openNewSessionPane(mountKey: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat-new', mountKey }), {
-      keepFocus: true,
-      noScroll: true
-    });
-  }
-
-  function closePane(): void {
-    void goto(withPaneParam(page.url, null), { keepFocus: true, noScroll: true });
-  }
-
-  /** "Open as full view" — the pane's subject becomes a route of its own. */
-  function promotePane(d: PaneDescriptor): void {
-    void goto(promoteHref(d));
-  }
-
-  /** A chat pane opening a file navigates the PRIMARY — here that means leaving the index for the page route, pane intact. */
-  function openFileAsPrimary(sel: { mountKey: string; path: string }): void {
-    void goto(hrefWithPane(knowledgeHref(sel.mountKey, sel.path), page.url), {
-      keepFocus: true,
-      noScroll: true
-    });
-  }
-
-  /**
-   * The `chat-new` pane created its session — re-point the pane at
-   * `chat:<id>` so the remounted view fires the message that was just typed.
-   * `replaceState` so Back doesn't step through the dead composer state.
-   */
-  function paneSessionCreated(id: string): void {
-    void goto(withPaneParam(page.url, { kind: 'chat', sessionId: id }), {
-      replaceState: true,
-      keepFocus: true,
-      noScroll: true
-    });
-  }
+  // Suffix for the tree's links (`IcmTree`'s `linkSearch`) — opening a file
+  // from the index keeps whatever is open beside it.
+  const paneSearch = $derived(paneSearchSuffix(panes));
 
   // Task 9.4: no `?icm=` yet, but a mount resolved anyway (the "default to
   // first enabled" branch of `resolveIcmSelection`) — reflect that choice
@@ -177,7 +164,7 @@
       if (resolveIcmSelection(page.url.searchParams.get('icm'), enabledMountKeys) !== mount) return;
       // Pane-preserving (side-panes pass): reloading a `/knowledge?pane=chat:…`
       // split must not drop the session on the way to the restored page.
-      void goto(hrefWithPane(knowledgeHref(mount, last.path), page.url), { replaceState: true });
+      void goto(hrefWithPanes(knowledgeHref(mount, last.path), page.url), { replaceState: true });
     });
   });
 
@@ -239,237 +226,237 @@
   }
 </script>
 
-<AppFrame>
-  {#snippet list()}
-    <ListPane title="Files">
-      {#snippet action()}
-        {#if selectedMountKey}
-          {@const mountKey = selectedMountKey}
-          <div class="flex items-center gap-1">
-            <!-- Same header slot as the page route's picker — the one place
-                 that exists in every knowledge route state. -->
-            <SessionPickerPopover
-              {mountKey}
-              onOpenSession={openSessionPane}
-              onNewSession={() => openNewSessionPane(mountKey)}
-            />
-            <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
-          </div>
-        {/if}
-      {/snippet}
-      {#snippet children()}
-        {#if selectedMountKey}
-          {@const mountKey = selectedMountKey}
-          <div class="flex items-start justify-between gap-2 px-2 pt-4 pb-1">
-            <div class="min-w-0">
-              <p class="text-overline">{selectedMount?.name ?? selectedGroup?.title ?? mountKey}</p>
-              {#if selectedMount?.description}
-                <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{selectedMount.description}</p>
-              {/if}
-              {#if selectedMount?.root}
-                <!-- A2-T5b: an external (by-reference) mount's content lives
-                     outside the workspace — show WHERE, since that's not
-                     otherwise implied the way an embedded mount's is. -->
-                <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={selectedMount.root}>
-                  {selectedMount.root}
-                </p>
-                <button
-                  type="button"
-                  onclick={() => openUnmount(mountKey)}
-                  class="text-ink-meta hover:text-warn-ink mt-0.5 text-[11px] underline-offset-2 hover:underline"
-                >
-                  Unmount
-                </button>
-              {/if}
-            </div>
-          </div>
-          {#if treeUnavailable}
-            <!-- Empty tree because a fetch FAILED, not because the mount has
-                 no files (issue #2) — say so and offer a retry. -->
-            <p class="text-warn-ink px-3 pt-2 text-[12px]" role="alert" data-testid="knowledge-list-error">
-              Couldn't load files.
-              <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
-            </p>
-          {/if}
-          <!-- Side-panes pass: the tree carries file leaves itself now
-               (`icmToNav`), so the separate non-clickable rows that used to
-               sit below it are gone — a PDF or image row opens in
-               `FileView` like any other entry. -->
-          <div class="px-1 pb-1">
-            <IcmTree nodes={treeNav} activePath={page.url.pathname} linkSearch={paneSearch} />
-          </div>
-        {:else}
-          <p class="text-ink-meta px-3 py-4 text-[12.5px]">No ICM is mounted yet.</p>
-        {/if}
-
-        {#if classification.degraded.length > 0}
-          <div>
-            <SectionOverline label="Needs attention" />
-            <ul class="flex flex-col gap-1.5 px-2 pb-3">
-              {#each classification.degraded as mount (mount.mountKey)}
-                <li
-                  class="bg-warn-tint text-warn-ink flex items-start gap-2 rounded-md px-2.5 py-2 text-[12px]"
-                  title={degradedChipLabel(mount)}
-                >
-                  <TriangleAlert class="mt-0.5 size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate font-semibold">{mount.name}</span>
-                    <span class="block text-[11px] opacity-90">{degradedChipLabel(mount)}</span>
-                    <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
-                      {mount.root}
-                    </span>
-                    <button
-                      type="button"
-                      onclick={() => openUnmount(mount.mountKey)}
-                      class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
-                    >
-                      Unmount
-                    </button>
-                  </span>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-
-        {#if classification.deactivated.length > 0}
-          <div>
-            <button
-              type="button"
-              onclick={() => (deactivatedOpen = !deactivatedOpen)}
-              class="text-ink-secondary hover:bg-paper-pill flex w-full items-center gap-1 rounded-md px-2 py-2 text-left text-[12.5px] transition-colors"
-            >
-              <ChevronRight
-                class={['size-3 shrink-0 transition-transform', deactivatedOpen ? 'rotate-90' : '']}
-                strokeWidth={1.5}
-              />
-              <span class="flex-1">Deactivated</span>
-              <span class="text-ink-meta text-[11px] tabular-nums">{classification.deactivated.length}</span>
-            </button>
-            {#if deactivatedOpen}
-              <ul class="flex flex-col gap-1 px-2 pb-3">
-                {#each classification.deactivated as mount (mount.mountKey)}
-                  <!-- The error line lives INSIDE the <li> — a <p> as a direct
-                       child of <ul> is invalid markup. -->
-                  <li class="flex flex-col gap-1 py-1">
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="min-w-0 flex-1">
-                        <span class="text-ink-secondary block truncate text-[13px]">{mount.name}</span>
-                        <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
-                          {mount.root}
-                        </span>
-                      </span>
-                      <div class="flex shrink-0 items-center gap-1.5">
-                        <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.mountKey)}>
-                          Unmount
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!!reenabling[mount.mountKey]}
-                          onclick={() => void reenable(mount.mountKey)}
-                        >
-                          {reenabling[mount.mountKey] ? 'Enabling…' : 'Enable'}
-                        </Button>
-                      </div>
-                    </div>
-                    {#if reenableError[mount.mountKey]}
-                      <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.mountKey]}</p>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </div>
-        {/if}
-      {/snippet}
-
-      {#snippet footer()}
-        <div class="flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onclick={() => (mountFromElsewhereOpen = true)}
-            class="text-ink-secondary hover:text-ink-heading text-[12px]"
-          >
-            Mount a folder from elsewhere…
-          </button>
-          <button
-            type="button"
-            onclick={() => (doctorOpen = true)}
-            class="text-ink-meta hover:text-ink-heading text-[12px]"
-          >
-            Check your mounts
-          </button>
-        </div>
-      {/snippet}
-    </ListPane>
-  {/snippet}
-
+<AppFrame {primaryDescriptor}>
   {#snippet main()}
-    <!-- `MainColumn` sits INSIDE the primary snippet (never around
-         `PaneHost`) — see the page route's identical note: the host keeps its
-         primary mounted across pane open/close, and only stays that way if
-         nothing conditional wraps it. -->
     <PaneHost
-      pane={paneDescriptor}
-      paneContext={{
-        placement: 'pane',
-        openFile: openFileAsPrimary,
-        sessionCreated: paneSessionCreated,
-        onArchived: closePane
-      }}
-      onClose={closePane}
-      onPromote={promotePane}
+      {primaryDescriptor}
+      {panes}
+      paneContext={wiring.paneContext}
+      onClose={wiring.closePane}
+      onPromote={wiring.promotePane}
     >
       {#snippet primary()}
-        <MainColumn>
-          <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
-               outlives the onboarding screen (see PendingAdoptError's doc comment
-               in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
-               surface a fresh workspace lands on, as a prominent dismissible
-               banner. Rendered above BOTH main-pane states (header and doctor)
-               so toggling the doctor can't hide it. -->
-          {#if mountsStore.pendingAdoptError}
-            <div
-              role="alert"
-              class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
-            >
-              <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-              <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
-                {adoptFailureBannerText(mountsStore.pendingAdoptError)}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                class="shrink-0"
-                onclick={() => mountsStore.clearPendingAdoptError()}
-              >
-                Dismiss
-              </Button>
-            </div>
-          {/if}
+        <!-- `MainColumn` sits INSIDE the primary snippet (never around
+             `PaneHost`): the host keeps its primary mounted across pane open
+             and close, and only stays that way if nothing conditional wraps
+             it. The tree column sits inside it too, now that the shell has no
+             `list` slot — it is this route's own navigator. -->
+        <div class="flex min-h-0 min-w-0 flex-1">
+          <section
+            class="border-paper-hairline bg-paper-panel w-[300px] max-w-[340px] min-w-[250px] shrink-0 overflow-y-auto border-r"
+          >
+            <ListPane title="Files">
+              {#snippet action()}
+                {#if selectedMountKey}
+                  {@const mountKey = selectedMountKey}
+                  <div class="flex items-center gap-1">
+                    <!-- Same header slot as the page route's picker — the one place
+                         that exists in every knowledge route state. -->
+                    <SessionPickerPopover
+                      {mountKey}
+                      onOpenSession={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
+                      onNewSession={() => wiring.openBeside({ kind: 'chat-new', mountKey })}
+                    />
+                    <NewEntryButton onNew={(mode) => openNew(mountKey, '', mode)} />
+                  </div>
+                {/if}
+              {/snippet}
+              {#snippet children()}
+                {#if selectedMountKey}
+                  {@const mountKey = selectedMountKey}
+                  <div class="flex items-start justify-between gap-2 px-2 pt-4 pb-1">
+                    <div class="min-w-0">
+                      <p class="text-overline">{selectedMount?.name ?? selectedGroup?.title ?? mountKey}</p>
+                      {#if selectedMount?.description}
+                        <p class="text-ink-meta mt-0.5 truncate text-[11.5px]">{selectedMount.description}</p>
+                      {/if}
+                      {#if selectedMount?.root}
+                        <!-- A2-T5b: an external (by-reference) mount's content lives
+                             outside the workspace — show WHERE, since that's not
+                             otherwise implied the way an embedded mount's is. -->
+                        <p class="text-ink-meta mt-0.5 truncate font-mono text-[10.5px]" title={selectedMount.root}>
+                          {selectedMount.root}
+                        </p>
+                        <button
+                          type="button"
+                          onclick={() => openUnmount(mountKey)}
+                          class="text-ink-meta hover:text-warn-ink mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                        >
+                          Unmount
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                  {#if treeUnavailable}
+                    <!-- Empty tree because a fetch FAILED, not because the mount has
+                         no files (issue #2) — say so and offer a retry. -->
+                    <p class="text-warn-ink px-3 pt-2 text-[12px]" role="alert" data-testid="knowledge-list-error">
+                      Couldn't load files.
+                      <button type="button" class="underline underline-offset-2" onclick={retryTree}>Retry</button>
+                    </p>
+                  {/if}
+                  <!-- Side-panes pass: the tree carries file leaves itself now
+                       (`icmToNav`), so the separate non-clickable rows that used to
+                       sit below it are gone — a PDF or image row opens in
+                       `FileView` like any other entry. -->
+                  <div class="px-1 pb-1">
+                    <IcmTree nodes={treeNav} activePaths={[page.url.pathname]} linkSearch={paneSearch} />
+                  </div>
+                {:else}
+                  <p class="text-ink-meta px-3 py-4 text-[12.5px]">No ICM is mounted yet.</p>
+                {/if}
 
-          {#if doctorOpen}
-            <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
-              <button
-                type="button"
-                onclick={() => (doctorOpen = false)}
-                class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
+                {#if classification.degraded.length > 0}
+                  <div>
+                    <SectionOverline label="Needs attention" />
+                    <ul class="flex flex-col gap-1.5 px-2 pb-3">
+                      {#each classification.degraded as mount (mount.mountKey)}
+                        <li
+                          class="bg-warn-tint text-warn-ink flex items-start gap-2 rounded-md px-2.5 py-2 text-[12px]"
+                          title={degradedChipLabel(mount)}
+                        >
+                          <TriangleAlert class="mt-0.5 size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                          <span class="min-w-0 flex-1">
+                            <span class="block truncate font-semibold">{mount.name}</span>
+                            <span class="block text-[11px] opacity-90">{degradedChipLabel(mount)}</span>
+                            <span class="mt-0.5 block truncate font-mono text-[10.5px] opacity-80" title={mount.root}>
+                              {mount.root}
+                            </span>
+                            <button
+                              type="button"
+                              onclick={() => openUnmount(mount.mountKey)}
+                              class="mt-0.5 text-[11px] underline-offset-2 hover:underline"
+                            >
+                              Unmount
+                            </button>
+                          </span>
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+
+                {#if classification.deactivated.length > 0}
+                  <div>
+                    <button
+                      type="button"
+                      onclick={() => (deactivatedOpen = !deactivatedOpen)}
+                      class="text-ink-secondary hover:bg-paper-pill flex w-full items-center gap-1 rounded-md px-2 py-2 text-left text-[12.5px] transition-colors"
+                    >
+                      <ChevronRight
+                        class={['size-3 shrink-0 transition-transform', deactivatedOpen ? 'rotate-90' : '']}
+                        strokeWidth={1.5}
+                      />
+                      <span class="flex-1">Deactivated</span>
+                      <span class="text-ink-meta text-[11px] tabular-nums">{classification.deactivated.length}</span>
+                    </button>
+                    {#if deactivatedOpen}
+                      <ul class="flex flex-col gap-1 px-2 pb-3">
+                        {#each classification.deactivated as mount (mount.mountKey)}
+                          <!-- The error line lives INSIDE the <li> — a <p> as a direct
+                               child of <ul> is invalid markup. -->
+                          <li class="flex flex-col gap-1 py-1">
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="min-w-0 flex-1">
+                                <span class="text-ink-secondary block truncate text-[13px]">{mount.name}</span>
+                                <span class="text-ink-meta block truncate font-mono text-[10.5px]" title={mount.root}>
+                                  {mount.root}
+                                </span>
+                              </span>
+                              <div class="flex shrink-0 items-center gap-1.5">
+                                <Button type="button" variant="outline" size="sm" onclick={() => openUnmount(mount.mountKey)}>
+                                  Unmount
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!!reenabling[mount.mountKey]}
+                                  onclick={() => void reenable(mount.mountKey)}
+                                >
+                                  {reenabling[mount.mountKey] ? 'Enabling…' : 'Enable'}
+                                </Button>
+                              </div>
+                            </div>
+                            {#if reenableError[mount.mountKey]}
+                              <p class="text-warn-ink text-[11px]" role="alert">{reenableError[mount.mountKey]}</p>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/if}
+              {/snippet}
+
+              {#snippet footer()}
+                <div class="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onclick={() => (mountFromElsewhereOpen = true)}
+                    class="text-ink-secondary hover:text-ink-heading text-[12px]"
+                  >
+                    Mount a folder from elsewhere…
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (doctorOpen = true)}
+                    class="text-ink-meta hover:text-ink-heading text-[12px]"
+                  >
+                    Check your mounts
+                  </button>
+                </div>
+              {/snippet}
+            </ListPane>
+          </section>
+          <MainColumn>
+            <!-- Fix wave 1 (A2-T9): a declare-stage reference-adoption failure
+                 outlives the onboarding screen (see PendingAdoptError's doc comment
+                 in stores/mounts.svelte.ts) — surfaced HERE, the first mounts-shaped
+                 surface a fresh workspace lands on, as a prominent dismissible
+                 banner. Rendered above BOTH main-pane states (header and doctor)
+                 so toggling the doctor can't hide it. -->
+            {#if mountsStore.pendingAdoptError}
+              <div
+                role="alert"
+                class="bg-warn-tint text-warn-ink mb-4 flex items-start gap-2.5 rounded-lg px-4 py-3"
               >
-                <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-                Back to Files
-              </button>
-              <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
-            </div>
-          {:else}
-            <PageHeader
-              title="Files"
-              subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
-            />
-          {/if}
-        </MainColumn>
+                <TriangleAlert class="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                <p class="min-w-0 flex-1 text-[13px] leading-relaxed">
+                  {adoptFailureBannerText(mountsStore.pendingAdoptError)}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  class="shrink-0"
+                  onclick={() => mountsStore.clearPendingAdoptError()}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            {/if}
+
+            {#if doctorOpen}
+              <div class="mx-auto w-full max-w-[660px] overflow-y-auto px-8 py-8">
+                <button
+                  type="button"
+                  onclick={() => (doctorOpen = false)}
+                  class="text-ink-secondary hover:text-ink-heading mb-2 flex items-center gap-1 text-[12.5px]"
+                >
+                  <ChevronLeft class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
+                  Back to Files
+                </button>
+                <MountsDoctorPanel generation={workspaceStore.generation ?? 0} />
+              </div>
+            {:else}
+              <PageHeader
+                title="Files"
+                subtitle="Your business memory. Every page is a plain Markdown file in your workspace."
+              />
+            {/if}
+          </MainColumn>
+        </div>
       {/snippet}
     </PaneHost>
   {/snippet}
