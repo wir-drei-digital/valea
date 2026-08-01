@@ -135,6 +135,11 @@
     slots: () => paneRoom.slots
   });
 
+  // A message starts its session BESIDE itself now — chat-beside-mail, created
+  // from the mail side, which is what replaced the bar's ＋ Pane → Chat. Read
+  // at render time so it tracks both the row and the window.
+  const sessionBesideRefusal = $derived(wiring.besideRefusal('chat'));
+
   // Reopen whatever was last beside the reader, but only when the URL names
   // nothing itself — see `pane-memory.svelte.ts` for the three rules.
   watchPaneMemory({
@@ -525,7 +530,11 @@
                 <EmptyState icon={MailIcon} title="Mail" body="Pick a message from the list to read it here." />
               {/if}
             {:else if selection.activeId === selectedId && selection.detail}
-              <MessageView message={selection.detail} />
+              <MessageView
+                message={selection.detail}
+                onSessionBeside={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
+                sessionBesideRefusal={sessionBesideRefusal}
+              />
             {:else if selection.failed}
               <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
             {:else}

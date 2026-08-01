@@ -39,6 +39,16 @@
   // The two hosts differ only in where the selection comes from: a descriptor
   // here, `?message=`/`?account=` there.
   const selection = watchMailSelection(() => ({ msgId: descriptor.msgId, account }));
+
+  // A message can start a session BESIDE itself from a pane too — same append,
+  // same refusal as on the route, because the host answers both. A host that
+  // offers no append at all is its own reason: the alternative is a button that
+  // creates a real session and puts it nowhere.
+  const sessionRefusal = $derived(
+    context.openBeside
+      ? (context.besideRefusal?.('chat') ?? null)
+      : 'This view cannot open a session beside it'
+  );
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1">
@@ -61,7 +71,11 @@
     {#if !descriptor.msgId}
       <p class="text-ink-meta text-[12.5px]">Pick a message to read it.</p>
     {:else if selection.activeId === descriptor.msgId && selection.detail}
-      <MessageView message={selection.detail} />
+      <MessageView
+        message={selection.detail}
+        onSessionBeside={(id) => context.openBeside?.({ kind: 'chat', sessionId: id })}
+        sessionBesideRefusal={sessionRefusal}
+      />
     {:else if selection.failed}
       <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>
     {:else}
