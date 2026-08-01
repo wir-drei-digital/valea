@@ -21,23 +21,24 @@ function mainWindow(file: string): Record<string, unknown> | null {
 }
 
 /**
- * Keys every platform must agree on. Deliberately EXCLUDES the ones that are
- * legitimately per-platform: `decorations`, `shadow`, and the three macOS-only
- * keys (`titleBarStyle`, `hiddenTitle`, `trafficLightPosition`).
+ * Keys that are legitimately per-platform, and so are NOT required to match.
+ * Everything else in the base window object must be restated identically in
+ * every platform file — DERIVED from the base rather than listed here, so a
+ * key added to the base is covered the day it is added rather than the day
+ * someone remembers to update this file. An allowlist was tried first and had
+ * exactly the hole this guard exists to close.
  */
-const SHARED = [
-  'label',
-  'create',
-  'title',
-  'width',
-  'height',
-  'minWidth',
-  'minHeight',
-  'center',
-  'resizable',
-  'fullscreen',
-  'visible'
-] as const;
+const PER_PLATFORM = new Set([
+  'decorations', // the whole point of the platform files
+  'shadow', // Windows-only; Tauri documents it unsupported on Linux
+  'titleBarStyle', // the three macOS-only keys below are accepted everywhere
+  'hiddenTitle', // and effective only on macOS
+  'trafficLightPosition'
+]);
+
+function sharedKeys(base: Record<string, unknown>): string[] {
+  return Object.keys(base).filter((k) => !PER_PLATFORM.has(k));
+}
 
 describe('the main window is restated consistently across platform configs', () => {
   const base = mainWindow('tauri.conf.json');
@@ -55,10 +56,25 @@ describe('the main window is restated consistently across platform configs', () 
     expect(base?.visible).toBe(false);
   });
 
+  // Iterating a derived list is only a guard if the list has something in it,
+  // and equality alone can't tell a matching key from an absent one that Tauri
+  // will quietly fill with a serde default. So: prove the set is real, then
+  // assert PRESENCE with `Object.hasOwn` before asserting the values.
+  it('the derived shared set is non-empty and every key is present in windows', () => {
+    const keys = sharedKeys(base ?? {});
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).toContain('label');
+
+    const win = mainWindow('tauri.windows.conf.json') ?? {};
+    for (const key of keys) expect([key, Object.hasOwn(win, key)]).toEqual([key, true]);
+  });
+
   it('windows restates every shared key with the base value', () => {
     const win = mainWindow('tauri.windows.conf.json');
     expect(win).not.toBeNull();
-    for (const key of SHARED) expect([key, win?.[key]]).toEqual([key, base?.[key]]);
+    for (const key of sharedKeys(base ?? {})) {
+      expect([key, win?.[key]]).toEqual([key, base?.[key]]);
+    }
   });
 
   it('windows is frameless', () => {
