@@ -131,7 +131,12 @@
   watchPaneMemory({
     url: () => page.url,
     panes: () => panes,
-    primary: () => primaryDescriptor
+    primary: () => primaryDescriptor,
+    // `primaryAccount` falls back to `mailStore.selectedAccount`, which is
+    // null until the status fetch lands. Acting on that null writes an emptied
+    // row over a composition nobody touched. Set on a FAILED fetch too, so a
+    // workspace with no mail still settles rather than freezing memory.
+    ready: () => mailStore.statusLoaded
   });
 
   // The drafts list is workspace-wide (every account's), the pane's count is

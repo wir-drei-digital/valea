@@ -123,7 +123,11 @@
   watchPaneMemory({
     url: () => page.url,
     panes: () => panes,
-    primary: () => primaryDescriptor
+    primary: () => primaryDescriptor,
+    // `selectedMountKey` — and therefore `primaryDescriptor` — comes from
+    // `mountsStore`, which is null for the first frames of a COLD load. Acting
+    // on that null writes an emptied row over a composition nobody touched.
+    ready: () => mountsStore.loaded
   });
 
   // Suffix for the tree's links (`IcmTree`'s `linkSearch`) — opening a file

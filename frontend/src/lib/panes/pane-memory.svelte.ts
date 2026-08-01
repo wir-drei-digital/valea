@@ -20,6 +20,9 @@
  *     with whatever the restore half put on screen and writes nothing until
  *     the composition moves away from it. Closing your last pane therefore
  *     does get remembered — the distinction is intent, not list length.
+ *   - **Neither half runs before the route knows what its own primary is.**
+ *     See `ready` below; without it both halves mistake a late-arriving
+ *     primary for the user closing a pane.
  */
 import { goto } from '$app/navigation';
 import { loadNavVisible, loadPanes, restoreTarget, routeKeyFor, savePanes } from './pane-memory';
@@ -36,6 +39,28 @@ export function watchPaneMemory(read: {
   panes: () => PaneDescriptor[];
   /** The route's own primary surface, so a restore cannot duplicate it. */
   primary: () => PaneDescriptor | null;
+  /**
+   * Whether `primary()` can be trusted yet. Omit on a route that derives its
+   * primary from the URL (`/chat`, `/knowledge/[...path]`) — there is nothing
+   * to wait for.
+   *
+   * `/knowledge` and `/mail` read theirs from a STORE, so on a cold load it is
+   * null for the first few frames while the fetch is out. Both halves below
+   * would take that null at face value: `panes` has not been deduped against
+   * the real primary yet, so a pane the URL names is still in the list, and
+   * the moment the store lands and `dedupeSurfaces` drops it the save half
+   * sees the list shrink and reads it as the user closing a pane — writing an
+   * emptied row over a composition they never touched. The restore half has
+   * the mirror bug: it puts a `?pane=` in the URL that the settled primary
+   * then dedupes away, so the address bar names a pane that renders nothing.
+   * Only a COLD load reproduces either; navigating in-app finds the store
+   * warm, which is why both survived a full manual pass.
+   *
+   * A signal that never turns true (a mount listing that keeps failing) leaves
+   * memory untouched on that route, which is the conservative direction: if we
+   * do not know what the primary is, we cannot tell an edit from an artifact.
+   */
+  ready?: () => boolean;
 }): void {
   // ONE restore per mounted route. Moving between sessions, messages or files
   // inside a route is not a fresh entry, and re-running there would fight the
@@ -52,6 +77,10 @@ export function watchPaneMemory(read: {
 
   $effect(() => {
     const url = read.url();
+    // Read BEFORE the `restored` latch, so the effect re-runs when the store
+    // behind it lands rather than concluding "nothing to restore" against a
+    // primary that had not arrived.
+    if (read.ready?.() === false) return;
     if (restored) return;
     restored = true;
 
@@ -90,6 +119,10 @@ export function watchPaneMemory(read: {
 
   $effect(() => {
     const url = read.url();
+    // Same gate, and load-bearing for the same reason: seeding `recorded` from
+    // a list that has not been deduped against the real primary makes the
+    // dedup itself look like an edit.
+    if (read.ready?.() === false) return;
     const key = routeKeyFor(url.pathname);
     if (!key) return;
 
