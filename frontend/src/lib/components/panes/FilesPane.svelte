@@ -14,7 +14,7 @@
    * size. True side-by-side survives as ONE explicit control — Compare, in the
    * pane header, which is the only thing here that still consults a width.
    *
-   * Owns the split -> FileView ref map that `onBeforeMutate(href)` dispatches
+   * Owns the tab -> FileView ref map that `onBeforeMutate(href)` dispatches
    * over: with two columns compared, a rename must flush the one holding that
    * file and not its sibling.
    *
@@ -33,8 +33,6 @@
   import { PaneGroup, Pane, PaneResizer } from 'paneforge';
   import FileView from '$lib/components/views/FileView.svelte';
   import IcmTree from '$lib/components/shell/IcmTree.svelte';
-  import Plus from '@lucide/svelte/icons/plus';
-  import X from '@lucide/svelte/icons/x';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { icmToNav, knowledgeHref } from '$lib/shell/nav';

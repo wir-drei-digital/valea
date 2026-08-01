@@ -95,7 +95,7 @@ export function clearAuto(autoIndex: number | null, userIndex: number): number |
 }
 
 /**
- * Re-maps the assistant's claim when a split is removed. `closeSplit` and
+ * Re-maps the assistant's claim when a tab is removed. `closeTab` and
  * `dropSubject` renumber the list, so a claim held as an index would
  * otherwise point at whatever slid into that slot — and the next auto-open
  * would overwrite a file the user placed.
@@ -110,7 +110,7 @@ export function shiftAuto(autoIndex: number | null, removedIndex: number): numbe
 }
 
 /**
- * `shiftAuto` for a removal that takes SEVERAL splits at once — deleting a
+ * `shiftAuto` for a removal that takes SEVERAL tabs at once — deleting a
  * folder both open files live under, which arrives as one mutation and one
  * rewritten path list.
  *

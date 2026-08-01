@@ -10,7 +10,7 @@ function tabs(paths: string[], active = 0): TabState {
 }
 
 describe('autoOpen', () => {
-  it('opens into an empty pane and claims that split', () => {
+  it('opens into an empty pane and claims that tab', () => {
     expect(autoOpen([], null, 'A.md', 2)).toEqual({ paths: ['A.md'], autoIndex: 0 });
   });
 
@@ -21,14 +21,14 @@ describe('autoOpen', () => {
     });
   });
 
-  it('recycles its own split instead of accumulating', () => {
+  it('recycles its own tab instead of accumulating', () => {
     expect(autoOpen(['USER.md', 'A.md'], 1, 'B.md', 2)).toEqual({
       paths: ['USER.md', 'B.md'],
       autoIndex: 1
     });
   });
 
-  it('does nothing when both splits are the user’s', () => {
+  it('does nothing when both tabs are the user’s', () => {
     expect(autoOpen(['X.md', 'Y.md'], null, 'A.md', 2)).toEqual({
       paths: ['X.md', 'Y.md'],
       autoIndex: null
@@ -73,7 +73,7 @@ describe('autoOpen', () => {
   });
 
   // The claim survives a repeat reference to the file already in the assistant's
-  // own split — otherwise the next reference would take a second slot instead of
+  // own tab — otherwise the next reference would take a second slot instead of
   // recycling, and the user's pinned file would be the one squeezed out.
   it('keeps an existing claim when the assistant re-opens the file it already showed', () => {
     expect(autoOpen(['USER.md', 'A.md'], 1, 'A.md', 2)).toEqual({
@@ -111,11 +111,11 @@ describe('autoOpen', () => {
 });
 
 describe('clearAuto', () => {
-  it('releases the claim when the user opens into that split', () => {
+  it('releases the claim when the user opens into that tab', () => {
     expect(clearAuto(1, 1)).toBeNull();
   });
 
-  it('keeps the claim when the user opens into a different split', () => {
+  it('keeps the claim when the user opens into a different tab', () => {
     expect(clearAuto(1, 0)).toBe(1);
   });
 
@@ -123,25 +123,25 @@ describe('clearAuto', () => {
     expect(clearAuto(null, 0)).toBeNull();
   });
 
-  // Split 0 is a real index, not an absent claim — a truthiness check here
-  // would leak the claim into the split the user just took over.
-  it('treats a claim on split 0 like any other', () => {
+  // Tab 0 is a real index, not an absent claim — a truthiness check here
+  // would leak the claim into the tab the user just took over.
+  it('treats a claim on tab 0 like any other', () => {
     expect(clearAuto(0, 0)).toBeNull();
     expect(clearAuto(0, 1)).toBe(0);
   });
 });
 
 describe('shiftAuto', () => {
-  it('drops the claim when the claimed split is the one removed', () => {
+  it('drops the claim when the claimed tab is the one removed', () => {
     expect(shiftAuto(0, 0)).toBeNull();
     expect(shiftAuto(1, 1)).toBeNull();
   });
 
-  it('decrements a claim that sat after the removed split', () => {
+  it('decrements a claim that sat after the removed tab', () => {
     expect(shiftAuto(1, 0)).toBe(0);
   });
 
-  it('leaves a claim that sat before the removed split alone', () => {
+  it('leaves a claim that sat before the removed tab alone', () => {
     expect(shiftAuto(0, 1)).toBe(0);
   });
 
@@ -170,7 +170,7 @@ describe('shiftAutoAll', () => {
     expect(shiftAutoAll(1, [1])).toBeNull();
   });
 
-  it('drops the claim when the deleted folder took the claimed split too', () => {
+  it('drops the claim when the deleted folder took the claimed tab too', () => {
     expect(shiftAutoAll(0, [0, 1])).toBeNull();
     expect(shiftAutoAll(1, [0, 1])).toBeNull();
   });
@@ -178,7 +178,7 @@ describe('shiftAutoAll', () => {
   it('applies removals highest-index first, whatever order it is given', () => {
     // Ascending would apply `0` first, renumbering the list under the caller's
     // own second index, and read `1` against a list that no longer has one.
-    // A three-split list is not reachable today, but the order is the rule.
+    // A three-tab list is not reachable today, but the order is the rule.
     expect(shiftAutoAll(2, [0, 1])).toBe(0);
     expect(shiftAutoAll(2, [1, 0])).toBe(0);
   });

@@ -9,7 +9,7 @@
  * Files panes never share an auto-open claim. Only the tree preference is
  * shared, and that goes through `pane-memory`, not through here.
  *
- * It carries no width FIGURE and no add-split action: both existed for a header
+ * It carries no width FIGURE and no add-tab action: both existed for a header
  * "open a second file" button that was removed, because a header control has no
  * file to name and could only guess one. What DOES cross back up is a reason or
  * an action, never a measurement — `treeBlocked`, `compareBlocked`, and the two
@@ -25,12 +25,12 @@ import type { PaneDescriptor } from './pane-route';
 export class FilesPaneState {
   kind = 'files' as const;
   treeVisible = $state(loadChrome().files.tree);
-  /** Which split auto-open claimed; see `auto-open.ts`. */
+  /** Which tab auto-open claimed; see `auto-open.ts`. */
   autoIndex = $state<number | null>(null);
   /**
-   * The file that was IN the claimed split when the claim was made.
+   * The file that was IN the claimed tab when the claim was made.
    *
-   * The claim is an index, and `paths` is rewritten by things no split-removal
+   * The claim is an index, and `paths` is rewritten by things no tab-removal
    * hook can see: navigating this route to a different file or a different
    * ICM (the primary Files surface outlives every one of those navigations),
    * Back, a hand-edited URL. A claim that survived one of those would name
