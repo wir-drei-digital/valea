@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { paneWiring } from './pane-wiring';
+import { alreadyOpenRefusal } from './pane-offer';
 import { dedupeSurfaces, parsePanes, type PaneDescriptor } from './pane-route';
 
 /**
@@ -25,14 +26,10 @@ vi.mock('$app/navigation', () => ({
 
 const ORIGIN = 'http://localhost';
 
-function host(
-  initial: string,
-  primary: PaneDescriptor | null = null,
-  roomForPane?: () => boolean
-) {
+function host(initial: string, primary: PaneDescriptor | null = null, slots?: () => number) {
   let url = new URL(initial, ORIGIN);
   const panes = () => dedupeSurfaces(primary, parsePanes(url.searchParams));
-  const wiring = paneWiring({ url: () => url, panes, primary: () => primary, roomForPane });
+  const wiring = paneWiring({ url: () => url, panes, primary: () => primary, slots });
 
   return {
     wiring,
@@ -198,11 +195,11 @@ describe('takeAutoCreatedPath', () => {
   });
 });
 
-describe('openBeside — the width gate a route-owned control must share', () => {
+describe('openBeside — the gate every pane-opening control shares', () => {
   const session: PaneDescriptor = { kind: 'chat', sessionId: 's9' };
 
   it('appends the pane when the window has room', () => {
-    const h = host('/knowledge/life/A.md', null, () => true);
+    const h = host('/knowledge/life/A.md', null, () => 2);
     h.wiring.openBeside(session);
     h.land();
     expect(h.panes()).toEqual([session]);
@@ -210,18 +207,18 @@ describe('openBeside — the width gate a route-owned control must share', () =>
 
   it('refuses when the window has no room for another pane', () => {
     // The bug this closes: at a 900px window `panesThatFit` is 0, the bar's
-    // ＋ Pane is correctly disabled, and this control — six pixels above it —
-    // opened a chat into a ~130px column anyway. The picker disables itself
+    // ＋ Pane was correctly disabled, and this control — six pixels above it —
+    // opened a chat into a ~130px column anyway. Every control disables itself
     // with the reason; this is the guard behind it, which also covers
     // keyboard activation of an `aria-disabled` button.
-    const h = host('/knowledge/life/A.md', null, () => false);
+    const h = host('/knowledge/life/A.md', null, () => 0);
     h.wiring.openBeside(session);
     expect(h.navigated()).toBe(0);
     expect(h.panes()).toEqual([]);
   });
 
   it('has no opinion for a route that supplies none', () => {
-    // Absent means absent, not false: a route with no such control must not
+    // Absent means absent, not zero: a route with no such control must not
     // have its own `openBeside` silently disabled by an unset option.
     const h = host('/knowledge/life/A.md');
     h.wiring.openBeside(session);
@@ -232,9 +229,43 @@ describe('openBeside — the width gate a route-owned control must share', () =>
   it('refuses a full row even when the window says there is room', () => {
     // The cap outranks the width — `PANE_CAP` is the one refusal no monitor
     // can lift, and the room reader must not be able to talk past it.
-    const h = host(`/knowledge/life/A.md?pane=${life}&pane=mail:me@x.test`, null, () => true);
+    const h = host(`/knowledge/life/A.md?pane=${life}&pane=mail:me@x.test`, null, () => 9);
     expect(h.panes()).toHaveLength(2);
     h.wiring.openBeside(session);
+    expect(h.navigated()).toBe(0);
+  });
+
+  it('refuses a kind the ROUTE PRIMARY already shows, rather than dropping it in dedupe', () => {
+    // Without the kind check this navigates, `dedupeSurfaces` drops the new
+    // pane on the way to the URL, and the control appears broken — the exact
+    // silent no-op the reason exists to replace.
+    const primary: PaneDescriptor = { kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null };
+    const h = host('/knowledge/life/A.md', primary, () => 2);
+    h.wiring.openBeside({ kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null });
+    expect(h.navigated()).toBe(0);
+    expect(h.wiring.besideRefusal('files')).toBe(alreadyOpenRefusal('files'));
+  });
+
+  it('refuses a kind an open PANE already shows', () => {
+    const h = host(`/knowledge/life/A.md?pane=chat:s1`, null, () => 2);
+    h.wiring.openBeside(session);
+    expect(h.navigated()).toBe(0);
+    expect(h.wiring.besideRefusal('chat')).toBe(alreadyOpenRefusal('chat'));
+  });
+
+  it('reports no refusal, and opens, when the row and the width both allow it', () => {
+    const h = host('/knowledge/life/A.md', null, () => 2);
+    expect(h.wiring.besideRefusal('chat')).toBeNull();
+    h.wiring.openBeside(session);
+    expect(h.navigated()).toBe(1);
+  });
+
+  it('gives a pane-placed view the same answer the route gets', () => {
+    // A chat pane opening a file browser beside itself must meet the same gate
+    // as the route's own control, or the two placements disagree about the row.
+    const h = host(`/knowledge/life/A.md?pane=chat:s1`, null, () => 1);
+    expect(h.context().besideRefusal?.('files')).toBe(h.wiring.besideRefusal('files'));
+    h.context().openBeside?.({ kind: 'files', mountKey: 'life', paths: [], active: 0, compare: null });
     expect(h.navigated()).toBe(0);
   });
 });

@@ -54,6 +54,26 @@ export type PaneContext = {
    * one's.
    */
   openPane?: (d: PaneDescriptor) => void;
+  /**
+   * APPEND a pane beside this view, for a control that composes from the side
+   * it is on — mail's "Start a session about this message", the session
+   * header's "Open files". The opposite of `openPane`, which rewrites the
+   * caller's own descriptor.
+   *
+   * Always paired with `besideRefusal`, and a control must render that reason
+   * rather than call this and hope: at the cap, at a narrow window, or with a
+   * surface of the same kind already on screen, this is a no-op by design.
+   * `openFile` is still the way to create a Files surface AROUND A FILE — this
+   * one opens a browser with nothing picked.
+   */
+  openBeside?: (d: PaneDescriptor) => void;
+  /**
+   * Why `openBeside` would refuse a pane of this kind right now, `null` when it
+   * would succeed. A THUNK, not a value: it is read at render time by controls
+   * that live several components below the host, and the answer changes with
+   * the window and with the row.
+   */
+  besideRefusal?: (kind: PaneDescriptor['kind']) => string | null;
   /** A chat-new view created its session — host rewrites its descriptor to `chat:<id>`. */
   sessionCreated?: (id: string) => void;
   /** The view's whole subject was archived/removed — host closes this pane. */

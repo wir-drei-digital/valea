@@ -32,6 +32,7 @@
     type PaneDescriptor
   } from '$lib/panes/pane-route';
   import { paneWiring } from '$lib/panes/pane-wiring';
+  import { paneRoom } from '$lib/shell/pane-room.svelte';
   import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import type { PaneContext } from '$lib/panes/context';
 
@@ -154,7 +155,15 @@
 
   // No `openInPrimary`: the primary here is a transcript, so a file opened
   // from a tool chip lands in the Files pane — creating one if there is none.
-  const wiring = paneWiring({ url: () => page.url, panes: () => panes });
+  // `primary` and `slots` are what let the session header's "Open files" refuse
+  // visibly: the first tells `besideRefusal` this route's own surface counts
+  // toward `dedupeSurfaces`, the second gives it the window's width.
+  const wiring = paneWiring({
+    url: () => page.url,
+    panes: () => panes,
+    primary: () => primaryDescriptor,
+    slots: () => paneRoom.slots
+  });
 
   // Reopen whatever was last beside a transcript, but only when the URL names
   // nothing itself — see `pane-memory.svelte.ts` for the three rules.

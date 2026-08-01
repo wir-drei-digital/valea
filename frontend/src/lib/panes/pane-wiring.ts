@@ -18,6 +18,7 @@ import { goto } from '$app/navigation';
 import { autoOpen } from './auto-open';
 import { TAB_CAP, resolveTabs, type TabState } from './files-pane-state';
 import { dropSubject, replaceAt } from './pane-edit';
+import { paneRefusal } from './pane-offer';
 import {
   PANE_CAP,
   dedupeSurfaces,
@@ -40,13 +41,19 @@ export type PaneWiring = {
   promotePane: (d: PaneDescriptor) => void;
   openFileSurface: (sel: FileSelection) => void;
   /**
-   * Append a pane, for a route-owned control that opens one (the knowledge
-   * routes' session picker). The bar's ＋ Pane does the same thing from the
-   * shell. Deduped against the primary, and a no-op once the row is full or
-   * the window has no width for another pane — the SAME gate ＋ Pane applies,
-   * because a pane opened here is indistinguishable from one opened there.
+   * Append a pane, for any control that opens one from the side it is on:
+   * mail's "Start a session", the session header's "Open files", the knowledge
+   * routes' session picker. Deduped against the primary, and GUARDED by
+   * `besideRefusal` — the guard is the second half of the `aria-disabled`
+   * pattern the controls use, covering keyboard activation and a stale closure.
    */
   openBeside: (d: PaneDescriptor) => void;
+  /**
+   * Why `openBeside` would refuse a pane of this kind right now, or `null` when
+   * it would succeed. Every control that opens a pane must render this rather
+   * than click into nothing — see `pane-offer.ts`.
+   */
+  besideRefusal: (kind: PaneDescriptor['kind']) => string | null;
 };
 
 export function paneWiring(read: {
@@ -63,18 +70,16 @@ export function paneWiring(read: {
    */
   openInPrimary?: (sel: FileSelection) => void;
   /**
-   * Whether the window has room for one more pane — `paneRoom.canAdd`, passed
-   * as a thunk so this module stays free of `window` and stays unit-testable.
-   * `openBeside` alone consults it; `openFileSurface` deliberately does not,
+   * How many side panes this window has room for — `paneRoom.slots`, passed as
+   * a thunk so this module stays free of `window` and stays unit-testable.
+   * `besideRefusal` alone consults it; `openFileSurface` deliberately does not,
    * for the reason its own body records.
    *
-   * Absent means "no opinion", which is what a route with no such control
-   * wants — but the two knowledge routes that DO have one must pass it. The
-   * control disables itself with the reason as well; this is the second half
-   * of the `aria-disabled` pattern, the guard that also covers keyboard
-   * activation and a stale closure.
+   * Absent means "no opinion" and reads as unlimited, which is what a route
+   * with no pane-opening control of its own wants — but every route that has
+   * one must pass it, or its control cannot refuse on width.
    */
-  roomForPane?: () => boolean;
+  slots?: () => number;
 }): PaneWiring {
   function go(next: PaneDescriptor[], replace = false): void {
     // Focus and scroll are kept on every one of these: opening a file from a
@@ -179,6 +184,12 @@ export function paneWiring(read: {
       // row its `sessionId`. Creating a surface is `openFile`'s job.
       openPane: (next) => go(replaceAt(read.panes(), index, next)),
       openFile: openFileSurface,
+      // A view in a PANE composes the same way a route's primary does — a mail
+      // pane may open a session beside itself, a chat pane a file browser. The
+      // SAME function, so the two placements can never disagree about what the
+      // row will accept.
+      openBeside,
+      besideRefusal,
       // `replaceState` so Back does not step through the dead composer state.
       sessionCreated: (id) =>
         go(replaceAt(read.panes(), index, { kind: 'chat', sessionId: id }), true),
@@ -215,17 +226,42 @@ export function paneWiring(read: {
     };
   }
 
+  /**
+   * `openKinds` carries the route's own primary as well as the open panes,
+   * because `dedupeSurfaces` counts it — a control offering a kind the primary
+   * already IS would otherwise navigate to a URL that drops it again, which is
+   * the silent no-op every one of these controls exists to avoid.
+   */
+  function besideRefusal(kind: PaneDescriptor['kind']): string | null {
+    const panes = read.panes();
+    const primary = read.primary?.() ?? null;
+    return paneRefusal({
+      open: panes.length,
+      slots: read.slots?.() ?? Number.POSITIVE_INFINITY,
+      openKinds: [...(primary ? [primary.kind] : []), ...panes.map((p) => p.kind)],
+      wanted: kind
+    });
+  }
+
+  /**
+   * The guard, not merely the navigation: every control that calls this also
+   * renders `besideRefusal` beside itself, and this re-checks because
+   * `aria-disabled` leaves the button clickable on purpose (a truly `disabled`
+   * one takes no pointer events, so its reason never appears, and it leaves
+   * the tab order, so a keyboard user never finds it either).
+   */
+  function openBeside(d: PaneDescriptor): void {
+    if (besideRefusal(d.kind)) return;
+    go(dedupeSurfaces(read.primary?.() ?? null, [...read.panes(), d]));
+  }
+
   return {
     paneContext,
     // A user closing a pane is an ordinary navigation: Back reopens it.
     closePane: (index) => go(replaceAt(read.panes(), index, null)),
     promotePane: (d) => void goto(promoteTarget(d, read.url(), read.panes())),
     openFileSurface,
-    openBeside: (d) => {
-      const panes = read.panes();
-      if (panes.length >= PANE_CAP) return;
-      if (read.roomForPane && !read.roomForPane()) return;
-      go(dedupeSurfaces(read.primary?.() ?? null, [...panes, d]));
-    }
+    besideRefusal,
+    openBeside
   };
 }

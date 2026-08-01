@@ -1,7 +1,9 @@
 /**
- * How much room the window has for panes — the ONE answer to "may another pane
- * open", shared by the bar's ＋ Pane and by every route-owned control that
- * opens one (today the knowledge routes' session picker).
+ * How much room the window has for panes — the ONE measurement behind "may
+ * another pane open", shared by every control that opens one. What the answer
+ * MEANS (the cap, the width, a surface already on screen) is
+ * `pane-offer.ts`'s, which is pure and tested; this object only supplies the
+ * `slots` it needs.
  *
  * It is a module singleton because both of its inputs already are. The window's
  * width is global by definition, and the nav's collapse is PERSISTED precisely
@@ -11,14 +13,14 @@
  * knowledge routes' picker opened a chat pane into a ~130px column — two or
  * three words per line and a clipped composer — while ＋ Pane, six pixels
  * below, was correctly `aria-disabled` with "Not enough width for another
- * pane".
+ * pane". Retiring the bar makes this singleton more load-bearing rather than
+ * less: no control sees the whole row by construction any more.
  *
  * This object only ever ANSWERS the question. It never acts on it, and nothing
  * here re-runs when the window narrows: a pane already on screen stays, because
  * unmounting one would dispose a live `ChatView`'s session store and drop the
  * composer's draft. See `pane-fit.ts`'s header.
  */
-import { PANE_CAP } from '$lib/panes/pane-route';
 import { loadNavVisible, saveNavVisible } from '$lib/panes/pane-memory';
 import { panesThatFit } from './pane-fit';
 
@@ -46,22 +48,6 @@ class PaneRoom {
   toggleNav(): void {
     this.navVisible = !this.navVisible;
     saveNavVisible(this.navVisible);
-  }
-
-  /** Whether a row already holding `open` side panes may grow one more. */
-  canAdd(open: number): boolean {
-    return open < PANE_CAP && open < this.slots;
-  }
-
-  /**
-   * Why not — for a control that must say so rather than fail silently. Read
-   * only when `canAdd` is false; the cap outranks the width because it is the
-   * one refusal no monitor can lift.
-   */
-  reasonFor(open: number): string {
-    return open >= PANE_CAP
-      ? 'Two panes beside the main view is the maximum'
-      : 'Not enough width for another pane';
   }
 }
 

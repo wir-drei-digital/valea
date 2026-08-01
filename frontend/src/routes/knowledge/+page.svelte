@@ -23,6 +23,7 @@
   import { AppFrame, ListPane, MainColumn, PageHeader, SectionOverline, IcmTree } from '$lib/components/shell';
   import { paneWiring } from '$lib/panes/pane-wiring';
   import { paneRoom } from '$lib/shell/pane-room.svelte';
+  import { roomRefusal } from '$lib/panes/pane-offer';
   import { watchPaneMemory } from '$lib/panes/pane-memory.svelte';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -117,14 +118,15 @@
         keepFocus: true,
         noScroll: true
       }),
-    roomForPane: () => paneRoom.canAdd(panes.length)
+    slots: () => paneRoom.slots
   });
 
-  // The session picker opens a PANE, so it answers to the same gate ＋ Pane
-  // does — see `pane-room.svelte.ts` for what the two disagreeing cost.
-  const pickerDisabled = $derived(
-    paneRoom.canAdd(panes.length) ? null : paneRoom.reasonFor(panes.length)
-  );
+  // The session picker opens a PANE, so it answers to the same gate every
+  // other pane-opening control does — see `pane-offer.ts`. Room only, not
+  // `wiring.besideRefusal`: the popover offers a NEW session and any recent
+  // one, two different descriptor kinds, so no single kind answers for the
+  // trigger.
+  const pickerDisabled = $derived(roomRefusal(panes.length, paneRoom.slots));
 
   // Reopen whatever was last beside the file browser, but only when the URL
   // names nothing itself — see `pane-memory.svelte.ts` for the three rules.
