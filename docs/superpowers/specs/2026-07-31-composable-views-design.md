@@ -66,34 +66,38 @@ nothing outside the Files pane can observe that relationship.
   need; comparing two transcripts or two mailboxes is not. Chat and Mail hold
   one subject each. (Since the 2026-08-01 tabs amendment, Files holds six tabs
   and shows one — two only through the explicit Compare control.)
-- **Controls go on a bottom bar inside the content container.** The left nav
-  is a full-height fixed anchor; the bar sits *beside* it, not under it.
+- **A pane is opened from the side you are already working on.** *(Amended
+  2026-08-01 — see "Opening a pane". This originally read "controls go on a
+  bottom bar inside the content container"; the bar shipped, was tested, and
+  was retired.)* The left nav stays a full-height fixed anchor.
 - **Panes are remembered per route.** A URL that names panes always wins.
 
 ## Layout
 
 ```
 ┌────────┬──────────────────────────────────────────────────┐
+│        │ ▣ Working in life        ⊞ ⋯ │ Files    ⧉ ⤢ ✕ │  │
 │        │ ┌──────────────┬─────────────────────────────┐   │
-│        │ │  Chat        │ Files — AGENTS.md   ▣ ⧉ ⤢ ✕ │   │
-│  Nav   │ │  (primary)   ├──────────────────────┬──────┤   │
-│  236   │ │              │ [AGENTS] [CONTEXT ✕] │      │   │
-│ (full  │ │              ├──────────────────────┤ tree │   │
-│ height)│ │              │ the active tab's file│ 240  │   │
+│  Nav   │ │  Chat        │ [AGENTS] [CONTEXT ✕] │      │   │
+│  236   │ │  (primary)   ├──────────────────────┤ tree │   │
+│ (full  │ │              │ the active tab's file│ 240  │   │
+│ height)│ │              │                      │      │   │
 │        │ └──────────────┴──────────────────────┴──────┘   │
-│        │                                        ＋ Pane   │
 └────────┴──────────────────────────────────────────────────┘
-             └── shell sees 2 panes; 3 visible columns ──┘
+   ▣ = nav collapse, at the primary header's left edge
+   ⊞ = "Open files beside this session"
+             └── shell sees 1 pane; 2 visible columns ──┘
 ```
 
-`AppShell` becomes nav, a row of panes, and the bar:
+`AppShell` is nav, the route's content column, and the one control that
+outlived the bar:
 
 ```svelte
 <div class="flex h-screen">
   <aside class="w-[236px] shrink-0 …">{@render nav()}</aside>
-  <div class="flex min-w-0 flex-1 flex-col">
-    <PaneHost {primary} panes={sidePanes} … />
-    <ContentBar />
+  <div class="relative flex min-w-0 flex-1 flex-col">
+    <NavToggle … />
+    <main>{@render main()}</main>
   </div>
 </div>
 ```
@@ -503,7 +507,7 @@ display-hidden leaves a zero-width pane a drag can resurrect.
 
 Rather than build machinery to make continuous auto-hide safe, the rule
 narrows: **`pane-fit.ts` is consulted only at the moments a pane would be
-added** — `＋ Pane`, a tool chip opening a file, and restore from
+added** — a contextual affordance, a tool chip opening a file, and restore from
 memory. Panes that do not fit are not opened, and on restore the composition
 is truncated from the right while memory keeps the full list, so the pane
 returns on a wider window the next time you enter the route. Resizing the
@@ -515,8 +519,11 @@ appear and disappear only in response to something the user did, component
 identity is never in question, and "layout keyed by pane count" is
 unambiguous because mounted, visible and requested counts are always equal.
 
-`＋ Pane` disables itself when another pane would not fit, with the reason on
-hover rather than a silent no-op.
+Every control that opens a pane disables itself when one would not fit, with
+the reason on hover rather than a silent no-op. The words are `pane-offer.ts`'s
+and the shape is `aria-disabled` plus a handler guard — never the `disabled`
+attribute, which takes no pointer events (so the reason never appears) and
+leaves the tab order (so a keyboard user never finds it).
 
 **AMENDMENT (2026-08-01, Daniel): there is no `＋ Split` control.** *(Splits
 themselves were replaced by tabs later the same day; the reasoning below is
@@ -534,68 +541,70 @@ coordination: it measures `ChatView`'s own container, so opening a pane
 shrinks the chat and the file-activity rail retreats to its header pill on its
 own. `filesPopover` is that rail's fallback, not a file browser, and stays.
 
-## The bottom bar
+## Opening a pane
 
-A ~28px band across the content area only. `＋ Pane` on the right, opening a
-short menu (Files / Chat / Mail), with kinds already open shown as checked and
-inert. Nav collapse sits at the far left — confirmed, shipped, and persisted
-(every route mounts its own `AppShell`, so a collapse held in component state
-would spring back open on the next navigation).
+**AMENDMENT (2026-08-01, Daniel, after testing the tabbed pane): the bottom bar
+is retired.** It shipped as a ~28px band carrying `＋ Pane` on the right and
+nav collapse on the left, and the section below used to describe it in detail —
+including a "why a bar at all" argument. That argument is now wrong, and the
+reason it was wrong is worth keeping: `＋ Pane` was a **generic** control that
+made you name a *kind* before you had a purpose, which cuts against this
+product's own principle that buttons name outcomes (`PRODUCT.md`). Its whole
+subject-resolution problem — which mount? which account? what does "Checking…"
+mean? — existed only because the control had no context to draw a subject from.
 
-**Every menu item must name a concrete subject**, since no descriptor kind
-accepts "empty":
+Each composition is created from the side you are already working on:
 
-| Item | Opens | When unavailable |
+| Composition | Control | Opens |
 |---|---|---|
-| Files | `files:<mount>` — tree, no file open | no enabled ICM |
-| Chat | `chat:new:<mount>` — the new-session composer, which is what the existing `chat-new` kind is for; pick an existing session from the pane's own navigator | no enabled ICM |
-| Mail | `mail:<account>` — list, nothing selected | no account configured *and* status is known |
+| chat beside mail | a message's existing **"Start a session"** | `chat:<id>` — the session it just minted, granted that message |
+| files beside chat | the session header's **"Open files beside this session"** | `files:<mount>` — the session's own ICM, no file picked |
+| chat beside files | Knowledge's existing **session picker** | `chat:<id>` or `chat:new:<mount>` |
 
-`<mount>` is resolved by **`resolveIcmSelection(?icm, enabledMountKeys)`**, not
-by `resolveActiveMountKey`. The latter bottoms out at `?icm=`
-(`lib/shell/icm-route.ts:73`) and so returns `null` on Today or Tasks, which
-would disable both items despite a perfectly good workspace.
-`resolveIcmSelection` is the helper `/chat`'s own `primaryMountKey()` already
-uses for exactly this "pick a sensible mount" job, falling back to the first
-enabled, non-degraded mount in config order.
+Every one of them names a concrete subject *because of where it is*: the
+message's session, the transcript's ICM, the file's ICM. Nothing is resolved
+from ambient state, so `resolveIcmSelection`, the three-valued mail cell and
+the "already open, shown checked and inert" menu row all go with the menu.
 
-`<account>` is `mailStore.selectedAccount`, falling back to the first
-configured account. **Unknown is not the same as absent:** `mailStore.accounts`
-starts empty and only fills on `refreshStatus()`, which today only `/mail`
-calls on mount (`lib/stores/mail.svelte.ts:448-449`,
-`routes/mail/+page.svelte:54-56`). Opening the menu beside a chat would
-otherwise report "No mail account yet" before anything had been fetched. So
-`AppShell` kicks a one-time `refreshStatus()`, and until status is known the
-item stays **enabled** — the Mail pane renders its own no-account empty state,
-which is both truthful and recoverable. Availability is only ever asserted
-from loaded data.
+**The refusal must not go with the bar.** The bar was where "not enough width"
+was said out loud, and every affordance now carries that itself:
+`pane-offer.ts` answers "may another pane open, and if not why" as a pure,
+ordered function — already open, then the cap, then the width — and returns a
+sentence, never a boolean. "Already open" leads because `dedupeSurfaces` drops
+such a pane on the way to the URL, so without it the control navigates, nothing
+changes, and it reads as broken. The one route-owned control that opens a pane
+without naming a kind up front (Knowledge's picker offers a new session *or*
+any recent one) uses the room half alone.
 
-Genuinely unavailable items are shown disabled with the reason rather than
-hidden — "No mail account yet" teaches something; a missing row does not.
+**Nav collapse moves to the left edge of the primary pane header.** That header
+is always present and sits against the nav edge, so the control stays in the
+same physical place whether the nav is shown or hidden — a control inside the
+nav would vanish with it. It is `AppShell`'s, absolutely positioned at the
+content column's top-left rather than threaded through nine routes, because
+every route's top-left is a different component and each would be free to
+forget it; routes whose first row would sit underneath it carry a left gutter
+(`SessionHeader`/`ListPane`'s `gutter` prop, `MainColumn`'s top padding, the
+Knowledge and Calendar header bands). The preference stays persisted — every
+route mounts its own `AppShell`, so a collapse held in component state would
+spring back open on the next navigation.
 
-Styling is deliberately furniture, not feature: `bg-paper-sidebar`,
-`border-t border-paper-hairline`, inactive `text-ink-meta`, active
-`text-ink-heading`. **No accent colour** — in this design system colour means
-consequence (`PRODUCT.md` principle 1) and opening a view has none.
+Styling is deliberately furniture, not feature: inactive `text-ink-meta`,
+active `text-ink-heading`, 32px hit target. **No accent colour** — in this
+design system colour means consequence (`PRODUCT.md` principle 1) and opening a
+view has none.
 
-Routes that are not pane hosts (Today, Tasks, Calendar, Audit, Sources) render
-the bar without `＋`. It stays present as stable furniture rather than
-appearing and disappearing as you navigate, and each route populates it as it
-is converted.
+**Known consequence, recorded rather than solved.** A **Mail pane** now has no
+UI entry point. `＋ Pane → Mail` was the only one: promotion replaces the
+primary rather than demoting it, so promoting a chat pane out of `/mail` closes
+the mail surface instead of turning it into a pane. `MailPane`, the `mail:`
+descriptor and `?pane=mail:<account>` all still work — the composition is
+linkable and restorable, just not creatable from a button. Daniel's amendment
+names three compositions and mail-as-a-side-pane is not among them; if it
+should be, the natural home is a "read this beside" affordance on `/mail`'s own
+list, not a return of the menu.
 
 Structurally there is **one path, not two**: every route renders through
-`PaneHost` with a primary, and a non-pane-host route simply never has side
-panes. `PaneHost` already handles this — a lone pane lays out at `[100]`,
-which its own header comment calls out — so those routes keep passing a plain
-`main` snippet and gain the bar without any per-route work. No route bypasses
-the shell to render content directly.
-
-The bar carries fewer controls than it did in the middle draft, because the
-per-pane toggles moved into pane headers where they belong. It is still worth
-having: the feature only pays off if people find it, and a control nobody
-finds converts nobody. It also gives git sync status and the workspace
-indicator an obvious future home, which today are squeezed into the sidebar
-(`StatusPill`, `UpdateNotice`).
+`AppShell`, and a route that hosts no panes simply never has any.
 
 ## Interaction details
 
@@ -662,7 +671,7 @@ Extended:
 - `lib/components/panes/PaneHost.svelte` — N panes. Its unconditional-primary
   rule is load-bearing and must survive: tearing the primary down on a pane
   change would drop the composer's draft and rejoin the session channel.
-- `lib/components/shell/AppShell.svelte` — nav anchor, pane row, bar
+- `lib/components/shell/AppShell.svelte` — nav anchor + content column
 - `lib/components/shell/IcmTree.svelte` — multiple marked rows, per-href
   `onBeforeMutate`
 
@@ -685,12 +694,17 @@ New:
   of `routes/knowledge/[...path]/+page.svelte`
 - `lib/shell/pane-fit.ts` — width → how many panes and splits fit; consulted
   only when something is added or restored, never on resize
-- `lib/components/shell/ContentBar.svelte`
+- `lib/components/shell/NavToggle.svelte` — the one control that outlived the
+  bar
+- `lib/panes/pane-offer.ts` — pure: may another pane open, and if not why
 
 Retired: `SessionHeader`'s popover file tree and `ChatView`'s
 `treeRequestedFor` root-load effect; `AppShell`/`AppFrame`'s `list` and `rail`
 props; `/mail`'s `AppFrame` + `ListPane` composition; the standalone `file:`
-pane kind.
+pane kind. And, from 2026-08-01: `ContentBar.svelte`, `content-bar.ts` and its
+tests, and `AppShell`/`AppFrame`'s `primaryDescriptor` (the menu was its only
+consumer). `SessionHeader` gains `onOpenFiles` — the popover tree's real
+replacement, a year of design later: a pane, not a menu.
 
 ## Testing
 
@@ -726,10 +740,10 @@ no component render harness (`pane-route.test.ts`, `pane-split.test.ts`,
 - `dedupeSurfaces` cases in `pane-route.test.ts` — one surface per kind across
   primary and panes; `chat-new` allowed beside `chat`; a Files pane on
   `/knowledge` collapsed even though `primaryDescriptor` is null there
-- `content-bar.test.ts` — menu subject resolution: a mount is found on Today
-  with no `?icm=`; degraded and disabled mounts are skipped; Mail stays
-  enabled while account status is unknown and disables only once a *loaded*
-  status shows none
+- `pane-offer.test.ts` — the refusal ladder: already-open ahead of the cap
+  ahead of the width; an unmeasured window refuses rather than guessing yes;
+  `chat-new` stays legal beside `chat`, the way `dedupeSurfaces` has it
+  *(replaces `content-bar.test.ts`, retired with the bar)*
 
 ## Build order
 
@@ -749,7 +763,8 @@ One pass, internally ordered so each step is separately reviewable:
    `PaneHost` in the same change. These cannot be separated: the routes
    depend on `list` until they are converted, so removing it first would
    leave the tree broken between steps.
-6. `ContentBar` + `pane-fit.ts`
+6. `ContentBar` + `pane-fit.ts` *(the bar was retired 2026-08-01; its
+   refusal duty moved to `pane-offer.ts` and the contextual affordances)*
 7. `pane-memory.ts` and restore-on-entry
 8. `auto-open.ts` and the chat tool-chip path
 
@@ -759,9 +774,10 @@ One pass, internally ordered so each step is separately reviewable:
 each was decided.)*
 
 *(Nav collapse was the last open item and is now settled: **kept**, default on,
-toggled from the bar's far left. "Fixed anchor" governs the nav's position —
-full height, with the bar beside it rather than under it — not whether it can
-be hidden.)*
+toggled from the LEFT EDGE OF THE PRIMARY PANE HEADER — the bar's far left
+until 2026-08-01, when the bar was retired. "Fixed anchor" governs the nav's
+position — full height, with the content column beside it rather than under
+it — not whether it can be hidden.)*
 *(Stale mail panes were an open item and are now settled under Memory: any
 pane whose subject vanishes closes and is dropped from storage, mail
 included.)*
