@@ -16,7 +16,7 @@
  */
 import { goto } from '$app/navigation';
 import { autoOpen } from './auto-open';
-import { SPLIT_CAP } from './files-pane-state';
+import { TAB_CAP, resolveTabs, type TabState } from './files-pane-state';
 import { dropSubject, replaceAt } from './pane-edit';
 import {
   PANE_CAP,
@@ -28,6 +28,11 @@ import {
 import type { PaneContext } from './context';
 
 export type FileSelection = { mountKey: string; path: string };
+
+/** A brand-new Files surface showing exactly one file: one tab, active, no compare. */
+function openedTab(path: string): TabState {
+  return { paths: [path], active: 0, compare: null };
+}
 
 export type PaneWiring = {
   paneContext: (d: PaneDescriptor, index: number) => PaneContext;
@@ -124,7 +129,7 @@ export function paneWiring(read: {
       // (`treeFits`), which is what makes ignoring the width honest here.
       if (panes.length >= PANE_CAP) return;
       autoCreatedPath = sel.path;
-      go([...panes, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }]);
+      go([...panes, { kind: 'files', mountKey: sel.mountKey, ...openedTab(sel.path) }]);
       return;
     }
     const pane = panes[at];
@@ -140,7 +145,7 @@ export function paneWiring(read: {
       // no claim covers: never recycled, never released, and the pane spends
       // the rest of its life with one dead half.
       autoCreatedPath = sel.path;
-      go(replaceAt(panes, at, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }));
+      go(replaceAt(panes, at, { kind: 'files', mountKey: sel.mountKey, ...openedTab(sel.path) }));
       return;
     }
     if (fileTarget) {
@@ -149,11 +154,13 @@ export function paneWiring(read: {
     }
     // The pane has not announced itself (it is between mounts). Fall back to
     // the claimless floor: the first file always lands, an already-open file
-    // is a no-op, a free split is taken, and a pane whose splits are both the
+    // is a no-op, a free tab is taken, and a pane whose tabs are all the
     // user's is left alone rather than evicting one.
-    const next = autoOpen(pane.paths, null, sel.path, SPLIT_CAP);
+    const next = autoOpen(pane.paths, null, sel.path, TAB_CAP);
     if (next.paths === pane.paths) return;
-    go(replaceAt(panes, at, { ...pane, paths: next.paths }));
+    // The file the assistant just opened is the one to SHOW — a tab that
+    // arrives behind the one you are reading is a citation you never see.
+    go(replaceAt(panes, at, { ...pane, ...resolveTabs(next.paths, next.paths.indexOf(sel.path), pane.compare) }));
   }
 
   function paneContext(_d: PaneDescriptor, index: number): PaneContext {

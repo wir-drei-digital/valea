@@ -57,7 +57,7 @@ export function menuItems(input: {
     {
       kind: 'files',
       label: 'Files',
-      descriptor: mount ? { kind: 'files', mountKey: mount, paths: [] } : null,
+      descriptor: mount ? { kind: 'files', mountKey: mount, paths: [], active: 0, compare: null } : null,
       disabledReason: mount ? null : 'No ICM is mounted yet'
     },
     {

@@ -1,10 +1,9 @@
 <script lang="ts">
   // The knowledge FILE route. Its primary pane is the Files surface itself —
-  // `FilesPane`, tree plus one or two file splits — rather than a shell list
-  // column beside a single `FileView`. That is what makes the second split
-  // reachable here: `?split=<path>` is the primary's second file, the tree's
-  // per-row "Open beside" is what opens it, and promoting a two-split Files
-  // pane onto this route carries both.
+  // `FilesPane`, a tab strip plus the tree — rather than a shell list column
+  // beside a single `FileView`. The pathname is the ACTIVE tab and `?tabs=`
+  // carries the strip, so every tab this route has open is addressable,
+  // shareable and survives promotion (`files-url.ts`).
   //
   // What is left in the route is URL parsing, the lazy tree's ensure effect,
   // the create dialog, and the pane row. Everything about an OPEN FILE lives
@@ -15,7 +14,7 @@
   import { AppFrame } from '$lib/components/shell';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
-  import { encodePath, findIcmNode, knowledgeHref } from '$lib/shell/nav';
+  import { findIcmNode, knowledgeHref } from '$lib/shell/nav';
   import { ancestorHrefs } from '$lib/shell/reveal-path';
   import { parentPath } from './parent-path';
   import { treeFallback } from './tree-fallback';
@@ -26,7 +25,13 @@
   import NewEntryButton from '$lib/components/knowledge/NewEntryButton.svelte';
   import SessionPickerPopover from '$lib/components/knowledge/SessionPickerPopover.svelte';
   import { FilesPaneState } from '$lib/panes/files-pane-runtime.svelte';
-  import { SPLIT_CAP } from '$lib/panes/files-pane-state';
+  import {
+    TAB_CAP,
+    closeTabPath,
+    resolveTabs,
+    type TabState
+  } from '$lib/panes/files-pane-state';
+  import { filesPrimaryHref, parseFilesPrimary } from '$lib/panes/files-url';
   import { autoOpen } from '$lib/panes/auto-open';
   import {
     dedupeSurfaces,
@@ -57,9 +62,6 @@
   const rawSegments = $derived((page.params.path ?? '').split('/'));
   const mountKey = $derived(rawSegments[0] ? decodeURIComponent(rawSegments[0]) : '');
   const decodedPath = $derived(rawSegments.slice(1).map((segment) => decodeURIComponent(segment)).join('/'));
-  // The primary's SECOND file. `URLSearchParams` decodes for us, so this is a
-  // plain ICM-relative path however the writer encoded it.
-  const splitPath = $derived(page.url.searchParams.get('split'));
 
   // Scoped to THIS route's own mount — never flattened across every enabled
   // mount (task 4.2 re-key: a bare path is no longer unique across mounts,
@@ -118,14 +120,19 @@
   // exactly `files:<mount>` with no path.
   const isFolder = $derived(!decodedPath || (node ? node.type === 'folder' : !hasExtension));
 
-  const primaryPaths = $derived.by((): string[] => {
-    if (isFolder) return [];
-    // `?split=` naming the file already in the pathname is one file, not two.
-    // `FilesPane` keys its `{#each}` on the path, so letting the pair through
-    // is a duplicate key, which Svelte throws on during render — the whole app
-    // blanks. Same guard `parsePaneParam` applies to the `|` wire form.
-    return splitPath && splitPath !== decodedPath ? [decodedPath, splitPath] : [decodedPath];
-  });
+  /**
+   * The primary's whole tab strip. The pathname is the ACTIVE tab and `?tabs=`
+   * is the strip it sits in; `files-url.ts` owns both directions of that, and
+   * `resolveTabs` inside it dedupes — the same guard `parsePaneParam` applies
+   * to the `|` wire form, because `FilesPane` keys its `{#each}` on the path
+   * and a duplicate key is a render throw that blanks the whole app.
+   *
+   * Folders open nothing: a folder route is the tree with an empty content
+   * area, which is `files:<mount>` with no tabs.
+   */
+  const primaryTabs = $derived(
+    parseFilesPrimary(isFolder ? '' : decodedPath, page.url.searchParams)
+  );
 
   // Keep the open path's ancestors expanded — a deep link should land with
   // its location visible, not hidden behind closed folders. `FilesPane` does
@@ -156,16 +163,13 @@
   // `mountKey`'s initial value for no purpose.
   const primaryFilesState = new FilesPaneState();
 
-  /** Where the pane's own descriptor rewrites land: this route's URL. */
-  function setPrimaryPaths(paths: string[], replace = false): void {
-    const href =
-      paths.length === 0
-        ? // Nothing open — the mount root, which is a folder route: the tree
-          // with an empty content area. Bouncing to the index instead would
-          // throw away where the user was browsing.
-          `/knowledge/${encodeURIComponent(mountKey)}`
-        : knowledgeHref(mountKey, paths[0]) + (paths[1] ? `?split=${encodePath(paths[1])}` : '');
-    void goto(hrefWithPanes(href, page.url), {
+  /**
+   * Where the pane's own descriptor rewrites land: this route's URL. Every tab
+   * open, close, switch and compare toggle in the primary is a navigation,
+   * because on this route the tab strip IS the address bar.
+   */
+  function setPrimaryTabs(tabs: TabState, replace = false): void {
+    void goto(hrefWithPanes(filesPrimaryHref(mountKey, tabs), page.url), {
       keepFocus: true,
       noScroll: true,
       replaceState: replace
@@ -207,11 +211,15 @@
       return;
     }
     // The pane has not announced itself yet — `auto-open.ts`'s claimless
-    // floor: the first file always lands, a free split is taken, and a
-    // surface whose splits are both the user's is left alone.
-    const next = autoOpen(primaryPaths, null, sel.path, SPLIT_CAP);
-    if (next.paths === primaryPaths) return;
-    setPrimaryPaths(next.paths);
+    // floor: the first file always lands, a free tab is taken, and a surface
+    // whose tabs are all the user's is left alone. The file the assistant
+    // opened becomes the showing tab; a citation that arrives behind the tab
+    // you are reading is one you never see.
+    const next = autoOpen(primaryTabs.paths, null, sel.path, TAB_CAP);
+    if (next.paths === primaryTabs.paths) return;
+    setPrimaryTabs(
+      resolveTabs(next.paths, next.paths.indexOf(sel.path), primaryTabs.compare)
+    );
   }
 
   /**
@@ -228,7 +236,7 @@
 
   // --- Panes (`?pane=`) ------------------------------------------------------
   const primaryDescriptor = $derived<PaneDescriptor | null>(
-    mountKey ? { kind: 'files', mountKey, paths: primaryPaths } : null
+    mountKey ? { kind: 'files', mountKey, ...primaryTabs } : null
   );
   const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 
@@ -264,17 +272,17 @@
       primaryAutoCreatedPath = null;
       return path;
     },
-    // The pane REWRITES its own descriptor on a tree click; for the primary
-    // that means navigating this route.
+    // The pane REWRITES its own descriptor on a tree click, a tab switch or a
+    // compare toggle; for the primary that means navigating this route.
     openPane: (d) => {
-      if (d.kind === 'files') setPrimaryPaths(d.paths);
+      if (d.kind === 'files') setPrimaryTabs(d);
     },
     openFile: openFileInPrimary,
-    // One split's file was deleted underneath it. Per the per-subject rule,
-    // the sibling stays; `replaceState` so Back never steps through it.
-    // The assistant's claim on a split is re-mapped by `FilesPane` before it
-    // calls this — see its `fileVanished`.
-    onVanished: (subject) => setPrimaryPaths(primaryPaths.filter((p) => p !== subject), true)
+    // One tab's file was deleted underneath it. Per the per-subject rule, the
+    // siblings stay; `replaceState` so Back never steps through it. The
+    // assistant's claim on a tab is re-mapped by `FilesPane` before it calls
+    // this — see its `fileVanished`.
+    onVanished: (subject) => setPrimaryTabs(closeTabPath(primaryTabs, subject), true)
   };
 </script>
 

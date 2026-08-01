@@ -17,7 +17,13 @@ function item(kind: string, over: Partial<typeof base> = {}) {
 
 describe('menuItems', () => {
   it('finds a mount with no ?icm= at all — the Today/Tasks case', () => {
-    expect(item('files').descriptor).toEqual({ kind: 'files', mountKey: 'life', paths: [] });
+    expect(item('files').descriptor).toEqual({
+      kind: 'files',
+      mountKey: 'life',
+      paths: [],
+      active: 0,
+      compare: null
+    });
     expect(item('chat').descriptor).toEqual({ kind: 'chat-new', mountKey: 'life' });
   });
 
@@ -25,7 +31,9 @@ describe('menuItems', () => {
     expect(item('files', { icmParam: 'valea' }).descriptor).toEqual({
       kind: 'files',
       mountKey: 'valea',
-      paths: []
+      paths: [],
+      active: 0,
+      compare: null
     });
   });
 

@@ -100,7 +100,9 @@
   // mounts, create, unmount, the doctor — stays route-only. It is workspace
   // administration, not file browsing, and has no pane representation.
   const primaryDescriptor = $derived<PaneDescriptor | null>(
-    selectedMountKey ? { kind: 'files', mountKey: selectedMountKey, paths: [] } : null
+    selectedMountKey
+      ? { kind: 'files', mountKey: selectedMountKey, paths: [], active: 0, compare: null }
+      : null
   );
   const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 

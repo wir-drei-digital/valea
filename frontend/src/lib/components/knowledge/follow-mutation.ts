@@ -7,14 +7,14 @@
  * own primary file. Composable views put files in two more places that a
  * pathname comparison cannot see:
  *
- *   - a second split of the primary Files surface (`?split=<path>`)
+ *   - the primary Files surface's other tabs (`?tabs=<a>|<b>|<c>`)
  *   - any Files pane beside it (`?pane=files:<mount>/<a>|<b>`)
  *
  * A file left behind in either of those is worse than a stale address bar. For
- * `.md` the split may eventually notice through the page watcher; for a PDF,
- * an image or a CSV there is no recovery at all — `FileView` forwards
- * `onVanished` only to `MarkdownPageView` — so the split sits there dead and
- * the URL keeps naming a file that no longer exists.
+ * `.md` the tab may eventually notice through the page watcher; for a PDF, an
+ * image or a CSV there is no recovery at all — `FileView` forwards
+ * `onVanished` only to `MarkdownPageView` — so the tab sits there dead and the
+ * URL keeps naming a file that no longer exists.
  *
  * Returns a `goto` target, or `null` when nothing on screen was showing the
  * entry — which is the common case (renaming a row you are not reading).
@@ -24,7 +24,8 @@
  * prefix rule both dialogs already applied to the pathname, applied to every
  * surface instead of one.
  */
-import { encodePath, knowledgeHref } from '$lib/shell/nav';
+import { resolveTabs, type TabState } from '$lib/panes/files-pane-state';
+import { filesPrimaryHref, parseFilesPrimary } from '$lib/panes/files-url';
 import { parsePanes, withPanes } from '$lib/panes/pane-route';
 
 export type MutationTarget = {
@@ -67,8 +68,28 @@ export function followMutation(
   const moved = (p: string): string | null =>
     newPath === null ? null : `${newPath}${p.slice(target.path.length)}`;
 
-  const rewrite = (paths: string[]): string[] =>
-    paths.map((p) => (covers(p) ? moved(p) : p)).filter((p): p is string => p !== null);
+  /**
+   * A whole tab strip carried through the mutation.
+   *
+   * A RENAME maps the paths in place, so the strip keeps its length and the
+   * cursor keeps its meaning. A DELETE shortens it, which renumbers every tab
+   * after the one that went — so the active and compare tabs are followed by
+   * FILE and the state rebuilt around where they landed, never by holding an
+   * index across a list that changed under it. An active tab that was itself
+   * deleted falls back to the first survivor rather than to whatever slid into
+   * its slot.
+   */
+  const rewriteTabs = (tabs: TabState): TabState => {
+    const follow = (p: string): string | null => (covers(p) ? moved(p) : p);
+    const after = tabs.paths.map(follow).filter((p): p is string => p !== null);
+    const landed = (index: number | null): number | null => {
+      if (index === null) return null;
+      const next = follow(tabs.paths[index]);
+      const at = next === null ? -1 : after.indexOf(next);
+      return at === -1 ? null : at;
+    };
+    return resolveTabs(after, landed(tabs.active) ?? 0, landed(tabs.compare));
+  };
 
   let changed = false;
 
@@ -78,33 +99,31 @@ export function followMutation(
     if (pane.kind !== 'files' || pane.mountKey !== target.mountKey) return pane;
     if (!pane.paths.some(covers)) return pane;
     changed = true;
-    return { ...pane, paths: rewrite(pane.paths) };
+    return { ...pane, ...rewriteTabs(pane) };
   });
 
   let primaryHref: string | null = null;
   const primary = decodeKnowledgePath(url.pathname);
   if (primary && primary.mountKey === target.mountKey) {
-    const split = url.searchParams.get('split');
-    const before = [primary.path, ...(split ? [split] : [])].filter((p) => p !== '');
-    if (before.some(covers)) {
+    const tabs = parseFilesPrimary(primary.path, url.searchParams);
+    if (tabs.paths.some(covers)) {
       changed = true;
-      const after = rewrite(before);
+      const after = rewriteTabs(tabs);
       primaryHref =
-        after.length === 0
+        after.paths.length === 0
           ? // Nothing left to read. Back to the index, on the mount the file
             // was in rather than whichever one happens to be first in config
             // order — landing in a different ICM than you were just in reads
             // as the app losing your place.
             `/knowledge?icm=${encodeURIComponent(target.mountKey)}`
-          : knowledgeHref(target.mountKey, after[0]) +
-            (after[1] ? `?split=${encodePath(after[1])}` : '');
+          : filesPrimaryHref(target.mountKey, after);
     }
   }
 
   if (!changed) return null;
 
   // `url.pathname + url.search` when the primary is untouched: `withPanes`
-  // replaces the pane params and leaves `?split=`, `?icm=` and the rest alone.
+  // replaces the pane params and leaves `?tabs=`, `?icm=` and the rest alone.
   const base = new URL(primaryHref ?? url.pathname + url.search, url.origin);
   return withPanes(base, panes);
 }

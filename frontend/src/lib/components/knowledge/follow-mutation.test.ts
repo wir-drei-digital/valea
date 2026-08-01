@@ -61,37 +61,75 @@ describe('followMutation — the route primary', () => {
   });
 });
 
-describe('followMutation — the primary’s second split (?split=)', () => {
-  it('follows a rename of the file in the second split', () => {
+describe('followMutation — the primary’s other tabs (?tabs=)', () => {
+  it('follows a rename of a file in a tab that is not showing', () => {
     const out = followMutation(
-      at('/knowledge/life/AGENTS.md?split=planning%2FCONTEXT.md'),
+      at('/knowledge/life/AGENTS.md?tabs=AGENTS.md|planning%2FCONTEXT.md'),
       file,
       'planning/NOTES.md'
     );
     const url = at(out!);
     expect(url.pathname).toBe('/knowledge/life/AGENTS.md');
-    expect(url.searchParams.get('split')).toBe('planning/NOTES.md');
+    expect(url.searchParams.get('tabs')).toBe('AGENTS.md|planning/NOTES.md');
   });
 
-  it('drops a deleted second split and keeps the first file open', () => {
-    const out = followMutation(at('/knowledge/life/AGENTS.md?split=planning%2FCONTEXT.md'), file, null);
-    expect(out).toBe('/knowledge/life/AGENTS.md');
-  });
-
-  it('promotes the surviving split when the FIRST file is deleted', () => {
-    // The alternative — bouncing to the index — would discard a file the user
-    // still has open, and any unsaved edit in it.
+  it('drops a deleted tab and keeps the rest of the strip open', () => {
     const out = followMutation(
-      at('/knowledge/life/planning/CONTEXT.md?split=AGENTS.md'),
+      at('/knowledge/life/AGENTS.md?tabs=AGENTS.md|planning%2FCONTEXT.md'),
       file,
       null
     );
     expect(out).toBe('/knowledge/life/AGENTS.md');
   });
 
-  it('goes to the index only when BOTH splits are gone', () => {
+  it('shows a surviving tab when the one being READ is deleted', () => {
+    // The alternative — bouncing to the index — would discard a file the user
+    // still has open, and any unsaved edit in it.
     const out = followMutation(
-      at('/knowledge/life/planning/CONTEXT.md?split=planning%2FPLAN.md'),
+      at('/knowledge/life/planning/CONTEXT.md?tabs=planning%2FCONTEXT.md|AGENTS.md'),
+      file,
+      null
+    );
+    expect(out).toBe('/knowledge/life/AGENTS.md');
+  });
+
+  // The index is an INDEX, and a delete renumbers the strip under it. Holding
+  // the old one would show whatever slid into that slot.
+  it('keeps showing the same FILE when an earlier tab is deleted', () => {
+    const out = followMutation(
+      at('/knowledge/life/AGENTS.md?tabs=planning%2FCONTEXT.md|AGENTS.md|NOTES.md'),
+      file,
+      null
+    );
+    const url = at(out!);
+    expect(url.pathname).toBe('/knowledge/life/AGENTS.md');
+    expect(url.searchParams.get('tabs')).toBe('AGENTS.md|NOTES.md');
+  });
+
+  it('renumbers compare around a deleted tab', () => {
+    const out = followMutation(
+      at('/knowledge/life/NOTES.md?tabs=planning%2FCONTEXT.md|AGENTS.md|NOTES.md&compare=1'),
+      file,
+      null
+    );
+    const url = at(out!);
+    expect(url.pathname).toBe('/knowledge/life/NOTES.md');
+    expect(url.searchParams.get('tabs')).toBe('AGENTS.md|NOTES.md');
+    expect(url.searchParams.get('compare')).toBe('0');
+  });
+
+  it('drops compare when the file beside the active tab is the one deleted', () => {
+    const out = followMutation(
+      at('/knowledge/life/AGENTS.md?tabs=AGENTS.md|planning%2FCONTEXT.md&compare=1'),
+      file,
+      null
+    );
+    expect(at(out!).searchParams.get('compare')).toBeNull();
+  });
+
+  it('goes to the index only when EVERY tab is gone', () => {
+    const out = followMutation(
+      at('/knowledge/life/planning/CONTEXT.md?tabs=planning%2FCONTEXT.md|planning%2FPLAN.md'),
       folder,
       null
     );

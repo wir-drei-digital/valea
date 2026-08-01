@@ -63,7 +63,9 @@ describe('openFileSurface — creating a Files surface', () => {
     const h = host('/chat?session=s1');
     h.wiring.openFileSurface({ mountKey: 'w3d', path: 'CONTEXT.md' });
     h.land();
-    expect(h.panes()).toEqual([{ kind: 'files', mountKey: 'w3d', paths: ['CONTEXT.md'] }]);
+    expect(h.panes()).toEqual([
+      { kind: 'files', mountKey: 'w3d', paths: ['CONTEXT.md'], active: 0, compare: null }
+    ]);
   });
 
   it('leaves the claim for the pane it created to pick up', () => {
@@ -103,7 +105,9 @@ describe('openFileSurface — a file from another ICM', () => {
     const h = host(`/chat?pane=${life}/AGENTS.md`);
     h.wiring.openFileSurface({ mountKey: 'w3d', path: 'CONTEXT.md' });
     h.land();
-    expect(h.panes()).toEqual([{ kind: 'files', mountKey: 'w3d', paths: ['CONTEXT.md'] }]);
+    expect(h.panes()).toEqual([
+      { kind: 'files', mountKey: 'w3d', paths: ['CONTEXT.md'], active: 0, compare: null }
+    ]);
   });
 
   it('leaves the claim for the re-pointed pane to pick up', () => {
@@ -135,8 +139,16 @@ describe('openFileSurface — a file in the ICM the pane already shows', () => {
     const h = host(`/chat?pane=${life}/AGENTS.md`);
     h.wiring.openFileSurface({ mountKey: 'life', path: 'CONTEXT.md' });
     h.land();
+    // The assistant's file is the one to SHOW: a tab that arrives behind the
+    // one you are reading is a citation you never see.
     expect(h.panes()).toEqual([
-      { kind: 'files', mountKey: 'life', paths: ['AGENTS.md', 'CONTEXT.md'] }
+      {
+        kind: 'files',
+        mountKey: 'life',
+        paths: ['AGENTS.md', 'CONTEXT.md'],
+        active: 1,
+        compare: null
+      }
     ]);
   });
 
@@ -171,9 +183,17 @@ describe('takeAutoCreatedPath', () => {
     // user placed that file, so nothing may claim it — a claim is a licence to
     // overwrite, and this is the split the rule exists to protect.
     const h = host(`/chat?pane=${life}/AGENTS.md`);
-    h.context().openPane?.({ kind: 'files', mountKey: 'life', paths: ['CONTEXT.md'] });
+    h.context().openPane?.({
+      kind: 'files',
+      mountKey: 'life',
+      paths: ['CONTEXT.md'],
+      active: 0,
+      compare: null
+    });
     h.land();
-    expect(h.panes()).toEqual([{ kind: 'files', mountKey: 'life', paths: ['CONTEXT.md'] }]);
+    expect(h.panes()).toEqual([
+      { kind: 'files', mountKey: 'life', paths: ['CONTEXT.md'], active: 0, compare: null }
+    ]);
     expect(h.context().takeAutoCreatedPath?.()).toBeNull();
   });
 });
