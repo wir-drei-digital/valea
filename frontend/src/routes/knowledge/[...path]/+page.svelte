@@ -172,21 +172,42 @@
   }
 
   /**
+   * Where an assistant-opened file lands, announced by the primary `FilesPane`
+   * itself. Only it can see the claim on the split auto-open created and how
+   * wide it is, so the file is handed over rather than placed from here — the
+   * same handover a SIDE Files pane makes through `pane-wiring.ts`.
+   */
+  let primaryFileTarget: ((path: string) => void) | null = null;
+  /**
+   * A file the assistant opened in ANOTHER ICM. That leaves this route rather
+   * than rewriting the surface in place, so the landing happens across a
+   * navigation and the pane cannot record the claim as it makes it — it picks
+   * this up on the other side instead. Same one-shot as a pane the host
+   * created, for the same reason.
+   */
+  let primaryAutoCreatedPath: string | null = null;
+
+  /**
    * A file opened from inside a pane (a chat tool chip) targets the single
-   * Files surface — which on this route is the PRIMARY. Where it lands is
-   * `auto-open.ts`'s rule with no claim: the first file always lands, a free
-   * split is taken, and a pane whose splits are both the user's is left
-   * alone rather than evicting one.
+   * Files surface — which on this route is the PRIMARY.
    */
   function openFileInPrimary(sel: FileSelection): void {
     if (sel.mountKey !== mountKey) {
       // Another mount is a different Files surface; go there.
+      primaryAutoCreatedPath = sel.path;
       void goto(hrefWithPanes(knowledgeHref(sel.mountKey, sel.path), page.url), {
         keepFocus: true,
         noScroll: true
       });
       return;
     }
+    if (primaryFileTarget) {
+      primaryFileTarget(sel.path);
+      return;
+    }
+    // The pane has not announced itself yet — `auto-open.ts`'s claimless
+    // floor: the first file always lands, a free split is taken, and a
+    // surface whose splits are both the user's is left alone.
     const next = autoOpen(primaryPaths, null, sel.path, SPLIT_CAP);
     if (next.paths === primaryPaths) return;
     setPrimaryPaths(next.paths);
@@ -227,6 +248,14 @@
 
   const primaryFilesContext: PaneContext = {
     placement: 'primary',
+    registerFileTarget: (open) => {
+      primaryFileTarget = open;
+    },
+    takeAutoCreatedPath: () => {
+      const path = primaryAutoCreatedPath;
+      primaryAutoCreatedPath = null;
+      return path;
+    },
     // The pane REWRITES its own descriptor on a tree click; for the primary
     // that means navigating this route.
     openPane: (d) => {

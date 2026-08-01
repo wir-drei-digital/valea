@@ -14,6 +14,7 @@
     linkSearch = '',
     entryMenus,
     onBeforeMutate,
+    onDeleted,
     onSelect,
     onOpenBeside,
     openBesideDisabled = null
@@ -62,6 +63,19 @@
      */
     onBeforeMutate?: (href: string) => Promise<void>;
     /**
+     * A row's Delete succeeded, naming the entry that went. Both dialogs
+     * follow a mutation by rewriting every surface showing it — the route
+     * pathname, `?split=`, and each `?pane=files:…` — directly in the URL
+     * (`follow-mutation.ts`), which means a host holding per-split state has
+     * no other way to learn that its list was renumbered under it. The Files
+     * pane uses it to re-map the assistant's auto-open claim.
+     *
+     * A delete only: a rename maps paths in place and renumbers nothing. The
+     * folder flag travels because a folder carries its descendants, and a host
+     * has to decide for itself which of its own paths that covers.
+     */
+    onDeleted?: (target: { path: string; isFolder: boolean }) => void;
+    /**
      * Selection mode (side-panes pass): when set, leaf rows call this
      * instead of navigating (pickers, and any host whose click means
      * "rewrite my descriptor" rather than "navigate the app"). Folder
@@ -107,6 +121,12 @@
   function beforeMutateFor(href: string): (() => Promise<void>) | undefined {
     const flush = onBeforeMutate;
     return flush ? () => flush(href) : undefined;
+  }
+
+  /** Binds this row's own subject into the delete hook. Same capture reason as above. */
+  function deletedFor(path: string, isFolder: boolean): (() => void) | undefined {
+    const notify = onDeleted;
+    return notify ? () => notify({ path, isFolder }) : undefined;
   }
 
   // Folders default CLOSED (file-browser performance pass): the lazy tree
@@ -170,6 +190,7 @@
               kind="folder"
               class="absolute top-1/2 right-0.5 -translate-y-1/2"
               onBeforeMutate={beforeMutateFor(node.href)}
+              onDeleted={deletedFor(node.path, true)}
             />
           {/if}
         </div>
@@ -184,6 +205,7 @@
                 {linkSearch}
                 {entryMenus}
                 {onBeforeMutate}
+                {onDeleted}
                 {onSelect}
                 {onOpenBeside}
                 {openBesideDisabled}
@@ -299,6 +321,7 @@
                   name={node.label}
                   kind={node.isFile ? 'file' : 'page'}
                   onBeforeMutate={beforeMutateFor(node.href)}
+                  onDeleted={deletedFor(node.path, false)}
                 />
               {/if}
             </div>

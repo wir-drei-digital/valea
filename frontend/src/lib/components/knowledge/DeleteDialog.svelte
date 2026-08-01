@@ -22,7 +22,8 @@
     name,
     kind,
     open = $bindable(false),
-    onBeforeMutate
+    onBeforeMutate,
+    onDeleted
   }: {
     mountKey: string;
     path: string;
@@ -37,6 +38,16 @@
      * for rows that aren't the open page.
      */
     onBeforeMutate?: () => Promise<void>;
+    /**
+     * Fired once the entry is gone and BEFORE `followMutation` navigates, for
+     * a caller holding state indexed into a list of open files. `followMutation`
+     * removes the deleted path from every surface's list straight in the URL,
+     * which renumbers those lists without any of the usual close paths running
+     * — so an index-shaped claim (the Files pane's auto-open claim) would
+     * silently start naming a different file. Before the navigation, because
+     * the holder reads its pre-removal indexes to do the re-mapping.
+     */
+    onDeleted?: () => void;
   } = $props();
 
   let submitting = $state(false);
@@ -108,6 +119,10 @@
       // taking the navigator with it. `?pane=` rides along on the primary's
       // fallback exactly as the route's own `onVanished` does; the two paths
       // must not disagree about whether an open session survives.
+      // Before the navigation: the listener re-maps indexes it reads off the
+      // list `followMutation` is about to renumber.
+      onDeleted?.();
+
       const href = followMutation(page.url, { mountKey, path, isFolder }, null);
       if (href) void goto(href);
     } catch (err) {

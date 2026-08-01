@@ -67,17 +67,25 @@ export function paneWiring(read: {
   }
 
   /**
+   * Where an assistant-opened file lands, announced by the mounted Files pane
+   * itself (`PaneContext.registerFileTarget`). Only that component can see
+   * both inputs the rule needs: the claim on the split auto-open created (an
+   * index into that pane's own `paths`, held in per-pane state this module
+   * never sees) and the pane's measured width. So the file is handed over
+   * rather than placed from out here.
+   */
+  let fileTarget: ((path: string) => void) | null = null;
+
+  /**
+   * The path a Files pane was CREATED to show, waiting for that pane to mount
+   * and claim it. It is an assistant open like any other, but the only one
+   * that lands before there is a component to record the claim in.
+   */
+  let autoCreatedPath: string | null = null;
+
+  /**
    * The file targets the SINGLE Files surface — `dedupeSurfaces` guarantees
    * there is at most one across the primary and the panes.
-   *
-   * Where it lands inside an occupied pane is `auto-open.ts`'s rule, called
-   * here with no claim: the first file always lands, an already-open file is
-   * a no-op, a free split is taken, and a pane whose splits are both the
-   * user's is left alone rather than evicting one. The other half of that
-   * contract — remembering which split this opened so the next one recycles
-   * it — needs a durable per-pane claim and arrives with the auto-open
-   * dispatch; until then every assistant open is treated as a first one,
-   * which is the conservative direction.
    */
   function openFileSurface(sel: FileSelection): void {
     if (read.openInPrimary) {
@@ -88,21 +96,50 @@ export function paneWiring(read: {
     const at = panes.findIndex((p) => p.kind === 'files');
     if (at === -1) {
       // No Files surface yet. The cap is the only refusal — a row already
-      // holding two panes cannot grow a third.
+      // holding two panes cannot grow a third. Width is deliberately NOT
+      // consulted: refusing to show a file the assistant just cited would be
+      // a silent failure, and the same reasoning floors `openInFirst` at one
+      // file however narrow the pane is.
       if (panes.length >= PANE_CAP) return;
+      autoCreatedPath = sel.path;
       go([...panes, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }]);
       return;
     }
     const pane = panes[at];
     if (pane.kind !== 'files') return;
+    if (pane.mountKey !== sel.mountKey) {
+      // Another ICM is another file browser. Re-point the pane at it rather
+      // than pushing a foreign path into a descriptor that still names the
+      // old mount — `files:<old>/<path from new>` addresses a file that does
+      // not exist. The pane's identity changes with its mount, so the host
+      // hands it a fresh state and the old claim goes with it.
+      go(replaceAt(panes, at, { kind: 'files', mountKey: sel.mountKey, paths: [sel.path] }));
+      return;
+    }
+    if (fileTarget) {
+      fileTarget(sel.path);
+      return;
+    }
+    // The pane has not announced itself (it is between mounts). Fall back to
+    // the claimless floor: the first file always lands, an already-open file
+    // is a no-op, a free split is taken, and a pane whose splits are both the
+    // user's is left alone rather than evicting one.
     const next = autoOpen(pane.paths, null, sel.path, SPLIT_CAP);
-    if (next.paths === pane.paths) return; // nothing to do — already open, or both splits are the user's
+    if (next.paths === pane.paths) return;
     go(replaceAt(panes, at, { ...pane, paths: next.paths }));
   }
 
   function paneContext(_d: PaneDescriptor, index: number): PaneContext {
     return {
       placement: 'pane',
+      registerFileTarget: (open) => {
+        fileTarget = open;
+      },
+      takeAutoCreatedPath: () => {
+        const path = autoCreatedPath;
+        autoCreatedPath = null;
+        return path;
+      },
       // A REWRITE of this pane's own descriptor, never an append: a Files
       // tree click rewrites its `paths`, a mail row its `msgId`, a session
       // row its `sessionId`. Creating a surface is `openFile`'s job.

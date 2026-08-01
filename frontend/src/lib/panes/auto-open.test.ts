@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoOpen, clearAuto, shiftAuto } from './auto-open';
+import { autoOpen, clearAuto, shiftAuto, shiftAutoAll } from './auto-open';
 import { closeSplit, dropVanished, openAsSecond } from './files-pane-state';
 
 describe('autoOpen', () => {
@@ -133,6 +133,42 @@ describe('shiftAuto', () => {
   it('treats a removal that did not happen as no change', () => {
     expect(shiftAuto(1, -1)).toBe(1);
     expect(shiftAuto(0, -1)).toBe(0);
+  });
+});
+
+describe('shiftAutoAll', () => {
+  it('leaves the claim alone when nothing was removed', () => {
+    expect(shiftAutoAll(1, [])).toBe(1);
+  });
+
+  it('applies a single removal exactly as shiftAuto would', () => {
+    expect(shiftAutoAll(1, [0])).toBe(0);
+    expect(shiftAutoAll(0, [1])).toBe(0);
+    expect(shiftAutoAll(1, [1])).toBeNull();
+  });
+
+  it('drops the claim when the deleted folder took the claimed split too', () => {
+    expect(shiftAutoAll(0, [0, 1])).toBeNull();
+    expect(shiftAutoAll(1, [0, 1])).toBeNull();
+  });
+
+  it('applies removals highest-index first, whatever order it is given', () => {
+    // Ascending would apply `0` first, renumbering the list under the caller's
+    // own second index, and read `1` against a list that no longer has one.
+    // A three-split list is not reachable today, but the order is the rule.
+    expect(shiftAutoAll(2, [0, 1])).toBe(0);
+    expect(shiftAutoAll(2, [1, 0])).toBe(0);
+  });
+
+  it('tolerates there being no claim, and removals that did not happen', () => {
+    expect(shiftAutoAll(null, [0, 1])).toBeNull();
+    expect(shiftAutoAll(1, [-1])).toBe(1);
+  });
+
+  it('does not mutate the index list it was given', () => {
+    const removed = [0, 1];
+    shiftAutoAll(1, removed);
+    expect(removed).toEqual([0, 1]);
   });
 });
 

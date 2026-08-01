@@ -24,10 +24,20 @@
  *   - `dropVanished(paths, p)` → `shiftAuto(autoIndex, paths.indexOf(p))`
  *
  * EVERY call site that removes a split has to route the claim through
- * `shiftAuto` — the Files pane's own close button and the vanished-subject
- * path alike. Skip one and the claim points at whatever slid into that slot,
- * and the next auto-open silently overwrites a file the USER placed, which is
- * the exact invariant this module exists to hold.
+ * `shiftAuto` — the Files pane's own close button, the vanished-subject path,
+ * and the tree's Delete (which renumbers `paths` inside the URL through
+ * `follow-mutation.ts`, and is reported back by `IcmTree`'s `onDeleted`
+ * precisely so this one is not missed). Skip one and the claim points at
+ * whatever slid into that slot, and the next auto-open silently overwrites a
+ * file the USER placed, which is the exact invariant this module exists to
+ * hold.
+ *
+ * Some rewrites report nothing at all — Back, and the primary Files surface
+ * being navigated to another file or another ICM, which it outlives. Those
+ * cannot be re-mapped, only refused, which is why `FilesPane` records the FILE
+ * a claim was made for alongside the index and declines an index that no
+ * longer holds it. That check is a floor under this contract, not a substitute
+ * for it: it fails a claim closed where `shiftAuto` would have carried it.
  *
  * ONE removal deliberately needs no `shiftAuto`, and it is worth recording so
  * nobody "fixes" it: `openInFirst`/`openAsSecond` can SHRINK the list when the
@@ -95,4 +105,24 @@ export function shiftAuto(autoIndex: number | null, removedIndex: number): numbe
   if (autoIndex === null || removedIndex < 0) return autoIndex;
   if (autoIndex === removedIndex) return null;
   return autoIndex > removedIndex ? autoIndex - 1 : autoIndex;
+}
+
+/**
+ * `shiftAuto` for a removal that takes SEVERAL splits at once — deleting a
+ * folder both open files live under, which arrives as one mutation and one
+ * rewritten path list.
+ *
+ * The indexes are the ones the caller read off the list BEFORE anything was
+ * removed, which is the only numbering it can observe. Applying them highest
+ * first is what makes that safe: removing a higher index never renumbers a
+ * lower one, so each index is still valid at the moment it is applied.
+ * Ascending order would mis-map the second removal onto a list that has
+ * already shifted under it.
+ */
+export function shiftAutoAll(autoIndex: number | null, removedIndexes: number[]): number | null {
+  let claim = autoIndex;
+  for (const index of [...removedIndexes].sort((a, b) => b - a)) {
+    claim = shiftAuto(claim, index);
+  }
+  return claim;
 }

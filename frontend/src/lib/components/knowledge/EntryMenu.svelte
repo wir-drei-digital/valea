@@ -37,7 +37,8 @@
     name,
     kind,
     class: className = '',
-    onBeforeMutate
+    onBeforeMutate,
+    onDeleted
   }: {
     mountKey: string;
     path: string;
@@ -51,6 +52,13 @@
      * nothing and the dialogs skip straight to the mutate call.
      */
     onBeforeMutate?: () => Promise<void>;
+    /**
+     * Forwarded to DeleteDialog: this entry was deleted. For callers holding
+     * state keyed by position in a list of open files — the Files pane's
+     * auto-open claim — because `followMutation` renumbers those lists in the
+     * URL and nothing else tells the holder it happened.
+     */
+    onDeleted?: () => void;
   } = $props();
 
   let menuOpen = $state(false);
@@ -136,4 +144,4 @@
 {/if}
 
 <RenameDialog {mountKey} {path} currentName={name} {kind} bind:open={renameOpen} {onBeforeMutate} />
-<DeleteDialog {mountKey} {path} {name} {kind} bind:open={deleteOpen} {onBeforeMutate} />
+<DeleteDialog {mountKey} {path} {name} {kind} bind:open={deleteOpen} {onBeforeMutate} {onDeleted} />

@@ -10,10 +10,18 @@
    * file and not its sibling.
    *
    * It also owns the assistant's auto-open CLAIM (`pane.autoIndex`, an INDEX
-   * into `paths`). Every path list this component hands upward is a fresh
-   * array from `files-pane-state.ts`, and every removal re-maps the claim
-   * through `shiftAuto` first — see `auto-open.ts`'s header for what skipping
-   * that costs.
+   * into `paths`) and is where an assistant-opened file actually lands
+   * (`receiveAutoFile`) — because both of the rule's inputs are private to
+   * this component: the claim itself, and the split cap measured off this
+   * pane's own width.
+   *
+   * Every path list handed upward is a fresh array from `files-pane-state.ts`,
+   * and every removal re-maps the claim through `shiftAuto` first — see
+   * `auto-open.ts`'s header for what skipping that costs. Removals this
+   * component cannot see (a delete followed through `follow-mutation.ts`) come
+   * back through `onDeleted`; the ones nothing reports at all (Back, a route
+   * navigation to another file or ICM) are caught by `claim` below, which
+   * refuses an index that no longer holds the file it was issued for.
    */
   import { PaneGroup, Pane, PaneResizer } from 'paneforge';
   import FileView from '$lib/components/views/FileView.svelte';
@@ -31,7 +39,7 @@
     openAsSecond,
     openInFirst
   } from '$lib/panes/files-pane-state';
-  import { clearAuto, shiftAuto } from '$lib/panes/auto-open';
+  import { autoOpen, clearAuto, shiftAuto, shiftAutoAll } from '$lib/panes/auto-open';
   import type { FilesPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
   import type { FilesPaneState } from '$lib/panes/files-pane-runtime.svelte';
@@ -63,6 +71,23 @@
   // beside, which is a control lying about what it does.
   const besideDisabled = $derived(
     canOpenBeside(descriptor.paths, maxSplits) ? null : 'Not enough width for a second file'
+  );
+
+  /**
+   * The assistant's claim — but only while the split it names still holds the
+   * file it was made for.
+   *
+   * `descriptor.paths` is rewritten by things that never reach `closeAt` or
+   * `fileVanished`: this route navigating to another file or another ICM (the
+   * PRIMARY Files surface outlives all of those), Back, a hand-edited URL. An
+   * index that survived one of those points at whatever slid into the slot, and
+   * the next assistant read would overwrite a file the user placed. Failing the
+   * claim closed costs one recycle and evicts nothing.
+   */
+  const claim = $derived(
+    pane.autoIndex !== null && descriptor.paths[pane.autoIndex] === pane.autoPath
+      ? pane.autoIndex
+      : null
   );
 
   // Reveal the newest split's ancestors and scroll it into view. Only the
@@ -140,6 +165,67 @@
     pane.autoIndex = shiftAuto(pane.autoIndex, descriptor.paths.indexOf(path));
     context.onVanished(path);
   }
+
+  /**
+   * A tree row's Delete succeeded. `follow-mutation.ts` rewrites the surfaces
+   * showing that entry — including this pane's `paths` — straight in the URL,
+   * which makes it the ONE removal that never passes through `closeAt` or
+   * `fileVanished`. It renumbers the list all the same, so the claim has to
+   * move with it or the next assistant open overwrites whatever slid into the
+   * freed slot: exactly the eviction the rule exists to prevent.
+   *
+   * A folder carries its descendants, so this can take both splits at once,
+   * which is what `shiftAutoAll` is for. A RENAME needs nothing here — it maps
+   * paths in place and never changes the list's length, so the claim still
+   * names the same split.
+   */
+  function entryDeleted(target: { path: string; isFolder: boolean }): void {
+    const removed: number[] = [];
+    descriptor.paths.forEach((p, i) => {
+      if (p === target.path || (target.isFolder && p.startsWith(`${target.path}/`))) removed.push(i);
+    });
+    pane.autoIndex = shiftAutoAll(pane.autoIndex, removed);
+  }
+
+  /**
+   * A file the ASSISTANT opened — a tool chip, a citation — handed here by
+   * whichever surface it was clicked in. It recycles the split auto-open
+   * created and never evicts one the user placed; `auto-open.ts` holds the
+   * rule, this holds the claim.
+   *
+   * It lives in the pane and not in the route because both of its inputs do:
+   * the claim is an index into THIS pane's `paths`, and `maxSplits` is
+   * measured from this pane's own width, which nothing above here can see.
+   */
+  export function receiveAutoFile(path: string): void {
+    const next = autoOpen(descriptor.paths, claim, path, maxSplits);
+    pane.autoIndex = next.autoIndex;
+    pane.autoPath = next.autoIndex === null ? null : next.paths[next.autoIndex];
+    if (next.paths !== descriptor.paths) setPaths(next.paths);
+  }
+
+  // Announce this pane as where an assistant-opened file lands, and stand down
+  // when it goes. Re-runs whenever the host hands down a fresh `context`
+  // object (side panes get one per render), which is a no-op re-registration.
+  $effect(() => {
+    context.registerFileTarget?.(receiveAutoFile);
+    // A surface the assistant CREATED: its one split is an auto-open that
+    // landed before this component existed, so the claim could not be recorded
+    // at the time. Without picking it up here the assistant's first read is
+    // stranded in a split it can never recycle, and its second read takes the
+    // other one — burning both on the flow that opens a Files pane in the
+    // first place. One-shot: asking consumes it.
+    const created = context.takeAutoCreatedPath?.() ?? null;
+    const at = created === null ? -1 : descriptor.paths.indexOf(created);
+    // Gated on the VALIDATED claim, not the raw index: after a cross-ICM open
+    // the stored index is stale rather than absent, and a stale claim must not
+    // be what stops the new one being recorded.
+    if (at !== -1 && claim === null) {
+      pane.autoIndex = at;
+      pane.autoPath = created;
+    }
+    return () => context.registerFileTarget?.(null);
+  });
 </script>
 
 <div bind:clientWidth={paneWidth} class="flex min-h-0 min-w-0 flex-1">
@@ -160,6 +246,7 @@
         onBeforeMutate={beforeMutate}
         onSelect={(sel) => openFirst(sel.path)}
         onOpenBeside={(sel) => openBeside(sel.path)}
+        onDeleted={entryDeleted}
         openBesideDisabled={besideDisabled}
       />
     </div>

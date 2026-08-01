@@ -9,6 +9,37 @@ export type PaneContext = {
   /** Open a file in the single Files surface, creating one if there is none. */
   openFile?: (sel: { mountKey: string; path: string }) => void;
   /**
+   * The Files surface announcing itself as where an `openFile` lands, with a
+   * handler on mount and `null` on teardown.
+   *
+   * It is a handover rather than a computation because the host cannot do the
+   * arithmetic: which split an assistant-opened file should take depends on
+   * the CLAIM auto-open holds over the split it created (an index into that
+   * surface's own `paths`, living in per-pane state the route never sees) and
+   * on how wide the surface is (its split cap is measured from its own
+   * element). A host that computed the landing itself would have to guess both
+   * and would evict a file the user placed.
+   *
+   * A host with no registered target falls back to the claimless floor in
+   * `auto-open.ts`, which is conservative rather than wrong.
+   */
+  registerFileTarget?: (open: ((path: string) => void) | null) => void;
+  /**
+   * The path this Files surface was CREATED to show, when the host created it
+   * for an assistant open rather than for the user. `null` otherwise — a
+   * surface the user opened, one restored from memory, one a link named.
+   *
+   * It exists because that one open is the only one that lands before the
+   * component does, so it is the only one whose claim cannot be recorded by
+   * `registerFileTarget`'s handler. Left unclaimed, the assistant's first read
+   * sits in a split it can never recycle and its second read takes the other
+   * one — on the very flow that opens a Files pane in the first place.
+   *
+   * ONE-SHOT: asking consumes it, so a re-registration cannot re-claim a split
+   * the user has since taken over.
+   */
+  takeAutoCreatedPath?: () => string | null;
+  /**
    * REWRITE the calling surface's own descriptor — replace it in place, never
    * append a pane.
    *

@@ -22,6 +22,22 @@ export class FilesPaneState {
   treeVisible = $state(loadChrome().files.tree);
   /** Which split auto-open claimed; see `auto-open.ts`. */
   autoIndex = $state<number | null>(null);
+  /**
+   * The file that was IN the claimed split when the claim was made.
+   *
+   * The claim is an index, and `paths` is rewritten by things no split-removal
+   * hook can see: navigating this route to a different file or a different
+   * ICM (the primary Files surface outlives every one of those navigations),
+   * Back, a hand-edited URL. A claim that survived one of those would name
+   * whatever now sits in that slot, and the next assistant read would overwrite
+   * a file the user put there — the exact eviction the rule exists to prevent.
+   *
+   * So an index that no longer holds this file is not a claim, it is a
+   * coincidence, and `FilesPane` refuses it. It does not replace `shiftAuto`:
+   * that MOVES the claim through a removal the pane did see, which keeps
+   * recycling working where this check alone would give up.
+   */
+  autoPath = $state<string | null>(null);
 
   toggleTree(): void {
     this.treeVisible = !this.treeVisible;
