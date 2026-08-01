@@ -72,11 +72,6 @@
 
   const targetKey = $derived(`${mountKey}/${path}`);
 
-  // Overline above the page title — a constant section label; the mono path
-  // line right under it already names the parent folder, so repeating it
-  // here read as a second, shifting title.
-  const parentLabel = 'Files';
-
   // Dangling-link set (Task C9) — resolved page-kind link targets on THIS
   // page that don't exist on disk. Recomputed below on load/reload (the
   // `content`-watching effect) and after each save (the `store.savedAt`-
@@ -355,8 +350,12 @@
 {:else}
   <article class="flex flex-col gap-4">
     <header class="mx-auto flex w-full max-w-[596px] flex-col gap-1.5">
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-overline">{parentLabel}</p>
+      <!-- No "FILES" overline. It named the section of the app you were in,
+           and the tab strip above this now names the file itself — the outer
+           of two labels for one fact, and the less useful one. Everything that
+           says something about THIS page stays: the view toggle, the save
+           state, the token estimate and the path. -->
+      <div class="flex items-center justify-end gap-3">
         <SegmentedControl
           label="View"
           value={viewMode}
