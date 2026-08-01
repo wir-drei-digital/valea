@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { menuItems } from './content-bar';
+import { menuItemEnabled, menuItems } from './content-bar';
 
 const base = {
   // Annotated for the same reason the brief annotates `openKinds`: `Partial<typeof base>`
@@ -45,7 +45,13 @@ describe('menuItems', () => {
   });
 
   it('stays enabled while mail status is unknown', () => {
+    // Asserted through `menuItemEnabled`, which is the predicate the bar
+    // itself gates on. Asserting `disabledReason === null` alone let the bar
+    // grey this item out (it gated on the descriptor) with the test still
+    // green — the exact shape of "a test that passes against a broken
+    // implementation" this plan keeps finding.
     const unknown = { mailAccounts: [], mailStatusLoaded: false };
+    expect(menuItemEnabled(item('mail', unknown))).toBe(true);
     expect(item('mail', unknown).disabledReason).toBeNull();
   });
 
@@ -53,6 +59,7 @@ describe('menuItems', () => {
     const none = { mailAccounts: [], mailStatusLoaded: true };
     expect(item('mail', none).descriptor).toBeNull();
     expect(item('mail', none).disabledReason).toBe('No mail account yet');
+    expect(menuItemEnabled(item('mail', none))).toBe(false);
   });
 
   it('marks a kind that is already open as inert', () => {
@@ -107,6 +114,16 @@ describe('menuItems', () => {
       account: 'b@example.com',
       msgId: null
     });
+  });
+
+  it('gates enabledness on the reason, never on the descriptor', () => {
+    // The three-valued mail cell is why: descriptor null with reason null is
+    // "not known yet", which must stay live, while descriptor null with a
+    // reason is a real refusal.
+    expect(menuItemEnabled(item('mail', { mailAccounts: [], mailStatusLoaded: false }))).toBe(true);
+    expect(menuItemEnabled(item('mail', { mailAccounts: [], mailStatusLoaded: true }))).toBe(false);
+    expect(menuItemEnabled(item('files', { openKinds: ['files'] }))).toBe(false);
+    expect(menuItemEnabled(item('files'))).toBe(true);
   });
 
   it('leaves Mail with no descriptor and no reason while status is still unknown', () => {

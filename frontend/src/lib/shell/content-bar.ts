@@ -27,6 +27,21 @@ export type MenuItem = {
   disabledReason: string | null;
 };
 
+/**
+ * Whether the bar may offer this item — the ONE predicate the UI gates on,
+ * exported so a test asserts the same thing the button does.
+ *
+ * It is `disabledReason`, not `descriptor !== null`, and the difference is the
+ * whole three-valued mail cell. Gating on the descriptor greyed out the
+ * "status has not arrived yet" case, which carries no reason and therefore
+ * greyed SILENTLY — worse than either intended outcome, since a disabled
+ * control with nothing to say teaches nothing. Unknown stays live; only a
+ * loaded answer disables.
+ */
+export function menuItemEnabled(item: MenuItem): boolean {
+  return item.disabledReason === null;
+}
+
 export function menuItems(input: {
   icmParam: string | null;
   enabledMountKeys: string[];

@@ -23,7 +23,7 @@
   import PanelLeft from '@lucide/svelte/icons/panel-left';
   import Plus from '@lucide/svelte/icons/plus';
   import Check from '@lucide/svelte/icons/check';
-  import type { MenuItem } from '$lib/shell/content-bar';
+  import { menuItemEnabled, type MenuItem } from '$lib/shell/content-bar';
   import type { PaneDescriptor } from '$lib/panes/pane-route';
 
   let {
@@ -84,9 +84,16 @@
           {#each items as item (item.kind)}
             <!-- A kind already on screen is CHECKED and inert rather than
                  hidden, and an unavailable one carries its reason: "No mail
-                 account yet" teaches something, a missing row does not. -->
+                 account yet" teaches something, a missing row does not.
+
+                 Disabled follows `menuItemEnabled`, i.e. the REASON — never
+                 "has no descriptor". An item can legitimately have neither:
+                 mail status that has not arrived yet is not an absent
+                 mailbox, and gating on the descriptor greyed that case out
+                 with nothing to say for itself. It stays live and says it is
+                 still finding out. -->
             <DropdownMenu.Item
-              disabled={item.descriptor === null}
+              disabled={!menuItemEnabled(item)}
               onSelect={() => item.descriptor && onOpen?.(item.descriptor)}
             >
               {#if item.disabledReason === 'Already open'}
@@ -95,6 +102,8 @@
               {item.label}
               {#if item.disabledReason && item.disabledReason !== 'Already open'}
                 <span class="text-ink-meta ms-auto text-[10.5px]">{item.disabledReason}</span>
+              {:else if item.descriptor === null && item.disabledReason === null}
+                <span class="text-ink-meta ms-auto text-[10.5px]">Checking…</span>
               {/if}
             </DropdownMenu.Item>
           {/each}
