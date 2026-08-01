@@ -355,9 +355,14 @@
            of two labels for one fact, and the less useful one. Everything that
            says something about THIS page stays: the view toggle, the save
            state, the token estimate and the path. -->
+      <!-- `quiet`, because most readers never need it: it was in the same
+           weight class as the tab strip above and competed with it for
+           attention over a choice most people make once. Same size and same
+           `aria-selected` semantics — it recedes, it does not go away. -->
       <div class="flex items-center justify-end gap-3">
         <SegmentedControl
           label="View"
+          quiet
           value={viewMode}
           options={[
             { value: 'friendly', label: 'Friendly view' },
