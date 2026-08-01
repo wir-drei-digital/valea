@@ -1,5 +1,6 @@
 export { default as AppShell } from './AppShell.svelte';
 export { default as AppFrame } from './AppFrame.svelte';
+export { default as ContentBar } from './ContentBar.svelte';
 export { default as MainColumn } from './MainColumn.svelte';
 export { default as Sidebar } from './Sidebar.svelte';
 export { default as SidebarItem } from './SidebarItem.svelte';

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadChrome, loadPanes, routeKeyFor, savePanes, saveChrome } from './pane-memory';
+import {
+  loadChrome,
+  loadNavVisible,
+  loadPanes,
+  routeKeyFor,
+  savePanes,
+  saveChrome,
+  saveNavVisible
+} from './pane-memory';
 import { serializePaneParam, type PaneDescriptor } from './pane-route';
 
 // This vitest setup runs on the default (node) environment, where the
@@ -198,5 +206,37 @@ describe('pane memory — no localStorage (SSR/guard)', () => {
     expect(loadChrome()).toEqual({ files: { tree: true }, chat: { sessions: false } });
     expect(() => savePanes('chat', [chat])).not.toThrow();
     expect(() => saveChrome({ files: { tree: false }, chat: { sessions: true } })).not.toThrow();
+    // The nav is the app's only way between routes: with no storage to read,
+    // "showing" is the only safe answer.
+    expect(loadNavVisible()).toBe(true);
+    expect(() => saveNavVisible(false)).not.toThrow();
+  });
+});
+
+describe('nav visibility', () => {
+  beforeEach(() => {
+    installFakeLocalStorage();
+    localStorage.clear();
+  });
+  afterEach(() => removeLocalStorage());
+
+  it('defaults to showing when nothing has been stored', () => {
+    expect(loadNavVisible()).toBe(true);
+  });
+
+  it('round-trips a collapse and a re-open', () => {
+    saveNavVisible(false);
+    expect(loadNavVisible()).toBe(false);
+    saveNavVisible(true);
+    expect(loadNavVisible()).toBe(true);
+  });
+
+  it('treats anything other than an explicit 0 as showing', () => {
+    // Nothing but a deliberate collapse may hide the only navigation the app
+    // has, so a value written by an older build (or by hand) fails open.
+    localStorage.setItem('valea.nav-visible', 'false');
+    expect(loadNavVisible()).toBe(true);
+    localStorage.setItem('valea.nav-visible', '');
+    expect(loadNavVisible()).toBe(true);
   });
 });

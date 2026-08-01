@@ -17,6 +17,7 @@ import { parsePaneParam, serializePaneParam, type PaneDescriptor } from './pane-
 
 const CONTENT_PREFIX = 'valea.content.';
 const CHROME_KEY = 'valea.pane-chrome';
+const NAV_KEY = 'valea.nav-visible';
 const VERSION = 1;
 
 export type RouteKey = 'chat' | 'mail' | 'knowledge';
@@ -98,6 +99,35 @@ export function loadChrome(): PaneChrome {
 export function saveChrome(chrome: PaneChrome): void {
   try {
     localStorage.setItem(CHROME_KEY, JSON.stringify(chrome));
+  } catch {
+    // best-effort persistence only
+  }
+}
+
+/**
+ * Whether the left nav is showing. **Default true** — the nav is the app's
+ * only way between routes, so an unreadable or absent entry must never hide
+ * it; only an explicit `'0'` does.
+ *
+ * It is stored rather than held in component state because every route mounts
+ * its own `AppShell`: a collapse held in memory would spring back open on the
+ * next navigation, one click after the user asked for the width.
+ *
+ * Its own key rather than a field on `PaneChrome`: the nav belongs to the
+ * SHELL, not to a pane kind, and `loadChrome`'s shape is what a Files or Chat
+ * pane reads.
+ */
+export function loadNavVisible(): boolean {
+  try {
+    return localStorage.getItem(NAV_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+export function saveNavVisible(visible: boolean): void {
+  try {
+    localStorage.setItem(NAV_KEY, visible ? '1' : '0');
   } catch {
     // best-effort persistence only
   }
