@@ -76,7 +76,8 @@ defmodule Valea.Agents.SessionScope do
           optional(:read_paths) => [String.t()],
           optional(:write_paths) => [String.t()],
           optional(:write_roots) => [String.t()],
-          optional(:include_mounts) => [String.t()]
+          optional(:include_mounts) => [String.t()],
+          optional(:opened_from) => %{path: String.t(), kind: atom()} | nil
         }
 
   @spec resolve(opts) :: {:ok, map()} | {:error, term()}
@@ -176,7 +177,13 @@ defmodule Valea.Agents.SessionScope do
       mail_roots_in_scope: mail_roots_in_scope,
       calendar_in_scope: calendar_in_scope,
       managed_context: Path.join(session_dir, "context.md"),
-      kind: kind
+      kind: kind,
+      # Spec 2026-08-02: what the session was opened FROM — a mail message or
+      # a Knowledge entry. Deliberately NOT derived from `read_paths`: that is
+      # a grant list, and a caller granting two files must not silently change
+      # what the session claims to be about. `SessionSettings.context/1` turns
+      # this into the premise paragraph the agent reads before its first act.
+      opened_from: Map.get(opts, :opened_from)
     }
 
     {:ok, launch} = ClaudeCode.launch(scope, session_dir)
