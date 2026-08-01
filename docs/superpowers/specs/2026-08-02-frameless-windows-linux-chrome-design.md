@@ -33,8 +33,8 @@ Ships end to end:
    close), rendered only where the app owns the frame.
 2. **Snap Layouts restored on Windows** via a `WM_NCHITTEST` subclass in Rust,
    so hovering our maximise button opens the OS flyout.
-3. **Resize and drag surfaces** that survive losing the native frame, on both
-   platforms.
+3. **Drag surfaces** that survive losing the native frame. Resize edges need no
+   work — tao already provides them on both platforms (see Resize edges).
 4. **`platform.ts` grows a third answer** — the chrome question stops being a
    boolean.
 
@@ -102,31 +102,68 @@ lights with them and break the one platform that currently works.
 
 Tauri v2 merges `tauri.<platform>.conf.json` over the base automatically, and
 the repo already relies on this — `tauri.windows.conf.json` carries the NSIS
-target and the `valea-spawn` sidecar today. The Windows file gains:
+target and the `valea-spawn` sidecar today.
+
+**The merge is RFC 7396 JSON Merge Patch, which REPLACES arrays wholesale**
+(`tauri-utils-2.9.2/src/config/parse.rs:185`, `json_patch::merge`, with the
+RFC named in the doc comment above it). `app.windows` is an array. So the
+obvious form of this change —
 
 ```json
-{ "app": { "windows": [{ "label": "main", "decorations": false, "shadow": true }] }}
+{ "app": { "windows": [{ "label": "main", "decorations": false }] } }
 ```
 
-⚠️ **Verify the merge is per-window-object, not per-array.** Tauri merges
-config objects, and `app.windows` is an ARRAY. If the platform file's array
-REPLACES the base array rather than merging by label, the Windows window would
-silently lose `width`, `minWidth`, `center`, `visible: false` and the rest —
-and `visible: false` is load-bearing (`build_main_window` shows the window only
-after the backend is up). The implementation plan's first task is to prove this
-one way or the other and, if it replaces, to restate the full window object in
-each platform file with a comment saying why the duplication exists.
+— does not add `decorations` to the main window. It **replaces the entire
+window list with a one-element list carrying only that key**, and every other
+field falls back to its serde default. Two of those defaults are actively
+harmful:
+
+- **`create` defaults to `true`** (base sets `false`). Tauri auto-creates every
+  window with `create: true` at startup (`tauri-2.11.2/src/app.rs:2516` —
+  `.filter(|w| w.create)`), and `build_main_window` then builds its own window
+  with the same `main` label. Two windows, or a duplicate-label failure at
+  launch.
+- **`visible` defaults to `true`** (base sets `false`). The window would appear
+  before the backend is up — the white flash `visible: false` exists to
+  prevent.
+
+And silently, `width`/`height` fall from 1280×860 to 800×600, `minWidth`,
+`minHeight`, `center`, `title` and `resizable` all revert.
+
+**Therefore each platform file restates the window object in full**, with the
+platform key added. The existing `tauri.windows.conf.json` already demonstrates
+the pattern without saying why: it lists `"externalBin": ["binaries/valea-server",
+"binaries/valea-spawn"]` — both entries, not just the new one — because that
+array is replaced too. The duplication is load-bearing and gets a comment in
+each file saying so, since the natural instinct on reading it is to "clean it
+up" by removing the fields that look redundant.
+
+⚠️ This makes the platform files a **drift hazard**: a future change to the base
+window object (a new `minWidth`, say) has to be made in three places. The plan's
+last task adds a `bun run check`-time guard — a test that reads all three config
+files and asserts the non-platform keys agree — so the drift is caught by CI
+rather than by a user on the platform nobody develops on.
 
 ### Capabilities
 
 `capabilities/default.json` already carries `core:window:allow-start-dragging`
-(that is what makes `data-tauri-drag-region` work today). It gains:
+(that is what makes `data-tauri-drag-region` work today). It gains exactly
+three:
 
 - `core:window:allow-minimize`
 - `core:window:allow-toggle-maximize`
 - `core:window:allow-close`
-- `core:window:allow-is-maximized`
-- `core:window:allow-start-resize-dragging`
+
+**Not** `allow-is-maximized`, and **not** `allow-internal-toggle-maximize`:
+both are already in `core:window`'s own default permission set, which
+`core:default` pulls in (verified in `gen/schemas/acl-manifests.json` —
+`core:window.default_permission.permissions`). The second matters more than it
+looks: `internal_toggle_maximize` is the command Tauri's injected drag script
+invokes on a double-click, so double-click-to-maximise already works and adding
+the permission would be cargo cult.
+
+`core:window:allow-start-resize-dragging` is **not** needed either — see Resize
+edges below, where the reason it looked necessary turned out to be wrong.
 
 These are added to the existing `default` capability rather than a new file:
 the capability files in this repo are split by FEATURE that might be revoked
@@ -194,35 +231,63 @@ two regions that exist today were sized for macOS's traffic lights:
   already is.
 - `+layout`'s fixed 12px top strip — **kept, and widened to the control
   cluster's height** on Windows/Linux, so the whole top edge is draggable
-  rather than a 12px sliver. It must be `pointer-events: none` over the control
-  buttons themselves, or the topmost 12px of every button becomes a drag
-  handle that swallows the click. Simplest correct form: the strip stops short
-  of the controls rather than layering under them.
+  rather than a 12px sliver. It must stop short of the controls horizontally,
+  **not** layer over them.
 
-Double-click on a drag region toggles maximise natively on Windows and GTK — no
+  The reason is worth stating precisely, because the obvious one is wrong.
+  Tauri's drag script walks the composed path and refuses to drag when it finds
+  a `BUTTON` (or link, input, `[tabindex]`, or an interactive `role`) without
+  its own drag attribute — so a button *inside* a drag region is safe by
+  construction (`tauri-2.11.2/src/window/scripts/drag.js`, `isClickableElement`).
+  What is not safe is this strip: it is `fixed … z-50`, so it is not an
+  ancestor of the buttons but a sheet ON TOP of them. The buttons are never in
+  the composed path at all — the strip is the hit target, and the top rows of
+  every control would drag the window instead of clicking. Ending the strip
+  before the controls is the fix; `pointer-events: none` would disable the drag
+  along with it.
+
+Double-click on a drag region toggles maximise natively on Windows and GTK —
+the same script invokes `internal_toggle_maximize` on `e.detail === 2`. No
 handler needed, and adding one would double-fire.
 
 ### Resize edges
 
-This is where the two platforms genuinely differ and where the plan must
-measure rather than assume.
+**This section originally proposed a `ResizeEdges` component and a
+measurement-first Linux task. Both were wrong: tao already does it on both
+platforms, and no frontend work is needed at all.**
 
-**Windows:** `decorations: false` with `shadow: true` keeps the resize borders
-and the drop shadow, because Tauri keeps `WS_THICKFRAME` and extends the frame
-into the client area. Expected to need no frontend work — **verify**.
+**Windows** — `tao-0.35.3/src/platform_impl/windows/event_loop.rs:2178` handles
+`WM_NCHITTEST` for any window that is undecorated, resizable, not fullscreen
+and not maximised, running `crate::window::hit_test` against DPI-aware
+`SM_CXFRAME`/`SM_CYFRAME` borders. With `shadow: true` it takes the
+`MARKER_UNDECORATED_SHADOW` path and handles only `HTTOP`, leaving the other
+edges to the DWM-extended frame. Either way the edges work.
 
-**Linux (GTK/WebKitGTK):** ⚠️ the least certain part of this design.
-`decorations: false` under GTK client-side decorations is expected to lose the
-resize edges, in which case the app must provide them: 4–6px edge zones calling
-`getCurrentWindow().startResizeDragging(direction)` with the eight
-`ResizeDirection` values, plus CSS `border-radius` and a shadow the compositor
-will not draw for us.
+**Linux** — `tao-0.35.3/src/platform_impl/linux/event_loop.rs:549` does the
+same thing for GTK: a `connect_button_press_event` gated on
+`!is_decorated() && is_resizable() && !is_maximized()` hit-tests the border and
+calls `begin_resize_drag`, with a matching `connect_touch_event`.
 
-The plan's Linux task therefore starts with a measurement — resize a frameless
-window from each edge and each corner on GNOME/Wayland and on X11 — and
-branches on the answer. If edge zones are needed they are a `ResizeEdges`
-component sibling to `WindowControls`, gated the same way, and NOT a set of
-handlers sprinkled through the layout.
+So `startResizeDragging` and its `ResizeDirection` values — which do exist in
+`@tauri-apps/api/window` — are not needed here, and neither is the permission.
+
+Two real consequences survive, both smaller than what they replaced:
+
+- ⚠️ **No resize cursor on Linux.** tao carries its own `FIXME` at
+  `linux/event_loop.rs:548`: `begin_resize_drag` uses the default cursor rather
+  than a resize one. The edges work but do not advertise themselves. A CSS
+  `cursor: nwse-resize` etc. on `pointer-events: none` edge strips fixes the
+  affordance without touching the resize logic — cosmetic, and deferrable.
+- **`shadow` is unsupported on Linux** (Tauri's own config docs say so), so
+  rounded corners and a drop shadow there are the compositor's business, not
+  ours. On Windows `shadow: true` on an undecorated window gives a **1px white
+  border** plus rounded corners on Win11 — a hard white against Valea's warm
+  paper surface, which the implementation should look at before assuming it is
+  invisible.
+
+**Resizing stops while maximised on both platforms**, since both hit-tests are
+gated on `!is_maximized()`. That is correct behaviour, and it is also why the
+maximise button's icon state has to be right.
 
 ### Snap Layouts (Windows)
 
@@ -306,30 +371,41 @@ except the rect-reporting command. If it fights back, ship the rest and take
 the deferral — the decision to implement it was made when it looked like half
 the Windows work, and that estimate is the thing most likely to be wrong.
 
-**Linux resize is the second.** If GTK does not give edges for free the work
-doubles for that platform, and Wayland and X11 may not agree. Wayland is the
-one to test first, since it is the default on current GNOME.
+**The config restatement is the second**, and it is a slow-burn risk rather
+than a sharp one: getting it wrong at build time is loud (two windows, or a
+duplicate-label crash at launch), but getting it *stale* six months from now is
+silent and only visible on the platform nobody develops on. The CI guard is the
+whole mitigation.
 
-**Losing `visible: false`** to a config-array merge would show the window
-before the backend is up — a white flash and a window that cannot do anything
-yet. Caught by the first task, which is why it is first.
+**Linux was expected to be the second risk and is not** — tao supplies the
+resize edges. What remains there is a missing resize cursor, which is cosmetic.
+Wayland-vs-X11 is still worth one pass, since tao's GTK path goes through
+`begin_resize_drag` and the compositor honours it differently, but it is a
+verification, not a design fork.
 
 ## Build order
 
 Each step leaves the app working on every platform, and macOS untouched
 throughout.
 
-1. **Config merge proof** — `decorations: false` on Windows only; confirm every
-   other window key survives, especially `visible: false`. Nothing else.
+1. **`tauri.windows.conf.json` restates the full window object** with
+   `decorations: false` and `shadow: true`. Acceptance is a launched Windows
+   build showing exactly one window, sized 1280×860, still hidden until the
+   backend is up. Nothing else changes.
 2. **`windowChrome()`** plus its tests, with `overlayChrome()` re-expressed
    through it. No visual change anywhere.
 3. **`WindowControls`, Windows branch** — buttons, actions, maximised state
    from `onResized`, content-column clearance. Windows is now usable frameless
    without Snap Layouts.
-4. **Drag and resize on Windows** — widen the top strip, verify the edges come
-   free with `shadow: true`.
-5. **Linux** — `tauri.linux.conf.json`, the GNOME control branch, and the
-   resize measurement plus `ResizeEdges` if it turns out to be needed.
+4. **The drag strip** — widen it on Windows/Linux and end it before the
+   controls. Confirm the resize edges tao provides actually arrive, including
+   the `HTTOP`-only path that `shadow: true` selects.
+5. **Linux** — `tauri.linux.conf.json` (restated the same way, and no `shadow`,
+   which Linux ignores) plus the GNOME control branch. One Wayland and one X11
+   pass to confirm tao's `begin_resize_drag` behaves on both.
 6. **Snap Layouts** — the `windows` crate, the subclass, the rect command, DPI.
    Last, because it is the one step that can be abandoned without unwinding
    anything before it.
+7. **The config drift guard** — a test reading all three config files and
+   asserting the restated window keys agree. Last because it needs all three to
+   exist.
