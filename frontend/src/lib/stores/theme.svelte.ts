@@ -59,8 +59,15 @@ export class ThemeStore {
     return resolveTheme(this.#preference, this.#systemDark);
   }
 
+  /**
+   * `parsePreference` on the way IN as well as out. The UI hands this an
+   * unchecked cast off a control's string (`setPreference(value as
+   * ThemePreference)`), and an out-of-vocabulary value would otherwise be
+   * held in memory AND written to storage, then sanitised to `'system'` on
+   * the next load — store and storage disagreeing across a reload.
+   */
   setPreference(preference: ThemePreference): void {
-    this.#preference = preference;
+    this.#preference = parsePreference(preference);
     this.#persist();
     this.#apply();
   }
@@ -73,6 +80,11 @@ export class ThemeStore {
   start(): () => void {
     if (this.#stop) return this.#stop;
 
+    // Resync before painting. An OS change that landed while we were stopped —
+    // between construction and `start()`, or across a stop/start — fired at
+    // nobody, so `#systemDark` may be stale and `#apply()` would paint the old
+    // answer until the next OS change happened to correct it.
+    this.#systemDark = systemPrefersDark();
     this.#apply();
 
     if (typeof matchMedia === 'undefined') {
@@ -97,9 +109,26 @@ export class ThemeStore {
   }
 
   /**
-   * Untracked (issue #4): reading `#preference`/`#systemDark` here would
-   * enrol any effect that calls `setPreference` as a subscriber of the state
-   * it just wrote.
+   * Untracked (issue #4). Do not remove this `untrack` — and do not judge it
+   * by asking whether any effect calls `setPreference`, because none does:
+   * the Appearance control calls that from an `onChange` handler, which is
+   * not a tracking context.
+   *
+   * The live caller is `start()`, via the root layout's
+   * `$effect(() => themeStore.start())`. `start()` calls `#apply()`
+   * SYNCHRONOUSLY in that effect's body, so a tracked read here subscribes
+   * the whole layout effect to `#preference` and `#systemDark` — the state
+   * this store exists to write. The layout effect would then re-run on every
+   * theme change and every OS change, tearing down and re-registering the
+   * media listener each time.
+   *
+   * Both hazards are pinned, and both tests fail if this `untrack` goes:
+   * "does not re-run the layout effect that owns start()" and "does not
+   * subscribe an effect that calls setPreference to what it wrote", in
+   * `theme.test.svelte.ts`. Untracking a read never suppresses a
+   * NOTIFICATION: `resolved` still reads both tracked, so genuine observers
+   * still wake — "still wakes a reader that observes the resolved theme"
+   * holds that line.
    */
   #apply(): void {
     if (typeof document === 'undefined') return;
@@ -112,6 +141,9 @@ export class ThemeStore {
 
   #persist(): void {
     if (!hasLocalStorage()) return;
+    // Untracked for the same reason as `#apply()`, but pinned by only one of
+    // its tests: `start()` never persists, so only "does not subscribe an
+    // effect that calls setPreference to what it wrote" fails if this goes.
     const value = untrack(() => this.#preference);
     try {
       localStorage.setItem(THEME_STORAGE_KEY, value);

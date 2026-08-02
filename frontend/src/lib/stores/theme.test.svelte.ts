@@ -1,8 +1,18 @@
-// @vitest-environment - runs under the `runes` project (vite.config.ts)
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+/**
+ * Runs under the `runes` project (see `vite.config.ts`), which supplies the
+ * client-transform environment.
+ *
+ * Deliberately NO per-file environment pragma. Vitest greps the whole file
+ * for that directive and takes the next word as an environment NAME, so
+ * merely mentioning the directive in prose is enough to make it resolve
+ * something like `header` and fail the file before a single test runs. The
+ * `at`-sigil spelling is avoided above for exactly that reason.
+ * `tree-state.test.svelte.ts` carries no such line either.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { ThemeStore } from './theme.svelte';
-import { THEME_STORAGE_KEY } from './theme';
+import { THEME_STORAGE_KEY, type ThemePreference } from './theme';
 
 let listeners: Array<(e: { matches: boolean }) => void> = [];
 let prefersDark = false;
@@ -155,5 +165,131 @@ describe('ThemeStore', () => {
     const store = new ThemeStore();
     expect(store.preference).toBe('system');
     expect(() => store.setPreference('dark')).not.toThrow();
+  });
+
+  it('resyncs the OS answer on start, after a change it was not listening for', () => {
+    const store = new ThemeStore();
+    expect(store.resolved).toBe('light');
+
+    // The OS flips while the store is stopped: nothing is subscribed, so the
+    // change fires at nobody and `#systemDark` goes stale.
+    prefersDark = true;
+
+    const stop = store.start();
+    expect(store.resolved, 'start() must re-ask the OS, not paint a stale answer').toBe('dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    stop();
+  });
+
+  it('sanitises an out-of-vocabulary preference on the way in', () => {
+    const store = new ThemeStore();
+    // Task 11 calls this with `value as ThemePreference` off a UI control.
+    store.setPreference('DARK' as ThemePreference);
+    expect(store.preference, 'memory must not hold what a reload would reject').toBe('system');
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('system');
+  });
+});
+
+/**
+ * Issue #4 again, in this store's own shape: a write path that reads its own
+ * `$state` enrols the calling effect as a subscriber of what it just wrote.
+ *
+ * The live hazard here is NOT `setPreference` — the Appearance control calls
+ * that from `onChange`, outside any tracking context. It is `start()`, which
+ * calls `#apply()` synchronously in the body of the root layout's
+ * `$effect(() => themeStore.start())`. Without the `untrack` in `#apply()`
+ * that effect subscribes to `#preference` and `#systemDark` and re-runs on
+ * every theme and OS change, tearing down and re-registering the media
+ * listener each time.
+ *
+ * These are falsification tests: each negative one has been confirmed to FAIL
+ * with the `untrack` removed (run counts 1/2/3 and 2/3 respectively), so none
+ * of them can pass vacuously.
+ */
+describe('ThemeStore — the write paths must not subscribe their caller', () => {
+  beforeEach(() => {
+    prefersDark = false;
+    installEnvironment();
+  });
+  afterEach(() => teardown());
+
+  it('does not re-run the layout effect that owns start()', () => {
+    const store = new ThemeStore();
+    let runs = 0;
+
+    // Exactly Task 11's root-layout shape: start() in the effect body, its
+    // teardown returned as the effect's cleanup.
+    const stopRoot = $effect.root(() => {
+      $effect(() => {
+        runs++;
+        return store.start();
+      });
+    });
+    flushSync();
+    expect(runs).toBe(1);
+
+    // The user picks a theme. SegmentedControl's onChange is not a tracking
+    // context, but the effect above already ran #apply() — if that read was
+    // tracked, this write wakes it.
+    store.setPreference('dark');
+    flushSync();
+    expect(runs, 'a theme change must not re-run the effect that called start()').toBe(1);
+
+    prefersDark = true;
+    listeners.forEach((fn) => fn({ matches: true }));
+    flushSync();
+    expect(runs, 'an OS change must not re-run the effect that called start()').toBe(1);
+
+    stopRoot();
+  });
+
+  it('does not subscribe an effect that calls setPreference to what it wrote', () => {
+    const store = new ThemeStore();
+    const stop = store.start();
+    let runs = 0;
+
+    const stopRoot = $effect.root(() => {
+      $effect(() => {
+        runs++;
+        store.setPreference('dark');
+      });
+    });
+    flushSync();
+    // Without the untrack this is already 2: the effect self-invalidated on
+    // its own write and only settled because the second write was ===-equal.
+    expect(runs, 'writing must not invalidate the effect that wrote').toBe(1);
+
+    prefersDark = true;
+    listeners.forEach((fn) => fn({ matches: true }));
+    flushSync();
+    expect(runs, 'the OS must not wake an effect that only ever wrote').toBe(1);
+
+    stopRoot();
+    stop();
+  });
+
+  it('still wakes a reader that legitimately observes the resolved theme', () => {
+    // The fix must not over-reach: `resolved` is what the Appearance UI and
+    // any theme-dependent view render from, so it has to stay reactive to
+    // BOTH cells it derives from.
+    const store = new ThemeStore();
+    const stop = store.start();
+    const seen: string[] = [];
+
+    const stopRoot = $effect.root(() => {
+      $effect(() => void seen.push(store.resolved));
+    });
+    flushSync();
+
+    prefersDark = true;
+    listeners.forEach((fn) => fn({ matches: true }));
+    flushSync();
+
+    store.setPreference('light');
+    flushSync();
+
+    expect(seen).toEqual(['light', 'dark', 'light']);
+    stopRoot();
+    stop();
   });
 });
