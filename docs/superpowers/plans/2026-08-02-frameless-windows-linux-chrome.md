@@ -1,5 +1,25 @@
 # Frameless Window Chrome for Windows and Linux — Implementation Plan
 
+> ## ✅ EXECUTED 2026-08-02 — DO NOT RE-RUN THIS PLAN AS WRITTEN
+>
+> All four tasks are implemented on `frameless-window-chrome` (14 commits,
+> 1844 tests, `bun run check` 0 errors). The checkboxes below are unticked
+> because nobody went back to tick them, **not** because the work is pending.
+>
+> **The code blocks below are the PRE-REVIEW versions and three of them are
+> known-defective.** Review found the defects after implementation and they
+> were fixed in the branch, not here. Read the shipped files, not this plan:
+>
+> | Block | What is wrong with it |
+> |---|---|
+> | Task 3 Step 5, `WindowControls.svelte` | No `pointer-events` at all — reintroduces the modal deadlock (a dialog makes minimise/maximise/close dead on a window with no OS frame). Also no `.catch()` on any IPC call, and no `onResized` coalescing. |
+> | Task 4 Step 5, the drag strip | Missing `pointer-events-auto`; same deadlock for window dragging. |
+> | Task 1 Step 1, the `SHARED` allowlist | Replaced in fix round 1 — an allowlist exempts any key ADDED to the base later, which is the exact drift the guard exists to catch. Derive from the base minus a denylist. |
+> | Task 3 Step 1, the `controlsInset` tests | Tautological: they restate the implementation's formula over its own constants and cannot fail. Use hand-written literals. |
+>
+> The spec is the design of record and has been corrected; this file is kept as
+> the execution log.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the Windows and Linux desktop windows the same edge-to-edge, no-OS-title-bar chrome macOS already has, with app-drawn window controls.
@@ -768,7 +788,9 @@ In `frontend/src/routes/+layout.svelte`, the only change the strip needs is to e
 
 ⚠️ **The height stays 3 (12px) on every platform.** An earlier draft of this plan widened it to 32px on Windows/Linux "so the whole top edge is draggable", and that is a bug: the strip is a `fixed z-50` sheet, so every pixel it covers stops being clickable. `PaneHost`'s header buttons are `size-8` with `-my-1.5` inside a 44px band, so they begin around y=6 — a 32px sheet would swallow most of promote and close on every side pane. The calendar route's content starts 24px from the top and would lose its top-right actions the same way.
 
-The 12px figure is load-bearing and the existing comment in that file says why: it is *inside every pane's own top padding, so it never sits over anything interactive*. Widening it also contradicts the spec's own "no title bar strip" decision — an invisible 32px band that eats clicks is a title bar in everything but appearance.
+⚠️ **The old justification for 12px was wrong, and the real one is narrower.** That comment used to read *"inside every pane's own top padding, so it never sits over anything interactive"* — this branch measured it and disproved it. The strip DOES clip the top of `PaneHost`'s header buttons: 4px with a title span (28px of target left), 6px without one (26px left). The comment was corrected in `+layout.svelte`; this paragraph is corrected here.
+
+The actual reason 12px is load-bearing: **26px still clears WCAG 2.2 SC 2.5.8's 24×24 minimum**, and the 14px icon sits at y≈24, nowhere near the strip — so the user's aim point is untouched. A 32px strip would take the whole button. Do not read "the old justification was false" as "the constraint was a mistake": widening it also contradicts the spec's "no title bar strip" decision, since an invisible 32px band that eats clicks is a title bar in everything but appearance.
 
 Dragging is not short-changed by this: the sidebar's 48px brand band is the primary drag surface and already renders on every desktop OS, exactly as on macOS today.
 
@@ -799,7 +821,9 @@ Collected here because no agent can run it. Full detail in the spec's Testing se
 | Controls present on the loading screen and in onboarding | | | |
 | Drag from top edge and sidebar band; double-click maximises | | | |
 | Resize from 4 edges + 4 corners (Tauri-supplied) | | | |
-| Controls not eaten by the resize child window | n/a | n/a | |
+| **Onboarding's Create-workspace dialog open: controls still work, window still drags** | | | |
+| Controls not eaten by the resize child window — **RESTORED, not maximised** | | | n/a |
+| Maximised: window does not overflow the work area or cover the taskbar | | | n/a |
 | Maximise icon correct after Win+Up / WM change | | | |
 | Alt+Space, Aero Shake, drag-to-top | | | n/a |
 | Controls clear of the pane header at 1080px | | | |

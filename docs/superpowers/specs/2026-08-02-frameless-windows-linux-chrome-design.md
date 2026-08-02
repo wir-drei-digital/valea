@@ -331,10 +331,18 @@ destroyed mid-registration leaks the listener it never saw.
   `PaneHost`'s header buttons are `size-8` with `-my-1.5` and begin around y=6,
   so a 32px sheet swallows most of promote and close on every side pane, and
   the calendar route's top-right actions go the same way. An invisible 32px
-  band that eats clicks is a title bar in everything but appearance. 12px is
-  the figure the existing comment justifies — *inside every pane's own top
-  padding, so it never sits over anything interactive* — and the sidebar's 48px
-  brand band is the real drag surface, exactly as on macOS.
+  band that eats clicks is a title bar in everything but appearance. The
+  sidebar's 48px brand band is the real drag surface, exactly as on macOS.
+
+  ⚠️ **12px was justified by a claim this branch disproved.** The comment used
+  to say the strip sits *"inside every pane's own top padding, so it never sits
+  over anything interactive"*. Measured: it clips the top of `PaneHost`'s
+  header buttons by 4px with a title span and 6px without one. The real
+  justification is that **26px of a 32px target survives, clearing WCAG 2.2
+  SC 2.5.8's 24×24**, and the 14px icon sits at y≈24 — nowhere near the strip,
+  so the aim point is untouched. A 32px strip would take the whole button.
+  Recorded because "the stated reason is false" is otherwise an argument for
+  widening it, which is the bug.
 
   The reason is worth stating precisely, because the obvious one is wrong.
   Tauri's drag script walks the composed path and refuses to drag when it finds
@@ -344,11 +352,42 @@ destroyed mid-registration leaks the listener it never saw.
   it is `fixed … z-50`, a sheet *on top*, so the buttons are never in the
   composed path — the strip is the hit target and the top rows of every control
   would drag the window. Ending the strip before the controls is the fix;
-  `pointer-events: none` would disable the drag with it.
+  putting `pointer-events: none` *on the strip* would disable the drag with it.
+  (That is not the same as the `pointer-events` layering the next section
+  requires — see it before concluding the two contradict.)
 
 Double-click on a drag region toggles maximise via the same script's
 `internal_toggle_maximize` — no handler needed, and adding one would
 double-fire.
+
+### A modal dialog kills the controls — the branch's sharpest edge
+
+⚠️ **Found in review, after implementation, and it defeats everything above.**
+
+`bits-ui`'s scroll lock sets `document.body.style.pointerEvents = "none"` on
+every modal open (`internal/body-scroll-lock.svelte.js`). `app.html` wraps the
+SvelteKit root in a `display: contents` div inside `<body>`, so `WindowControls`
+is a body descendant, inherits it, and **nothing restores it**. While any dialog
+is open — including onboarding's own `CreateWorkspaceDialog`, on a first-run
+user's very first screen — minimise, maximise, close and window dragging are
+all dead, on a window whose frame the OS is no longer drawing. The only exits
+are Esc, Alt+F4 and the taskbar.
+
+Invisible on macOS, where the OS still draws the traffic lights, so no amount
+of local development surfaces it.
+
+**The fix is `pointer-events` layering:** `pointer-events-none` on the cluster
+CONTAINER (its padding ring and gaps are inert anyway — on Linux that box is
+104×40 of which only 72×24 is buttons), and `pointer-events-auto` on the three
+BUTTONS and on the drag strip. `auto` re-enables hit-testing against an
+inherited `none`; the paragraph above warns against putting `none` *on the
+strip*, which is a different thing.
+
+Verified by simulation only — `document.body.style.pointerEvents` set by hand,
+then `elementFromPoint` against the built CSS. **Never observed against real
+WebView2 with a real dialog**, which is why it leads the acceptance list. Note
+also what clicking a control does to the dialog: bits-ui's outside-click
+handling will most likely dismiss it.
 
 ### Resize edges — no work required
 
@@ -418,7 +457,12 @@ gate.
 | Alt+Space system menu, Aero Shake, drag-to-top | ✓ | ✓ | n/a | n/a |
 | Controls clear of the pane header at 1080px | ✓ | ✓ | ✓ | ✓ |
 | High-DPI 150% / 200%, and a second monitor at another scale | ✓ | ✓ | ✓ | n/a |
-| Keyboard focus order, accessible names, `aria-pressed` state | ✓ | ✓ | ✓ | ✓ |
+| Keyboard focus order; maximise's accessible name flips Maximise↔Restore after Win+Up | ✓ | ✓ | ✓ | ✓ |
+| **Onboarding dialog open: controls still work, window still drags** | ✓ | ✓ | ✓ | n/a |
+| Resize border reachable **RESTORED** (maximised drops the resize child and proves nothing) | ✓ | ✓ | ✓ | n/a |
+| Maximised window does not overflow the work area or cover the taskbar | ✓ | ✓ | ✓ | n/a |
+| Six non-reserving routes (`/`, audit, sources, tasks, mail, knowledge index) scrolled: no text under the cluster | ✓ | ✓ | ✓ | n/a |
+| Real `navigator.userAgent` from WebView2 and WebKitGTK matches — a miss means NO controls and NO drag | ✓ | ✓ | ✓ | n/a |
 | Listener cleanup: remount the controls, no duplicate `onResized` handlers | ✓ | ✓ | ✓ | ✓ |
 | Forced-colors / high-contrast mode | ✓ | ✓ | ✓ | ✓ |
 
