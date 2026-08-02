@@ -16,10 +16,11 @@
    load-bearing — it stops shadcn-svelte's `dark:` utilities switching on
    behind the store's back.
 
-   NB `src/lib/design/tokens.ts` finds the night palette by a literal
-   `indexOf` for the selector text, so do not write that selector followed by a
-   brace anywhere above the real block — a comment would win the search and
-   every palette invariant would then read an empty block and pass vacuously. */
+   NB `src/lib/design/tokens.ts` parses BOTH palettes straight out of this file
+   to run the contrast invariants against them. It strips comments, then finds
+   each block by a selector anchored to the start of a line, so keep `:root` and
+   `.dark` in the first column. Only literal hex values are collected; tokens
+   written as `var(...)` are skipped by design. */
 @custom-variant dark (&:is(.dark *));
 
 /* ── Raw tokens — Paper & ink (docs/DESIGN_SYSTEM.md is canonical) ── */
@@ -105,28 +106,31 @@
   --window-controls-inset: 0px;
 
   /* ── Shadows ──────────────────────────────────────────────────────────────
-     Split into geometry + colour because they have two kinds of consumer and
-     `@theme inline` only serves one of them.
+     Only the COLOUR is a token here. The geometry lives in exactly one place,
+     `@theme inline` below, and both kinds of consumer read it from there.
 
-     `@theme inline` substitutes a theme value's literal TEXT into the utility
-     it generates, so a hard-coded colour there is frozen at build time and no
-     `.dark` override can reach `.shadow-card`. Written as geometry plus
-     `var(--shadow-card-color)`, Tailwind still parses the two apart — the
-     utility comes out as
+     Why split them at all: `@theme inline` substitutes a theme value's literal
+     TEXT into the utility it generates, so a hard-coded colour there would be
+     frozen at build time and no `.dark` override could reach `.shadow-card`.
+     Written as geometry plus `var(--shadow-card-color)`, Tailwind still parses
+     the two apart and the utility builds as
        `--tw-shadow: 0 1px 2px var(--tw-shadow-color, var(--shadow-card-color))`
      which keeps `shadow-<color>` modifiers composing AND follows the theme.
 
-     The second consumer is `box-shadow: var(--shadow-card)` in
-     `src/lib/editor/tiptap.css`, which is a separate stylesheet outside this
-     Tailwind compile. `@theme inline` emits NO custom property of its own (that
-     is what `inline` means), so those sites had no value at all until this
-     declaration existed — verified by compiling. Declaring the composed shadow
-     here serves them, and because `var()` resolves against the element, they
-     follow `.dark` through `--shadow-card-color` too. */
+     The other consumer is `box-shadow: var(--shadow-card)` in
+     `src/lib/editor/tiptap.css`. It resolves against the `--shadow-card` that
+     Tailwind emits into the theme layer at `:root,:host`. Theme variables are
+     tree-shaken only when nothing is seen referencing them, and that `var()` is
+     precisely what keeps this one — confirmed by building. So do NOT restate
+     the composed shadow in `:root` "for safety": it compiles fine and then
+     silently desynchronises from the utility the moment someone edits one of
+     the two copies of the geometry.
+
+     `--shadow-window` has no consumer, so it is tree-shaken in both themes
+     alike — symmetric, and the `shadow-window` utility still generates on
+     demand the day something uses it. */
   --shadow-card-color: rgba(42, 38, 32, 0.05);
   --shadow-window-color: rgba(42, 38, 32, 0.28);
-  --shadow-card: 0 1px 2px var(--shadow-card-color);
-  --shadow-window: 0 24px 60px var(--shadow-window-color);
 }
 
 /* ── Night paper ───────────────────────────────────────────────────────────
@@ -137,9 +141,11 @@
    canvas -> track -> sidebar -> panel -> surface -> card gets lighter, so
    "lifted onto card paper" means the same thing in both themes and no
    component has to know which one it is in. That is the measured luminance
-   order, and it is NOT the order the tokens are declared in; `contrast.test.ts`
-   asserts exactly this sequence. `pill`, `nav-active` and `tree-active` sit
-   above `card`: they are interaction-state fills, not elevation levels.
+   order, and `contrast.test.ts` asserts exactly this sequence. The block below
+   is written in that same order to make it readable; `:root` is not, so do not
+   read either declaration order as the chain. `pill`, `nav-active` and
+   `tree-active` sit above `card`: they are interaction-state fills, not
+   elevation levels.
 
    `--ink-overline` is QUIETER than `--ink-meta` here, as in light. An
    earlier draft made it brighter, which measured fine but inverted the ramp
@@ -237,9 +243,10 @@
 
   /* Shadows are near-invisible on dark paper — an elevation system that
      silently stops working. Only the COLOUR is overridden: the geometry is
-     single-sourced next to `:root`'s declaration, and `--shadow-card` there
-     resolves `var(--shadow-card-color)` lazily, so it picks this up on any
-     element inside `.dark` without being restated. */
+     single-sourced in `@theme inline`, and the `--shadow-card` Tailwind emits
+     from it resolves `var(--shadow-card-color)` lazily, so both the utility and
+     tiptap's `var()` sites pick this up on any element inside `.dark` without
+     the shadow being restated here. */
   --shadow-card-color: rgba(0, 0, 0, 0.45);
   --shadow-window-color: rgba(0, 0, 0, 0.65);
 }
