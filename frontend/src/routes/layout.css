@@ -50,6 +50,16 @@
   --warn-tint: #f6e7de;
   --warn-border: #ebd5c6;
   --warn-checkbox: #e0bda9;
+  /* avatar fills — four distinguishable identity colours that each carry
+     `--primary-foreground` at >= 4.5:1. Deliberately NOT the consequence
+     palette: an avatar means "which account", not "safe/suggests/warns",
+     and the tokens it used to borrow (--warn-dot, --suggest-dash,
+     --ink-secondary) are a dot, a dash and an ink — none sized to carry
+     text, and two of them measured below 3.5:1 under the white initial. */
+  --avatar-fill-1: #2f5d48;
+  --avatar-fill-2: #8a4a2f;
+  --avatar-fill-3: #6b4b8a;
+  --avatar-fill-4: #2f5470;
 
   /* ── shadcn semantic mapping (the seam) ── */
   --background: var(--paper-surface);
@@ -135,6 +145,10 @@
   --color-warn-tint: var(--warn-tint);
   --color-warn-border: var(--warn-border);
   --color-warn-checkbox: var(--warn-checkbox);
+  --color-avatar-fill-1: var(--avatar-fill-1);
+  --color-avatar-fill-2: var(--avatar-fill-2);
+  --color-avatar-fill-3: var(--avatar-fill-3);
+  --color-avatar-fill-4: var(--avatar-fill-4);
   /* type */
   --font-display: 'Newsreader Variable', georgia, serif;
   --font-sans: 'Instrument Sans Variable', system-ui, sans-serif;

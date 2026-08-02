@@ -20,29 +20,20 @@
   import * as Popover from '$lib/components/ui/popover';
   import { mailStore, type MailAccountStatus } from '$lib/stores/mail.svelte';
   import {
-    accountColorIndex,
     accountDisplayName,
     accountInitial,
     accountMeta,
     accountSwitchHref,
     inboxCount
   } from './mail-shapes';
+  import { avatarFillFor } from './avatar-fills';
 
   let { onAddAccount }: { onAddAccount: () => void } = $props();
 
   let open = $state(false);
 
-  // The consequence palette's dark tones — every fill carries the white
-  // initial at contrast; the pick is keyed on the slug (`accountColorIndex`)
-  // so one account wears one color everywhere.
-  const AVATAR_FILLS = ['bg-act', 'bg-warn-dot', 'bg-suggest-dash', 'bg-ink-secondary'];
-
   const selected = $derived(mailStore.selectedStatus);
   const inbox = $derived(inboxCount(mailStore.folders));
-
-  function avatarFill(status: Pick<MailAccountStatus, 'account'>): string {
-    return AVATAR_FILLS[accountColorIndex(status.account, AVATAR_FILLS.length)];
-  }
 
   function pick(status: MailAccountStatus): void {
     open = false;
@@ -59,7 +50,7 @@
     >
       {#if selected}
         <span
-          class="{avatarFill(selected)} text-paper-card flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
+          class="{avatarFillFor(selected.account)} text-primary-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
           aria-hidden="true"
         >
           {accountInitial(accountDisplayName(selected))}
@@ -93,7 +84,7 @@
               onclick={() => pick(account)}
             >
               <span
-                class="{avatarFill(account)} text-paper-card flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
+                class="{avatarFillFor(account.account)} text-primary-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
                 aria-hidden="true"
               >
                 {accountInitial(accountDisplayName(account))}
