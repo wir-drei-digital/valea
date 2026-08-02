@@ -14,8 +14,8 @@
  * The layouts that compensate for a chromeless top edge — the sidebar's
  * tall brand band, the fixed `data-tauri-drag-region` strip — were gated on
  * plain `inDesktop()`, never on the overlay, so they already rendered on
- * Windows and Linux, where the ~48px band was dead space beside a real title
- * bar until `decorations: false` landed on each in turn.
+ * Windows and Linux, where the ~48px band was dead space beside a real
+ * title bar until `decorations: false` landed on each in turn.
  * `windowChrome()` is what makes that gating deliberate — it names the
  * chrome the window has rather than the runtime it happens to be in, so a
  * layout can say which of the four presentations it is compensating for.

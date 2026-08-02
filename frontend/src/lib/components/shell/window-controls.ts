@@ -11,14 +11,16 @@ export function controlsLabel(maximized: boolean): string {
 }
 
 /**
- * The cluster's geometry, in one place because TWO things depend on it and
+ * The cluster's geometry, in one place because THREE things depend on it and
  * they fail silently when they disagree: `WindowControls.svelte` sizes each
- * button from these numbers, and every route header reserves `controlsInset()`
- * of right padding so its own controls do not end up underneath them. A width
- * changed in the component and not in the inset is invisible until the window
- * controls are sitting on top of a route's buttons — which is why the component
- * reads `button`/`height`/`round` from here rather than restating them as
- * Tailwind utilities that no test could compare against the inset.
+ * button from these numbers; every route header reserves `controlsInset()` of
+ * right padding so its own controls do not end up underneath them; and the root
+ * layout's drag strip ends at that same inset, so a cluster that grew here
+ * without the inset following would have a drag surface lying over its buttons.
+ * A width changed in the component and not in the inset is invisible until the
+ * window controls are sitting on top of a route's buttons — which is why the
+ * component reads `button`/`height`/`round` from here rather than restating
+ * them as Tailwind utilities that no test could compare against the inset.
  *
  * Windows is the platform convention: 46×32 caption buttons, flush to the
  * corner, no gaps and no padding. Linux is GNOME-INSPIRED rather than matching

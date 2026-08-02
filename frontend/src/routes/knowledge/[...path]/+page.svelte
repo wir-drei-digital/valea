@@ -317,9 +317,8 @@
                open, so the pane is never nameless.
 
                It also clears the app-drawn window controls (frameless Windows
-               and Linux), because with no side pane open this band runs to
-               the window's right edge. When
-               a side pane IS open, `PaneHost` zeroes
+               and Linux), because with no side pane open this band runs to the
+               window's right edge. When a side pane IS open, `PaneHost` zeroes
                `--window-controls-inset` for this whole column and the same
                `calc()` collapses back to plain px-3 — the variable is scoped,
                not global; read `PaneHost`'s comment above its `PaneGroup`.

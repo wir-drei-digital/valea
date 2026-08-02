@@ -201,8 +201,11 @@
     >
       <!-- Same vertical band as the chat header (pt-3 + 24px content row +
            pb-2), so every header rule across the row reads as one continuous
-           line. size-8/-my-1.5 buttons keep >=32px hit targets without
-           growing the band. -->
+           line. size-8/-my-1.5 buttons keep 32px hit targets without growing
+           the band — except in THIS header on a desktop window, where the root
+           layout's 12px drag strip covers the top few px of the overhang and
+           leaves at least 26px. That is the geometry `+layout.svelte`'s comment
+           records, and the reason the strip must not get taller. -->
       <!-- Only the LAST pane's header reserves: it is the topmost row of the
            rightmost column, so it is the one band under the window controls.
            See the scoping comment above `PaneGroup`. The `, 0px` fallback is

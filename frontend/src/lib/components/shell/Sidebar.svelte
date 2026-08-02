@@ -37,10 +37,11 @@
   // handler only fires on the element the mousedown lands on.
   //
   // On frameless Windows and Linux there are no traffic lights to clear, but
-  // the band stays: it is the app's large drag surface, and the only one once
-  // the shell has replaced onboarding. (It rendered there before those
-  // windows went frameless too, as dead space beside a native title bar —
-  // what changed is that it now earns its height.)
+  // the band stays: it is the app's LARGE drag surface, alongside the root
+  // layout's 12px top strip — which is deliberately too thin to be the only
+  // one. (It rendered there before those windows went frameless too, as dead
+  // space beside a native title bar; what changed is that it now earns its
+  // height.)
   const chrome = windowChrome();
 
   let settingsOpen = $state(false);

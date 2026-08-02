@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -70,10 +70,13 @@ function sharedKeys(base: Record<string, unknown>): string[] {
  * Every platform file that overrides the base window. The restatement rule is
  * a property of the MERGE, not of any one platform, so the expectations below
  * are parameterised over this list rather than written out per file: a third
- * platform costs one entry here instead of five near-identical tests, and —
- * the failure that actually matters — no platform can be added while quietly
- * skipping one of the five. What is genuinely per-platform (`shadow`, and the
- * bundle overrides further down) stays written out on its own.
+ * platform costs one entry here instead of five near-identical tests, and it
+ * cannot be added while quietly skipping one of them.
+ *
+ * That last guarantee only holds for a platform someone remembers to add HERE,
+ * which is why `guards every platform config on disk` reads the directory
+ * instead. What is genuinely per-platform — `shadow`, and the bundle `targets`
+ * further down — stays written out on its own.
  */
 const PLATFORM_FILES = ['tauri.windows.conf.json', 'tauri.linux.conf.json'] as const;
 
@@ -99,6 +102,26 @@ describe('the main window is restated consistently across platform configs', () 
   // and pass.
   it('the derived shared set is non-empty', () => {
     expect(sharedKeys(base ?? {}).length).toBeGreaterThan(0);
+  });
+
+  // `PLATFORM_FILES` is hand-maintained, and Vitest's `each` is a bare
+  // `cases.forEach` (`@vitest/runner`), so an empty list registers ZERO tests
+  // and reports success — a vanished list looks exactly like a passing one.
+  // This is the one test that reads the DIRECTORY rather than the list. It
+  // fails if the list is emptied, and — the failure that will actually happen —
+  // if a `tauri.macos.conf.json` ever lands on disk without being added to it,
+  // where it would silently inherit none of the checks below.
+  //
+  // `tauri.conf.json` cannot match: the pattern requires a platform segment
+  // BETWEEN `tauri.` and `.conf.json`. `tauri.dev.conf.json` does match and is
+  // excluded by name — it is not a platform file (the Justfile passes it with
+  // `--config`, for the `Valea Dev` bundle identity) and it has a describe of
+  // its own at the foot of this file.
+  it('guards every platform config on disk', () => {
+    const onDisk = readdirSync(ROOT).filter(
+      (f) => /^tauri\.[a-z]+\.conf\.json$/.test(f) && f !== 'tauri.dev.conf.json'
+    );
+    expect(onDisk.sort()).toEqual([...PLATFORM_FILES].sort());
   });
 
   // Equality alone can't tell a matching key from an absent one that Tauri
@@ -149,37 +172,64 @@ describe('the main window is restated consistently across platform configs', () 
   });
 
   // `shadow` is the one window key the two frameless platforms answer
-  // differently, so it is the one that cannot be parameterised. Tauri
-  // documents it as unsupported on Linux, and CSS cannot stand in: a webview's
-  // box-shadow is clipped to the native window bounds and `border-radius` does
-  // not shape the GDK surface. Stating it would be a claim the platform
-  // ignores — Windows states `true` (already the serde default) because there
-  // it is real, and documents the 1px border and Win11 rounding it brings.
+  // differently, so it is the one that cannot be parameterised — and being in
+  // `PER_PLATFORM` exempts it from BOTH the equality check and its mirror.
+  // Without the two tests below it could be deleted from either file and the
+  // suite would stay green while the comments here went on describing it.
+  //
+  // Tauri documents `shadow` as unsupported on Linux, and CSS cannot stand in:
+  // a webview's box-shadow is clipped to the native window bounds and
+  // `border-radius` does not shape the GDK surface. Stating it there would be a
+  // claim the platform ignores.
   it('linux asks for no shadow', () => {
     expect(requireMainWindow('tauri.linux.conf.json').shadow).toBeUndefined();
+  });
+
+  // The Windows half pins the STATEMENT, not the behaviour: `shadow` is already
+  // the serde default (`default_true`), so deleting the key would change
+  // nothing about the window. What it would change is that the undecorated
+  // window's 1px border and its Win11 rounded corners would read as an accident
+  // of a default rather than as something chosen — and this file's own
+  // `PER_PLATFORM` comment says they were chosen.
+  it('windows states its shadow', () => {
+    expect(requireMainWindow('tauri.windows.conf.json').shadow).toBe(true);
   });
 });
 
 describe('the bundle arrays survive the platform merge', () => {
   const base = config('tauri.conf.json');
 
+  it('the base declares at least one sidecar', () => {
+    expect(base.bundle?.externalBin?.length).toBeGreaterThan(0);
+  });
+
   // SUBSET, not equality, and deliberately so: `valea-spawn` is a Windows-only
   // Job-Object shim (windows-support spec B2) and has no macOS counterpart, so
   // the Windows list is legitimately longer. What must never happen is the
-  // other direction — a sidecar in the base that Windows drops on the floor.
-  it('windows restates every base sidecar', () => {
-    const win = config('tauri.windows.conf.json');
-    expect(base.bundle?.externalBin?.length).toBeGreaterThan(0);
-    const shipped = win.bundle?.externalBin ?? [];
-    for (const bin of base.bundle?.externalBin ?? []) {
+  // other direction — a sidecar in the base that a platform drops on the floor.
+  //
+  // Falling back to the BASE list, not to `[]`, is what lets this run over every
+  // platform: Merge Patch recurses into objects and only replaces arrays, so a
+  // file that states no `bundle` (Linux today) or a `bundle` without
+  // `externalBin` inherits the base list intact, and must pass. The day Linux
+  // states `targets: ["deb", "appimage"]` and someone adds `externalBin`
+  // alongside it, the array IS replaced and this starts holding it to the base —
+  // which is the failure this file's header calls out as the worse of the two,
+  // because an installer missing a sidecar is not a build error.
+  it.each(PLATFORM_FILES)('%s ships every base sidecar', (file) => {
+    const declared = base.bundle?.externalBin ?? [];
+    const shipped = config(file).bundle?.externalBin ?? declared;
+    for (const bin of declared) {
       expect([bin, shipped.includes(bin)]).toEqual([bin, true]);
     }
   });
 
-  // `targets` gets neither a subset nor an equality check: the base is `"all"`
-  // and Windows narrows to `["nsis"]` on purpose. The only thing worth holding
-  // is that the narrowing is stated — delete the key and the merge silently
-  // hands Windows `"all"` instead.
+  // `targets` gets neither a subset nor an equality check, and stays
+  // Windows-only: the base is `"all"` and Windows narrows to `["nsis"]` on
+  // purpose, while Linux WANTS the base `"all"` (deb, rpm, AppImage) and so
+  // states no bundle block at all — there is nothing to pin there. The only
+  // thing worth holding is that the narrowing is stated: delete the key and the
+  // merge silently hands Windows `"all"` instead.
   it('windows states its own bundle targets', () => {
     const win = config('tauri.windows.conf.json');
     expect(win.bundle?.targets).toBeDefined();
