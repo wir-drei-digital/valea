@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveTheme, THEME_STORAGE_KEY, DARK_CLASS, type ThemePreference } from './theme';
+import { readPalette } from '../design/tokens';
 
 const SCRIPT = readFileSync(
   fileURLToPath(new URL('../../../static/theme-init.js', import.meta.url)),
@@ -98,6 +99,24 @@ describe('theme-init.js', () => {
 
   it('sets a background so the first paint is not white', () => {
     expect(run('dark', false).background).not.toBe('');
+  });
+
+  /**
+   * The script hardcodes its two pre-paint backgrounds — it runs before
+   * `layout.css` lands, so it cannot read a custom property that does not
+   * exist yet. Nothing else ties those literals to the palettes, and if they
+   * drift the launch shows a one-frame colour change: exactly the flash this
+   * file exists to prevent, and only on a cold start, so it survives review.
+   * So read both blocks out of `layout.css` and pin the literals to them.
+   */
+  it('pre-paints the real --paper-surface of each palette', () => {
+    const light = readPalette('light')['paper-surface'];
+    const dark = readPalette('dark')['paper-surface'];
+    expect(light, 'light palette must define --paper-surface').toBeDefined();
+    expect(dark, 'dark palette must define --paper-surface').toBeDefined();
+
+    expect(run('light', false).background, "the script's light literal").toBe(light);
+    expect(run('dark', false).background, "the script's dark literal").toBe(dark);
   });
 });
 

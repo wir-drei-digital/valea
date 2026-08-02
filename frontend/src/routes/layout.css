@@ -1,10 +1,25 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-/* Valea is light-only (dark mode deferred — standing decision). Scope the
-   `dark:` variant to an explicit `.dark` ancestor (which we never set) so
-   shadcn-svelte's dark: utilities can't switch on via the OS media query
-   and UA chrome/scrollbars stay light regardless of system theme. */
+/* Valea has two palettes: `:root` below is day paper, `.dark` is night paper.
+   `static/theme-init.js` puts the `dark` class on <html> before first paint and
+   `ThemeStore` maintains it afterwards — so the class IS set now, and no rule
+   in this file keys off the OS media query directly. A stored preference
+   always beats the system, and `system` is resolved to a class by those two.
+
+   Scoping the variant to `&:is(.dark *)` matches DESCENDANTS of `.dark`, so
+   `dark:` utilities never apply to <html> itself. That is intended, and the
+   two mechanisms are NOT interchangeable: the night-paper token block below is
+   a plain class selector that does match <html>, which is what re-points every
+   token, and the `html.dark` rule in @layer base is what turns UA chrome and
+   scrollbars over. Keeping the variant off the media query is still
+   load-bearing — it stops shadcn-svelte's `dark:` utilities switching on
+   behind the store's back.
+
+   NB `src/lib/design/tokens.ts` finds the night palette by a literal
+   `indexOf` for the selector text, so do not write that selector followed by a
+   brace anywhere above the real block — a comment would win the search and
+   every palette invariant would then read an empty block and pass vacuously. */
 @custom-variant dark (&:is(.dark *));
 
 /* ── Raw tokens — Paper & ink (docs/DESIGN_SYSTEM.md is canonical) ── */
@@ -77,7 +92,6 @@
   --accent: var(--paper-nav-active);
   --accent-foreground: var(--ink-heading);
   --destructive: var(--warn-ink);
-  --destructive-foreground: #fffefa;
   --border: var(--paper-border);
   --input: var(--paper-button-border);
   --ring: var(--act);
@@ -89,6 +103,111 @@
      alternative was a `gutter` prop threaded through every route, which
      `NavToggle`'s comment records as having been tried and reverted. */
   --window-controls-inset: 0px;
+}
+
+/* ── Night paper ───────────────────────────────────────────────────────────
+   Dark is a warm palette, not a neutral slate: Valea is "paper & ink", and a
+   grey dark mode would be a different product at night.
+
+   Direction of lift is PRESERVED, not inverted. The elevation chain
+   canvas -> sidebar -> track -> surface -> panel -> card gets lighter, so
+   "lifted onto card paper" means the same thing in both themes and no
+   component has to know which one it is in. `pill`, `nav-active` and
+   `tree-active` sit above `card`: they are interaction-state fills, not
+   elevation levels.
+
+   `--ink-overline` is QUIETER than `--ink-meta` here, as in light. An
+   earlier draft made it brighter, which measured fine but inverted the ramp
+   and left the "overlines >= 700 weight only" rule with no reason behind
+   it. `contrast.test.ts` pins the ordering.
+
+   Every value is 6-digit hex on purpose: `readPalette` lowercases but does
+   not normalise length, and `relativeLuminance` throws on 3- and 8-digit
+   forms, so a shorthand here would fail the invariants as a TypeError. */
+.dark {
+  /* paper */
+  --paper-canvas: #14120c;
+  --paper-track: #17140e;
+  --paper-sidebar: #1a160f;
+  --paper-panel: #1c1811;
+  --paper-surface: #1e1a13;
+  --paper-card: #27221a;
+  --paper-pill: #2c271e;
+  --paper-nav-active: #322c22;
+  --paper-tree-active: #37301f;
+  --paper-hairline: #262119;
+  --paper-border: #332e24;
+  --paper-chip-border: #3d362a;
+  --paper-button-border: #4a4234;
+  /* ink */
+  --ink-heading: #efe8d8;
+  --ink-body: #d8d0be;
+  --ink-secondary: #bdb4a0;
+  --ink-subtitle: #a79d88;
+  --ink-meta: #8a8071;
+  --ink-overline: #8d7a6b;
+  /* green — acts. Hover goes LIGHTER here; on dark paper, more is lighter. */
+  --act: #2f7a57;
+  --act-hover: #3d9269;
+  --act-tint: #1c2a22;
+  --act-dot: #4fa97a;
+  /* amber — suggests */
+  --suggest-ink: #d3ac5f;
+  --suggest-dash: #a8873f;
+  --suggest-tint: #2e2616;
+  --suggest-bg: #26200f;
+  --suggest-border: #3d3320;
+  /* blue — agent at work */
+  --work-dot: #6b9dc9;
+  /* terracotta — warns */
+  --warn-ink: #e08a5f;
+  --warn-dot: #d08055;
+  --warn-tint: #2e1d15;
+  --warn-border: #4a2f22;
+  --warn-checkbox: #5c3a29;
+  /* avatar fills — lightened just enough to stay distinguishable on dark
+     paper while still carrying `--primary-foreground` at >= 4.5:1. */
+  --avatar-fill-1: #2f7a57;
+  --avatar-fill-2: #a85c3a;
+  --avatar-fill-3: #8460a8;
+  --avatar-fill-4: #3a6a8f;
+
+  /* Redeclared IDENTICALLY to `:root` on purpose. `readPalette` reads one
+     block and does not follow CSS inheritance, so a token that is absent here
+     comes back `undefined` and `relativeLuminance` throws on it — the
+     avatar-contrast invariant would blow up in the dark run instead of
+     asserting. Ink on a consequence fill stays near-white in BOTH themes;
+     that is the whole point of the role token, and stating it here is what
+     makes it checkable. */
+  --primary-foreground: #fffefa;
+
+  /* shadcn semantic mapping — same seam, dark values */
+  --background: var(--paper-surface);
+  --foreground: var(--ink-body);
+  --card: var(--paper-card);
+  --card-foreground: var(--ink-body);
+  --popover: var(--paper-card);
+  --popover-foreground: var(--ink-body);
+  --primary: var(--act);
+  --secondary: var(--paper-pill);
+  --secondary-foreground: var(--ink-secondary);
+  --muted: var(--paper-track);
+  --muted-foreground: var(--ink-meta);
+  --accent: var(--paper-nav-active);
+  --accent-foreground: var(--ink-heading);
+  --destructive: var(--warn-ink);
+  --border: var(--paper-border);
+  --input: var(--paper-button-border);
+  --ring: var(--act);
+
+  /* Shadows are near-invisible on dark paper — an elevation system that
+     silently stops working. Deepened, and cards lean on --paper-border.
+     NOTE: this reaches the `box-shadow: var(--shadow-card)` call sites in
+     `src/lib/editor/tiptap.css` only. The `shadow-card` UTILITY is declared in
+     `@theme inline` below, which substitutes the literal value into the
+     generated class, so that half does not follow the theme yet. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-window: 0 24px 60px rgba(0, 0, 0, 0.65);
 }
 
 @theme inline {
@@ -162,6 +281,11 @@
   html {
     color-scheme: light;
     background: var(--paper-surface);
+  }
+  /* A plain class selector, so it matches <html> itself — the `dark:` variant
+     above would not, it only matches descendants of `.dark`. */
+  html.dark {
+    color-scheme: dark;
   }
   body {
     background: var(--paper-surface);

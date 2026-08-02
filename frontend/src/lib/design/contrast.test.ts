@@ -36,8 +36,29 @@ describe('readPalette', () => {
   });
 });
 
-describe.each(['light'] as const)('%s palette invariants', (palette) => {
+describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => {
   const p = readPalette(palette);
+
+  // FIRST, deliberately. `readPalette` reads ONE block and does not follow CSS
+  // inheritance, so every token an invariant below reads must be declared in
+  // that block — including ones deliberately identical to light. An absent
+  // token comes back `undefined` and `relativeLuminance` throws on it, so the
+  // failure would be a TypeError pointing into contrast.ts, naming no token.
+  it('defines every token the invariants below read', () => {
+    const required = [
+      'paper-canvas', 'paper-track', 'paper-sidebar', 'paper-panel', 'paper-surface', 'paper-card',
+      'paper-pill', 'paper-nav-active', 'paper-tree-active',
+      'ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline',
+      'primary-foreground',
+      'avatar-fill-1', 'avatar-fill-2', 'avatar-fill-3', 'avatar-fill-4'
+    ];
+    // Non-emptiness first: an absent or differently-formatted block yields {},
+    // and every per-token loop below would then pass vacuously.
+    expect(Object.keys(p).length, `${palette} palette must not be empty`).toBeGreaterThan(15);
+    for (const t of required) {
+      expect(p[t], `${palette} must define --${t}`).toBeDefined();
+    }
+  });
 
   it('the ink ramp gets quieter, heading through overline', () => {
     const order = ['ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline'];
