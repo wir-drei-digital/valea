@@ -139,12 +139,14 @@
 <AppFrame>
   {#snippet main()}
     <div class="relative flex min-h-0 flex-1 flex-col">
-      <!-- Calendar hosts no `PaneHost`, so this header is ALWAYS the surface
-           under the app-drawn window controls (frameless Windows, and Linux
-           once `tauri.linux.conf.json` lands) — no condition to check. The
-           `, 0px` fallback is required, not defensive: a `calc()` against an
-           undefined custom property is invalid at computed-value time and the
-           browser drops the whole `padding-right`, base px-7 included. -->
+      <!-- Calendar hosts no `PaneHost`, so nothing ever scopes
+           `--window-controls-inset` away from this route and this header is
+           ALWAYS the band under the app-drawn window controls (frameless
+           Windows, and Linux once `tauri.linux.conf.json` lands) — the one
+           consumer with no arrangement to check. The `, 0px` fallback is
+           required, not defensive: a `calc()` against an undefined custom
+           property is invalid at computed-value time and the browser drops
+           the whole `padding-right`, base px-7 included. -->
       <header
         class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4"
         style="padding-right: calc(1.75rem + var(--window-controls-inset, 0px))"

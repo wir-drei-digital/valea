@@ -91,13 +91,16 @@
 
 {#if icmName || onArchive || onDelete || onToggleFiles}
   <!-- Clears the app-drawn window controls (frameless Windows, and Linux once
-       `tauri.linux.conf.json` lands). This is the topmost row of a chat
-       PRIMARY, so it is what sits under them whenever no side pane is open.
-       Reserved unconditionally: nothing here can see whether a pane sits to
-       its right, and the alternative is a gutter prop threaded down from every
-       host — the approach `NavToggle`'s comment records as tried and reverted.
-       `--window-controls-inset` is 0px on macOS and in the browser, so no
-       other platform pays.
+       `tauri.linux.conf.json` lands) when this header is the one band beneath
+       them: a chat PRIMARY with no side pane open.
+
+       Unconditional here on purpose — this component cannot see which column
+       it is in, and it does not have to. `--window-controls-inset` is SCOPED,
+       not global: `PaneHost` zeroes it for the primary when side panes exist
+       and for all pane content, so in every other arrangement this `calc()`
+       resolves to plain px-4. Read `PaneHost`'s scoping comment before
+       assuming this reserves space; it usually does not.
+
        The `, 0px` fallback is required, not defensive: a `calc()` against an
        undefined custom property is invalid at computed-value time and the
        browser drops the whole `padding-right`, base px-4 included. -->
