@@ -31,3 +31,27 @@ export function originLabel(from: PaneOrigin | null): string | null {
     .filter(Boolean);
   return from.label?.trim() || segments[segments.length - 1] || from.path.trim() || null;
 }
+
+/**
+ * The mount the chip must NAME beside its label, or `null` when the origin
+ * carries none.
+ *
+ * SECURITY VISIBILITY, not decoration. On the mail path `from.mount` becomes
+ * `includeMounts` — the session is scoped into a WHOLE mail account: every
+ * read view, plus writes to `ops/` and `drafts/`. The backend only accepts a
+ * key that names an already-enabled mount, so no new capability is minted
+ * here; what a link CAN do is scope a session into a different account than
+ * the subject line suggests, and a chip that showed only `label` gave the
+ * user nothing to notice that with. The grant is the mount, so the mount is
+ * what has to be on screen.
+ *
+ * Shown VERBATIM (`mail-mara`, not a prettified "mara"): the point is to
+ * match what was granted, and two mounts that differ only in a prefix must
+ * not render identically. Untrusted like `label` — plain interpolation only,
+ * never `{@html}` — and truncated by CSS rather than by string surgery, so a
+ * long key shortens on screen without a shortened key ever reading as a
+ * different, real one.
+ */
+export function originMount(from: PaneOrigin | null): string | null {
+  return from?.mount?.trim() || null;
+}

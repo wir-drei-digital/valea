@@ -168,7 +168,8 @@ defmodule Valea.Api.Agents do
             "mount_key" => mount_key,
             "context_doc" => context_doc,
             "input" => input_locator,
-            "include_mounts" => include_mounts
+            "include_mounts" => include_mounts,
+            "opened_from_kind" => Map.get(input.arguments, :opened_from_kind)
           })
 
           {:ok, %{id: id, input_path: input_abs}}

@@ -307,9 +307,11 @@ defmodule Valea.Api.AgentsTest do
     # `opened_from/3` through a `context_doc` locator, which is not how a mail
     # session is ever created: "Start a session" on a message sends an `input`
     # locator (the message file is granted as one exact read path, and the
-    # premise must name THAT file, not the ICM's context doc). `input_abs` is
-    # also the arm that WINS when both locators are present, so it is the one
-    # arm a context-doc test can never exercise.
+    # premise must name THAT file, not the ICM's context doc), so it is the one
+    # arm a context-doc test can never exercise. What happens when BOTH
+    # locators arrive is deliberately not asserted: `sessionCreateOpts` returns
+    # one arm or the other and never both, so there is no caller that produces
+    # that input.
     test "an input locator is what the premise names for a mail message", %{
       ws: ws,
       generation: generation,

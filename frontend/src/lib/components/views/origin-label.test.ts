@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { originLabel } from './origin-label';
+import { originLabel, originMount } from './origin-label';
 
 // Spec 2026-08-02 §"the attachment chip". The chip is the only visible
 // evidence that a new-session composer is pointed at a source, so the fallback
@@ -83,6 +83,31 @@ describe('originLabel', () => {
         });
         expect(result === null || result.trim() !== '').toBe(true);
       }
+    }
+  });
+});
+
+// The mount is the GRANT: on the mail path it becomes `includeMounts` and
+// scopes the session into a whole account. A chip that showed only the subject
+// let a link point at a different account than the subject implied.
+describe('originMount', () => {
+  it('names the mount verbatim, prefix and all', () => {
+    expect(originMount({ kind: 'mail-message', path: 'v/42.md', mount: 'mail-mara' })).toBe(
+      'mail-mara'
+    );
+  });
+
+  it('is null for an origin that grants no mount', () => {
+    expect(originMount({ kind: 'page', path: 'notes/CONTEXT.md' })).toBeNull();
+    expect(originMount(null)).toBeNull();
+  });
+
+  // Same blank-chip invariant `originLabel` carries: a whitespace mount would
+  // render a separator with nothing after it, which reads as a mount that is
+  // there but unnamed — worse than no mount shown at all.
+  it('never returns a blank string', () => {
+    for (const mount of ['', ' ', '\t\n']) {
+      expect(originMount({ kind: 'mail-message', path: 'v/42.md', mount })).toBeNull();
     }
   });
 });

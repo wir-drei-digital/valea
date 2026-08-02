@@ -41,7 +41,7 @@
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
   import { sessionCreateOpts } from './session-create-opts';
-  import { originLabel } from './origin-label';
+  import { originLabel, originMount } from './origin-label';
 
   let {
     descriptor,
@@ -387,9 +387,10 @@
    * label-only change RE-RENDERS this pane instead of remounting it, and a
    * snapshot would show the stale label for the rest of the pane's life.
    */
-  const chipLabel = $derived.by(() =>
-    originLabel(descriptor.kind === 'chat-new' ? descriptor.from : null)
-  );
+  const chipOrigin = $derived(descriptor.kind === 'chat-new' ? descriptor.from : null);
+  const chipLabel = $derived(originLabel(chipOrigin));
+  /** The mount the session is scoped into — see `originMount` for why it shows. */
+  const chipMount = $derived(originMount(chipOrigin));
 
   /**
    * The unsent text of the new-session composer, held HERE rather than
@@ -440,7 +441,14 @@
           ? "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks."
           : result.error === 'input_unavailable' || result.error === 'context_doc_unavailable'
             ? 'That file is no longer there. Close this composer and start again from the message or page.'
-            : 'The session could not be started. Please try again.';
+            : // `/chat?icm=<disabled-or-bogus>` renders a composer perfectly
+              // well — the mount is only checked when the session is created —
+              // so this is the one arm the user reaches by following a stale
+              // or hand-written link. Same sentence the route's own
+              // `errorMessage` uses, because it is the same situation.
+              result.error === 'icm_unavailable'
+              ? "That ICM isn't available. Enable it in Knowledge and try again."
+              : 'The session could not be started. Please try again.';
       return false;
     }
     const data = result.data as { id: string };
@@ -674,7 +682,7 @@
       {#if createError}
         <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
       {/if}
-      {#if chipLabel}
+      {#if chipLabel || chipMount}
         <!-- Without this the change trades a canned turn the user did not want
              for an empty box with no visible evidence the source is in play.
              See `origin-label.ts` for the untrusted-label and blank-chip notes.
@@ -682,14 +690,29 @@
              2.79:1, and this chip is the session's ONLY attachment signal, not
              a count sitting beside legible text. The paperclip is decorative,
              so the relation it draws has to exist in text for a screen reader
-             — hence the visually-hidden prefix. -->
+             — hence the visually-hidden prefix.
+             The mount rides along in the SAME ink, not meta: it is what the
+             session is scoped INTO (`includeMounts` — a whole mail account),
+             so it is the security-legible half of this chip, not a caption.
+             See `origin-label.ts`. -->
         <div class="px-4 pb-2">
           <span
             class="bg-paper-track text-ink-subtitle inline-flex max-w-full items-center gap-1.5 truncate rounded-md px-2 py-1 text-[12px]"
           >
             <Paperclip class="size-3.5 shrink-0" aria-hidden="true" />
             <span class="sr-only">Attached: </span>
-            <span class="truncate">{chipLabel}</span>
+            {#if chipLabel}
+              <span class="truncate">{chipLabel}</span>
+            {/if}
+            {#if chipMount}
+              {#if chipLabel}
+                <span class="shrink-0 opacity-60" aria-hidden="true">·</span>
+              {/if}
+              <span class="sr-only">in </span>
+              <!-- `shrink-0`: when the two compete for width the LABEL gives
+                   way, because the mount is the grant. -->
+              <span class="max-w-[16ch] shrink-0 truncate">{chipMount}</span>
+            {/if}
           </span>
         </div>
       {/if}
