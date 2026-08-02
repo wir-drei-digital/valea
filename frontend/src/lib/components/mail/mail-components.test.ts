@@ -1231,7 +1231,7 @@ describe('reviseErrorMessage', () => {
   it.each([
     ['not_found', 'This draft no longer exists.'],
     ['link_unsafe', 'This draft file is not a regular file.'],
-    ['harness_unavailable', "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks."],
+    ['harness_unavailable', "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks."],
     ['workspace_not_open', 'No workspace is open.'],
     ['workspace_changed', 'Your workspace changed. Reopen it and try again.'],
     ['anything_else', 'Could not send the feedback. Please try again.']

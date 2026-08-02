@@ -698,7 +698,7 @@ export function reviseErrorMessage(code: string): string {
     case 'no_icm_available':
       return NO_HOST_ICM_MESSAGE;
     case 'harness_unavailable':
-      return "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks.";
+      return "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks.";
     case 'not_found':
       return 'This draft no longer exists.';
     case 'link_unsafe':

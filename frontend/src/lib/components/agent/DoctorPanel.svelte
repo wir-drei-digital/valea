@@ -22,7 +22,7 @@
   import { api } from '$lib/api/client';
 
   // `showIntro: false` drops the panel's own heading/explainer — used when a
-  // host surface (the Agent settings dialog) already provides its own
+  // host surface (the Settings dialog's Agent section) already provides its own
   // section framing around the checks.
   let { showIntro = true }: { showIntro?: boolean } = $props();
 
@@ -71,7 +71,7 @@
       <h2 class="font-display text-[19px] text-ink-heading">Checking your assistant</h2>
       <p class="max-w-[480px] text-[13px] text-ink-body">
         Valea uses your own Claude Code. Sign in once in a terminal and check again — or adjust
-        the harness in Agent settings (the gear at the bottom of the sidebar).
+        the harness in Settings → Agent (the gear at the bottom of the sidebar).
       </p>
     </div>
   {/if}

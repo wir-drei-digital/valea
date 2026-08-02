@@ -306,7 +306,7 @@
       case 'icm_unavailable':
         return "This session's project isn't available. Enable it in the sidebar and try again.";
       case 'harness_unavailable':
-        return "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks.";
+        return "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks.";
       case 'not_found':
         return 'This session is no longer on disk.';
       default:
@@ -438,7 +438,7 @@
     if (!result.ok) {
       createError =
         result.error === 'harness_unavailable'
-          ? "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks."
+          ? "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks."
           : result.error === 'input_unavailable' || result.error === 'context_doc_unavailable'
             ? 'That file is no longer there. Close this composer and start again from the message or page.'
             : // `/chat?icm=<disabled-or-bogus>` renders a composer perfectly

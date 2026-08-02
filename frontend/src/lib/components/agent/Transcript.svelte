@@ -71,7 +71,7 @@
       <div class="border-warn-border bg-warn-tint rounded-xl border px-4 py-3" role="alert">
         <p class="text-warn-ink text-[13px]">The assistant couldn't continue: {asString(item.text)}</p>
         <p class="text-warn-ink mt-1 text-[12px]">
-          If this keeps happening, open Agent settings (the gear at the bottom of the sidebar) and
+          If this keeps happening, open Settings → Agent (the gear at the bottom of the sidebar) and
           run the checks.
         </p>
       </div>

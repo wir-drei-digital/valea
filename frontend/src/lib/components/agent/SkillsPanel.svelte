@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Skills section of the agent settings modal (ICM skills design spec
+  // The Skills part of the Settings dialog's Agent section (ICM skills design spec
   // §Frontend). Lists every mounted ICM and, per ICM, the catalog skills
   // with their current on-disk state (`Valea.Skills.state/2`) and the one
   // action that state offers (`actionFor`). Install/update route through the

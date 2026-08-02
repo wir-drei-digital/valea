@@ -176,7 +176,7 @@
       if (!result.ok) {
         quickError =
           result.error === 'harness_unavailable'
-            ? "The assistant isn't ready — open Agent settings (gear in the sidebar) and run the checks."
+            ? "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks."
             : 'The session could not be started. Please try again.';
         return;
       }
