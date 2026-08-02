@@ -66,6 +66,17 @@ function sharedKeys(base: Record<string, unknown>): string[] {
   return Object.keys(base).filter((k) => !PER_PLATFORM.has(k));
 }
 
+/**
+ * Every platform file that overrides the base window. The restatement rule is
+ * a property of the MERGE, not of any one platform, so the expectations below
+ * are parameterised over this list rather than written out per file: a third
+ * platform costs one entry here instead of five near-identical tests, and —
+ * the failure that actually matters — no platform can be added while quietly
+ * skipping one of the five. What is genuinely per-platform (`shadow`, and the
+ * bundle overrides further down) stays written out on its own.
+ */
+const PLATFORM_FILES = ['tauri.windows.conf.json', 'tauri.linux.conf.json'] as const;
+
 describe('the main window is restated consistently across platform configs', () => {
   const base = mainWindow('tauri.conf.json');
 
@@ -82,22 +93,26 @@ describe('the main window is restated consistently across platform configs', () 
     expect(base?.visible).toBe(false);
   });
 
-  // `base ?? {}` is safe here only because these two assertions defend it: a
-  // null base fails the test above, and an empty derived set fails the
-  // `length` check rather than making every loop below iterate nothing.
-  // Equality alone also can't tell a matching key from an absent one that
-  // Tauri will quietly fill with a serde default, so presence is asserted with
-  // `Object.hasOwn` before any value is compared.
-  it('the derived shared set is non-empty and every key is present in windows', () => {
-    const keys = sharedKeys(base ?? {});
-    expect(keys.length).toBeGreaterThan(0);
-
-    const win = requireMainWindow('tauri.windows.conf.json');
-    for (const key of keys) expect([key, Object.hasOwn(win, key)]).toEqual([key, true]);
+  // `base ?? {}` is safe in every test below only because two assertions
+  // defend it: a null base fails the test above, and an empty derived set
+  // fails this `length` check rather than making every loop iterate nothing
+  // and pass.
+  it('the derived shared set is non-empty', () => {
+    expect(sharedKeys(base ?? {}).length).toBeGreaterThan(0);
   });
 
-  it('windows restates every shared key with the base value', () => {
-    const win = requireMainWindow('tauri.windows.conf.json');
+  // Equality alone can't tell a matching key from an absent one that Tauri
+  // will quietly fill with a serde default, so presence is asserted with
+  // `Object.hasOwn` before any value is compared.
+  it.each(PLATFORM_FILES)('%s declares every shared key', (file) => {
+    const win = requireMainWindow(file);
+    for (const key of sharedKeys(base ?? {})) {
+      expect([key, Object.hasOwn(win, key)]).toEqual([key, true]);
+    }
+  });
+
+  it.each(PLATFORM_FILES)('%s restates every shared key with the base value', (file) => {
+    const win = requireMainWindow(file);
     for (const key of sharedKeys(base ?? {})) {
       expect([key, win[key]]).toEqual([key, base?.[key]]);
     }
@@ -108,18 +123,17 @@ describe('the main window is restated consistently across platform configs', () 
   // and would otherwise pass unexamined. Either it belongs in the base and
   // every platform owes it, or it is genuinely per-platform and belongs in
   // `PER_PLATFORM` where the next reader can see it.
-  it('windows declares no key that is neither shared nor per-platform', () => {
+  it.each(PLATFORM_FILES)('%s declares no key that is neither shared nor per-platform', (file) => {
     const shared = sharedKeys(base ?? {});
-    const win = requireMainWindow('tauri.windows.conf.json');
+    const win = requireMainWindow(file);
     const undeclared = Object.keys(win).filter(
       (k) => !PER_PLATFORM.has(k) && !shared.includes(k)
     );
     expect(undeclared).toEqual([]);
   });
 
-  it('windows is frameless', () => {
-    const win = requireMainWindow('tauri.windows.conf.json');
-    expect(win.decorations).toBe(false);
+  it.each(PLATFORM_FILES)('%s is frameless', (file) => {
+    expect(requireMainWindow(file).decorations).toBe(false);
   });
 
   // Not subsumed by the "no undeclared key" test above, and the reason is worth
@@ -129,9 +143,20 @@ describe('the main window is restated consistently across platform configs', () 
   // being meaningless outside macOS. Harmless at runtime, but they would imply
   // the overlay chrome applies here, which is the misreading this whole feature
   // exists to correct.
-  it('windows carries no macOS-only keys', () => {
-    const win = requireMainWindow('tauri.windows.conf.json');
+  it.each(PLATFORM_FILES)('%s carries no macOS-only keys', (file) => {
+    const win = requireMainWindow(file);
     for (const key of MACOS_ONLY) expect([key, Object.hasOwn(win, key)]).toEqual([key, false]);
+  });
+
+  // `shadow` is the one window key the two frameless platforms answer
+  // differently, so it is the one that cannot be parameterised. Tauri
+  // documents it as unsupported on Linux, and CSS cannot stand in: a webview's
+  // box-shadow is clipped to the native window bounds and `border-radius` does
+  // not shape the GDK surface. Stating it would be a claim the platform
+  // ignores — Windows states `true` (already the serde default) because there
+  // it is real, and documents the 1px border and Win11 rounding it brings.
+  it('linux asks for no shadow', () => {
+    expect(requireMainWindow('tauri.linux.conf.json').shadow).toBeUndefined();
   });
 });
 

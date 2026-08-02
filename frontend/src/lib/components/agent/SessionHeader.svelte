@@ -90,9 +90,9 @@
 </script>
 
 {#if icmName || onArchive || onDelete || onToggleFiles}
-  <!-- Clears the app-drawn window controls (frameless Windows, and Linux once
-       `tauri.linux.conf.json` lands) when this header is the one band beneath
-       them: a chat PRIMARY with no side pane open.
+  <!-- Clears the app-drawn window controls (frameless Windows and Linux) when
+       this header is the one band beneath them: a chat PRIMARY with no side
+       pane open.
 
        Unconditional here on purpose — this component cannot see which column
        it is in, and it does not have to. `--window-controls-inset` is SCOPED,

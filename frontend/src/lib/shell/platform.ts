@@ -5,19 +5,17 @@
  *
  * `tauri.conf.json`'s `titleBarStyle: "Overlay"` + `hiddenTitle` +
  * `trafficLightPosition` are **macOS-only** keys — Tauri ignores them
- * everywhere else. Windows reaches a comparable chromeless top edge a
- * different way: `decorations: false` in `tauri.windows.conf.json`, which
- * removes the native frame outright and leaves no OS-drawn buttons at all,
- * so the SPA owes that window min/max/close of its own. **Linux has not
- * got there yet** — there is no `tauri.linux.conf.json`, so it still
- * inherits `decorations: true` from the base config and comes up with a
- * real title bar. It joins Windows when that file lands.
+ * everywhere else. Windows and Linux reach a comparable chromeless top edge
+ * a different way: `decorations: false`, stated in `tauri.windows.conf.json`
+ * and `tauri.linux.conf.json`, which removes the native frame outright and
+ * leaves no OS-drawn buttons at all, so the SPA owes both those windows
+ * min/max/close of its own.
  *
  * The layouts that compensate for a chromeless top edge — the sidebar's
  * tall brand band, the fixed `data-tauri-drag-region` strip — were gated on
  * plain `inDesktop()`, never on the overlay, so they already rendered on
- * Windows and Linux: the ~48px band was dead space beside a real title bar
- * on Windows until `decorations: false` landed, and on Linux it still is.
+ * Windows and Linux, where the ~48px band was dead space beside a real title
+ * bar until `decorations: false` landed on each in turn.
  * `windowChrome()` is what makes that gating deliberate — it names the
  * chrome the window has rather than the runtime it happens to be in, so a
  * layout can say which of the four presentations it is compensating for.
@@ -45,18 +43,16 @@ import { inDesktop } from '../keychain';
 /**
  * Which window chrome the shell is drawing itself into.
  *
- * Four answers, not two: `decorations: false` gives Windows its own frameless
- * chrome and will give Linux the same, so "is this the macOS overlay" stopped
- * being enough.
+ * Four answers, not two: `decorations: false` gives Windows and Linux their own
+ * frameless chrome, so "is this the macOS overlay" stopped being enough.
  *
  *   'browser'       — a real browser tab. Draws no window furniture.
  *   'macos-overlay' — `titleBarStyle: "Overlay"`: the OS still draws the
  *                     traffic lights, the SPA draws under them.
  *   'windows'       — frameless. The SPA draws min/max/close itself.
- *   'linux'         — frameless too, with GNOME-inspired controls, ONCE
- *                     `tauri.linux.conf.json` lands. Until then this window
- *                     still has a native title bar; the value names the
- *                     platform, not a promise about the current frame.
+ *   'linux'         — frameless too, with GNOME-INSPIRED controls: Linux has
+ *                     no single convention to match, so the value names the
+ *                     platform, not a promise to look native on it.
  *
  * An unrecognised desktop UA answers `'browser'` on purpose. It is the only
  * value that draws nothing, and drawing our own controls over a real title bar

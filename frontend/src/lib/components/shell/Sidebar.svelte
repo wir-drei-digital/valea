@@ -36,11 +36,11 @@
   // which carries `data-tauri-drag-region` itself because Tauri's drag
   // handler only fires on the element the mousedown lands on.
   //
-  // On Linux the app does NOT own its frame yet (no `tauri.linux.conf.json`,
-  // so `decorations` is still the base config's `true`), and the band is
-  // still the dead space beside a native title bar that it was on Windows
-  // before `decorations: false`. Rendering it there is pre-existing
-  // behaviour this refactor deliberately preserves, not a new claim.
+  // On frameless Windows and Linux there are no traffic lights to clear, but
+  // the band stays: it is the app's large drag surface, and the only one once
+  // the shell has replaced onboarding. (It rendered there before those
+  // windows went frameless too, as dead space beside a native title bar —
+  // what changed is that it now earns its height.)
   const chrome = windowChrome();
 
   let settingsOpen = $state(false);

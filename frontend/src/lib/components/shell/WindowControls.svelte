@@ -1,10 +1,12 @@
 <script lang="ts">
   /**
    * Minimise / maximise / close, drawn by the app because `decorations: false`
-   * took the OS ones away — on Windows today, and on Linux once
-   * `tauri.linux.conf.json` lands. Until that file exists a Linux build still
-   * comes up with a native title bar, so this component draws a second set of
-   * controls beside the real ones there; the two land together on this branch.
+   * took the OS ones away — stated in `tauri.windows.conf.json` and
+   * `tauri.linux.conf.json` alike, so both those windows come up with no
+   * native frame and no OS-drawn buttons at all. `windowChrome()` cannot see
+   * those files: the pairing is a convention, and a platform routed here
+   * whose config still said `decorations: true` would get this cluster drawn
+   * beside a real title bar.
    *
    * PLATFORM CONVENTION BEATS OURS HERE, and this is the only place in Valea
    * where that is true. On Windows people know exactly where these buttons are,

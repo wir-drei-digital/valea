@@ -146,8 +146,8 @@
   Read this before adding a header that reserves it.
 
   The root layout sets one value on `:root`: the width of the app-drawn window
-  controls (frameless Windows, and Linux once `tauri.linux.conf.json` lands),
-  or 0px everywhere the OS draws its own. Those controls are `fixed` to the
+  controls (frameless Windows and Linux), or 0px everywhere the OS draws its
+  own. Those controls are `fixed` to the
   window's TOP RIGHT, so exactly ONE band in the app is underneath them — the
   topmost row of whichever column is rightmost — and only that band may reserve
   room. Every other header must read 0px, or it pays 138px of padding for

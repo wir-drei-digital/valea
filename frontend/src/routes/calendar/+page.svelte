@@ -142,8 +142,8 @@
       <!-- Calendar hosts no `PaneHost`, so nothing ever scopes
            `--window-controls-inset` away from this route and this header is
            ALWAYS the band under the app-drawn window controls (frameless
-           Windows, and Linux once `tauri.linux.conf.json` lands) — the one
-           consumer with no arrangement to check. The `, 0px` fallback is
+           Windows and Linux) — the one consumer with no arrangement to
+           check. The `, 0px` fallback is
            required, not defensive: a `calc()` against an undefined custom
            property is invalid at computed-value time and the browser drops
            the whole `padding-right`, base px-7 included. -->

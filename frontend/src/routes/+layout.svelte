@@ -17,15 +17,23 @@
 
   let { children } = $props();
 
-  // Wherever the app owns its frame — the macOS overlay, frameless Windows,
-  // and Linux once `tauri.linux.conf.json` lands — no native title bar
-  // offers a grab handle, so a thin strip along the very top edge is always
-  // a drag region. This is what makes the window draggable on every screen,
-  // onboarding included (the sidebar's brand band is a second, larger drag
-  // surface once the shell renders).
-  // 12px tall: inside every pane's own top padding, so it never sits over
-  // anything interactive. Keyed on `windowChrome()` rather than
-  // `inDesktop()` because the strip answers to the chrome, not the runtime.
+  // Wherever the app owns its frame — the macOS overlay, and frameless
+  // Windows and Linux — no native title bar offers a grab handle, so a thin
+  // strip along the very top edge is always a drag region. This is what makes
+  // the window draggable on every screen, onboarding included (the sidebar's
+  // brand band is a second, larger drag surface once the shell renders).
+  //
+  // 12px tall, on every platform. That is exactly a pane header's own top
+  // padding (`pt-3`), so the strip clears the header's 24px content row and
+  // leaves all but the ~6px overhang of its `size-8 -my-1.5` buttons
+  // clickable. It must not grow "so the whole top edge drags": the strip is a
+  // sheet on top (see the element's comment), so a 32px one would swallow
+  // most of promote and close on every side pane, and the calendar route's
+  // top-right actions with them. The sidebar's 48px brand band is the large
+  // drag surface, and it renders on every desktop OS.
+  //
+  // Keyed on `windowChrome()` rather than `inDesktop()` because the strip
+  // answers to the chrome, not the runtime.
   const chrome = windowChrome();
 
   // The controls are `fixed`, so nothing reserves their space automatically.
@@ -81,7 +89,22 @@
 </script>
 
 {#if chrome !== 'browser'}
-  <div data-tauri-drag-region class="fixed inset-x-0 top-0 z-50 h-3" aria-hidden="true"></div>
+  <!-- The top edge is a drag surface. It must END before the window controls,
+       not layer over them: this element is `fixed`, so it is a sheet ON TOP
+       rather than an ancestor, and the buttons beneath it would never be in
+       the click's composed path at all. (Tauri's own drag script already
+       refuses to drag when a BUTTON is in that path — that protection simply
+       does not apply to a sheet above them.) `pointer-events: none` would
+       disable the drag along with the problem.
+
+       On macOS nothing sets `--window-controls-inset` (the OS draws the
+       traffic lights), so the `0px` fallback spans the full width as before. -->
+  <div
+    data-tauri-drag-region
+    class="fixed top-0 left-0 z-50 h-3"
+    style="right: var(--window-controls-inset, 0px)"
+    aria-hidden="true"
+  ></div>
 {/if}
 
 <!-- ABOVE the three branches on purpose: `AppShell` only exists in the third
