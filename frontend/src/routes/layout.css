@@ -118,17 +118,21 @@
      which keeps `shadow-<color>` modifiers composing AND follows the theme.
 
      The other consumer is `box-shadow: var(--shadow-card)` in
-     `src/lib/editor/tiptap.css`. It resolves against the `--shadow-card` that
-     Tailwind emits into the theme layer at `:root,:host`. Theme variables are
-     tree-shaken only when nothing is seen referencing them, and that `var()` is
-     precisely what keeps this one — confirmed by building. So do NOT restate
-     the composed shadow in `:root` "for safety": it compiles fine and then
-     silently desynchronises from the utility the moment someone edits one of
-     the two copies of the geometry.
+     `src/lib/editor/tiptap.css`, which resolves against the `--shadow-card`
+     Tailwind emits into the theme layer at `:root,:host`.
 
-     `--shadow-window` has no consumer, so it is tree-shaken in both themes
-     alike — symmetric, and the `shadow-window` utility still generates on
-     demand the day something uses it. */
+     OPERATIVE RULE: do not restate the composed shadow in `:root`. Tailwind
+     already emits it, and a second declaration makes the geometry a second
+     source of truth that silently desynchronises from the utility the first
+     time somebody edits one of the two.
+
+     OPEN QUESTION, deliberately left open rather than guessed at:
+     `--shadow-card` is emitted even with every consumer of it removed, while
+     `--shadow-window`, which has no consumer, is not emitted at all. Builds
+     agree on that outcome, but three separate attempts to reduce it to a rule
+     about reference-driven tree-shaking were each refuted by the next build.
+     So treat the emitted stylesheet as the source of truth and re-check it
+     after touching this block; do not reason from a rule about what survives. */
   --shadow-card-color: rgba(42, 38, 32, 0.05);
   --shadow-window-color: rgba(42, 38, 32, 0.28);
 }
@@ -242,11 +246,23 @@
   --ring: var(--act);
 
   /* Shadows are near-invisible on dark paper — an elevation system that
-     silently stops working. Only the COLOUR is overridden: the geometry is
-     single-sourced in `@theme inline`, and the `--shadow-card` Tailwind emits
-     from it resolves `var(--shadow-card-color)` lazily, so both the utility and
-     tiptap's `var()` sites pick this up on any element inside `.dark` without
-     the shadow being restated here. */
+     silently stops working. Only the COLOUR is overridden here; the geometry
+     stays in `@theme inline`.
+
+     IMPORTANT — measured in a browser against the built stylesheet, not
+     reasoned. This override reaches direct `var(--shadow-card)` consumers
+     (tiptap.css) ONLY because `.dark` is set on <html>, the element that also
+     carries `:root`. `--shadow-card`'s inner `var(--shadow-card-color)` is
+     substituted where `--shadow-card` is declared — at `:root` — and inherits
+     already resolved. It is not re-evaluated per consumer.
+
+     The consequence, which is a live trap for any scoped light/dark preview
+     pane: put `.dark` on a NON-root wrapper and the `shadow-card` utility
+     themes correctly, because it sets `--tw-shadow` on the element itself,
+     while direct `var(--shadow-card)` consumers inside that wrapper stay
+     LIGHT. Measured on a wrapper div: utility rgba(0, 0, 0, 0.45), `var()`
+     rgba(42, 38, 32, 0.05) — and that is with `--shadow-card-color` computing
+     to the dark value on the very same element. */
   --shadow-card-color: rgba(0, 0, 0, 0.45);
   --shadow-window-color: rgba(0, 0, 0, 0.65);
 }
