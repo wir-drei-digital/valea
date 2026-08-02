@@ -36,7 +36,19 @@
   let shown = $state<Set<SettingsSectionId>>(new Set([DEFAULT_SECTION]));
   let instances = $state<Partial<Record<SettingsSectionId, SectionInstance | null>>>({});
 
-  $effect(() => {
+  // `$effect.pre`, NOT `$effect`. Every open starts on the default section, and
+  // the reset has to land BEFORE the content subtree renders with it. A plain
+  // user `$effect` runs AFTER that render, so a reopen would first render the
+  // previous `active`/`shown` — mounting a section, then destroying it one
+  // frame later when this reset shrinks `shown`. Harmless while the panes were
+  // static, not harmless now that a pane can hold state or a mount-time effect.
+  // Pre-effects flush in tree order ahead of the render effects below them, so
+  // the subtree is created from the settled values.
+  //
+  // Resetting on close (`if (!open)`) would fix the ordering too, but the dialog
+  // animates out over ~100ms and stays mounted for it, so the user would watch
+  // the pane rewind to Agent as it faded.
+  $effect.pre(() => {
     if (open) {
       active = DEFAULT_SECTION;
       shown = new Set([DEFAULT_SECTION]);

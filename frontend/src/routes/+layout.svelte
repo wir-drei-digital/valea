@@ -14,6 +14,7 @@
   import WindowControls from '$lib/components/shell/WindowControls.svelte';
   import { controlsInset } from '$lib/components/shell/window-controls';
   import { windowChrome } from '$lib/shell/platform';
+  import { themeStore } from '$lib/stores/theme.svelte';
 
   let { children } = $props();
 
@@ -50,6 +51,22 @@
     document.documentElement.style.setProperty('--window-controls-inset', inset);
     return () => document.documentElement.style.removeProperty('--window-controls-inset');
   });
+
+  // `static/theme-init.js` already put the class on <html> before first paint;
+  // this attaches the OS `prefers-color-scheme` listener and takes ownership of
+  // every later change. THE ONLY `start()` CALL SITE IN THE APP: `start()` hands
+  // every caller the same teardown object, so a second caller's cleanup would
+  // detach the listener out from under this one. Returning it here detaches on
+  // destroy.
+  //
+  // Nothing else may go in this effect body, and nothing reactive may be read
+  // beside it: `start()` runs `#apply()` synchronously here, and this effect
+  // re-running is exactly the issue #4 failure mode (tear down and re-register
+  // the media listener on every theme change). `#apply()`'s `untrack` is what
+  // keeps the count at one; `theme.test.svelte.ts` — "does not re-run the layout
+  // effect that owns start()" — pins this shape at EXACTLY one run across a
+  // theme change and an OS change.
+  $effect(() => themeStore.start());
 
   // Joins `workspace:events` once, through the single `wireIcmEvents` call:
   // `icm_changed` keeps the sidebar tree live (Task 18 acceptance
