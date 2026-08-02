@@ -13,13 +13,8 @@
         "resizable": true,
         "fullscreen": false,
         "visible": false,
-        "decorations": false,
-        "shadow": true
+        "decorations": false
       }
     ]
-  },
-  "bundle": {
-    "targets": ["nsis"],
-    "externalBin": ["binaries/valea-server", "binaries/valea-spawn"]
   }
 }

@@ -2,7 +2,7 @@
   import { page } from '$app/state';
   import Settings from '@lucide/svelte/icons/settings';
   import { mainNav } from '$lib/shell/nav';
-  import { inDesktop } from '$lib/keychain';
+  import { windowChrome } from '$lib/shell/platform';
   import Logo from './Logo.svelte';
   import SidebarItem from './SidebarItem.svelte';
   import SectionOverline from './SectionOverline.svelte';
@@ -26,24 +26,33 @@
   } = $props();
 
   const sections = mainNav();
-  // Desktop (Tauri) runs with an overlay title bar: the macOS traffic
-  // lights float over the webview at the window's top-left, exactly where
-  // this sidebar's brand header sits. Clear them with extra top padding and
-  // make the whole band a window-drag region (children are
-  // pointer-events-none so a mousedown anywhere in the band targets the
-  // band itself — Tauri's drag handler only fires on the element that
-  // carries the attribute).
-  const desktop = inDesktop();
+  // The brand band doubles as the traffic-light clearance on macOS and as a
+  // drag surface everywhere the app owns its frame. `windowChrome()` rather
+  // than `inDesktop()`: the two are the same set today, but the reason the
+  // band exists is the chrome, not the runtime.
+  //
+  // On macOS the lights float over the webview at the window's top-left,
+  // exactly where the brand lockup would sit — hence the empty 48px band,
+  // which carries `data-tauri-drag-region` itself because Tauri's drag
+  // handler only fires on the element the mousedown lands on.
+  //
+  // On frameless Windows and Linux there are no traffic lights to clear, but
+  // the band stays: it is the app's LARGE drag surface, alongside the root
+  // layout's 12px top strip — which is deliberately too thin to be the only
+  // one. (It rendered there before those windows went frameless too, as dead
+  // space beside a native title bar; what changed is that it now earns its
+  // height.)
+  const chrome = windowChrome();
 
   let settingsOpen = $state(false);
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Brand header. In the DESKTOP app this band is chromeless — no mark,
-       no wordmark (the traffic lights live here instead; the brand shows on
-       the onboarding screen) — but it stays as the traffic-light clearance
-       and a window-drag surface. In the browser it carries the lockup. -->
-  {#if desktop}
+  <!-- Brand header. In the DESKTOP app this band is chromeless — no mark, no
+       wordmark (on macOS the traffic lights live here instead; the brand
+       shows on the onboarding screen) — but it stays as that clearance and
+       as a window-drag surface. In the browser it carries the lockup. -->
+  {#if chrome !== 'browser'}
     <div data-tauri-drag-region class="h-12 shrink-0"></div>
   {:else}
     <div class="flex items-center gap-2.5 px-3 pt-4 pb-3">

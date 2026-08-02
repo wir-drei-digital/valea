@@ -141,8 +141,47 @@
   Nothing here is ever hidden-but-mounted: a pane is mounted or it is gone, so
   requested, mounted and visible panes are always one set.
 -->
+<!--
+  ── `--window-controls-inset` IS SCOPED HERE, NOT GLOBAL ────────────────────
+  Read this before adding a header that reserves it.
+
+  The root layout sets one value on `:root`: the width of the app-drawn window
+  controls (frameless Windows and Linux), or 0px everywhere the OS draws its
+  own. Those controls are `fixed` to the window's TOP RIGHT, so exactly ONE
+  band in the app is underneath them — the topmost row of whichever column is
+  rightmost — and only that band may reserve room. Every other header must read
+  0px, or it pays a whole cluster width of padding (138px on Windows, 104px on
+  Linux) for furniture that is nowhere near it.
+
+  Custom properties inherit, so this component — the only one that knows which
+  column is rightmost — zeroes the variable for the subtrees that are NOT, and
+  every header downstream keeps its one unconditional `calc()` and comes out
+  right. That is the whole reason no `gutter` prop is threaded through nine
+  routes; `NavToggle`'s comment records that attempt and its reversal.
+
+  What each subtree ends up reading:
+    · primary column, side panes open  → zeroed below (the primary is on the
+      LEFT; its route header is not under the controls)
+    · primary column, no side panes    → left alone, so the route's own header
+      (SessionHeader, knowledge, calendar) is the band that reserves
+    · side-pane CONTENT, always        → zeroed; it sits below this component's
+      header band, so it is never the topmost row, not even in the last pane
+    · last side pane's HEADER          → the one band that reserves when panes
+      are open (see its `calc()` below)
+
+  Measured in a browser against the built CSS, all four arrangements: exactly
+  one band reserves in each, and none reserves twice.
+-->
 <PaneGroup direction="horizontal" class="min-h-0 flex-1" {onLayoutChange}>
-  <Pane order={1} defaultSize={layout[0]} minSize={20} class="flex min-h-0 min-w-0 flex-col">
+  <Pane
+    order={1}
+    defaultSize={layout[0]}
+    minSize={20}
+    class={[
+      'flex min-h-0 min-w-0 flex-col',
+      panes.length > 0 ? '[--window-controls-inset:0px]' : ''
+    ]}
+  >
     {@render primary()}
   </Pane>
   {#each keyed as { pane, key }, i (key)}
@@ -162,9 +201,23 @@
     >
       <!-- Same vertical band as the chat header (pt-3 + 24px content row +
            pb-2), so every header rule across the row reads as one continuous
-           line. size-8/-my-1.5 buttons keep >=32px hit targets without
-           growing the band. -->
-      <div class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2">
+           line. size-8/-my-1.5 buttons keep 32px hit targets without growing
+           the band — except in THIS header on a desktop window, where the root
+           layout's 12px drag strip covers the top few px of the overhang and
+           leaves at least 26px. That is the geometry `+layout.svelte`'s comment
+           records, and the reason the strip must not get taller. -->
+      <!-- Only the LAST pane's header reserves: it is the topmost row of the
+           rightmost column, so it is the one band under the window controls.
+           See the scoping comment above `PaneGroup`. The `, 0px` fallback is
+           required rather than defensive — a `calc()` against an undefined
+           custom property is invalid at computed-value time and drops the
+           whole declaration, taking the base px-3 with it. -->
+      <div
+        class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
+        style={i === keyed.length - 1
+          ? 'padding-right: calc(0.75rem + var(--window-controls-inset, 0px))'
+          : undefined}
+      >
         <!-- A kind whose controls name the pane themselves renders no title:
              the Files tab strip IS the title, and the band has room for one or
              the other, not both. Everything else keeps the plain label. -->
@@ -197,7 +250,20 @@
         </button>
       </div>
       {@const View = entry.view}
-      <View descriptor={pane} context={paneContext(pane, i)} {state} />
+      <!-- Pane content is never the topmost row — the header band above it
+           always is — so it must not reserve for the window controls even in
+           the LAST pane, where the header already did. Unconditional, because
+           "below a header" is true of every pane in the row. This is what
+           keeps a `ChatView` in a side pane from paying for a `SessionHeader`
+           inset it cannot see (see the scoping comment above `PaneGroup`).
+
+           `contents` generates no box, so the view's own root stays a direct
+           flex child of the Pane and the layout is untouched; a `display:
+           contents` element still carries computed styles, and custom
+           properties inherit through it. -->
+      <div class="contents [--window-controls-inset:0px]">
+        <View descriptor={pane} context={paneContext(pane, i)} {state} />
+      </div>
     </Pane>
   {/each}
 </PaneGroup>

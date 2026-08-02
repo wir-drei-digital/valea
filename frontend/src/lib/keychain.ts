@@ -1,6 +1,10 @@
 // This module, `updater.ts`, and `shell/external-link.ts` are the ONLY
 // modules allowed to touch Tauri IPC (grep-able boundary, mirrors
-// `api/client.ts`'s header comment for `ash_rpc`). This one wraps the
+// `api/client.ts`'s header comment for `ash_rpc`). One COMPONENT is outside
+// that boundary on purpose — `components/shell/WindowControls.svelte` drives
+// min/max/close through `@tauri-apps/api/window` — because there is no data
+// to wrap and no browser fallback to define: it renders only where the app
+// owns the window frame, which is nowhere a browser is. This one wraps the
 // desktop crate's `keyring`-backed commands (mail design spec,
 // §Credentials): service name = the app bundle identifier, account =
 // `workspace_id:username`, where `workspace_id` is the persistent UUID

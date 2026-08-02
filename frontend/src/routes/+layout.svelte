@@ -11,17 +11,45 @@
   import { updatesStore } from '$lib/stores/updates.svelte';
   import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
-  import { inDesktop } from '$lib/keychain';
+  import WindowControls from '$lib/components/shell/WindowControls.svelte';
+  import { controlsInset } from '$lib/components/shell/window-controls';
+  import { windowChrome } from '$lib/shell/platform';
 
   let { children } = $props();
 
-  // Desktop only: the window has no native title bar (overlay style), so a
-  // thin strip along the very top edge is always a drag region — this is
-  // what makes the window draggable on every screen, onboarding included
-  // (the sidebar's brand band is a second, larger drag surface once the
-  // shell renders). 12px tall: inside every pane's own top padding, so it
-  // never sits over anything interactive.
-  const desktop = inDesktop();
+  // Wherever the app owns its frame — the macOS overlay, and frameless
+  // Windows and Linux — no native title bar offers a grab handle, so a thin
+  // strip along the very top edge is always a drag region. This is what makes
+  // the window draggable on every screen, onboarding included (the sidebar's
+  // brand band is a second, larger drag surface once the shell renders).
+  //
+  // 12px tall, on every platform. That is exactly a pane header's own top
+  // padding (`pt-3`), so the strip clears the header's 24px content row and
+  // leaves all but the ~6px overhang of its `size-8 -my-1.5` buttons
+  // clickable. It must not grow "so the whole top edge drags": the strip is a
+  // sheet on top (see the element's comment), so a 32px one would swallow
+  // most of promote and close on every side pane, and the calendar route's
+  // top-right actions with them. The sidebar's 48px brand band is the large
+  // drag surface, and it renders on every desktop OS.
+  //
+  // Keyed on `windowChrome()` rather than `inDesktop()` because the strip
+  // answers to the chrome, not the runtime.
+  const chrome = windowChrome();
+
+  // The controls are `fixed`, so nothing reserves their space automatically.
+  // ONE variable on the document root, set here because this is the only
+  // component that knows whether the controls render at all. Cleared on
+  // destroy so a hot reload cannot leave a stale inset behind.
+  //
+  // The width comes from `controlsInset`, which derives it from the same
+  // metrics the component lays the buttons out from — a hand-copied total here
+  // would drift the moment a button width changed, and nothing would complain.
+  $effect(() => {
+    const inset = controlsInset(chrome);
+    if (inset === '0px') return;
+    document.documentElement.style.setProperty('--window-controls-inset', inset);
+    return () => document.documentElement.style.removeProperty('--window-controls-inset');
+  });
 
   // Joins `workspace:events` once, through the single `wireIcmEvents` call:
   // `icm_changed` keeps the sidebar tree live (Task 18 acceptance
@@ -60,8 +88,37 @@
   });
 </script>
 
-{#if desktop}
-  <div data-tauri-drag-region class="fixed inset-x-0 top-0 z-50 h-3" aria-hidden="true"></div>
+{#if chrome !== 'browser'}
+  <!-- The top edge is a drag surface. It must END before the window controls,
+       not layer over them: this element is `fixed`, so it is a sheet ON TOP
+       rather than an ancestor, and the buttons beneath it would never be in
+       the click's composed path at all. (Tauri's own drag script already
+       refuses to drag when a BUTTON is in that path — that protection simply
+       does not apply to a sheet above them.) `pointer-events: none` would
+       disable the drag along with the problem.
+
+       On macOS nothing sets `--window-controls-inset` (the OS draws the
+       traffic lights), so the `0px` fallback spans the full width as before.
+
+       `pointer-events-auto` for the same reason `WindowControls` carries it:
+       bits-ui's scroll lock sets `document.body.style.pointerEvents = "none"`
+       while any modal is open, and `app.html` nests the whole app inside
+       `<body>`, so this strip inherits it. Without this the window cannot be
+       DRAGGED while a dialog is open — Tauri hit-tests the event target, and
+       an element with `pointer-events: none` is never one. -->
+  <div
+    data-tauri-drag-region
+    class="pointer-events-auto fixed top-0 left-0 z-50 h-3"
+    style="right: var(--window-controls-inset, 0px)"
+    aria-hidden="true"
+  ></div>
+{/if}
+
+<!-- ABOVE the three branches on purpose: `AppShell` only exists in the third
+     one, so controls rendered there would leave anyone on the loading surface
+     or in onboarding with no way to close the window. -->
+{#if chrome === 'windows' || chrome === 'linux'}
+  <WindowControls {chrome} />
 {/if}
 
 {#if workspaceStore.state === 'loading'}

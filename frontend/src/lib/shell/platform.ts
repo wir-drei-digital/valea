@@ -1,16 +1,24 @@
 /**
- * Which window chrome the shell is drawing itself into (windows-support
- * spec §E2).
+ * Which window chrome the shell is drawing itself into
+ * (`2026-08-02-frameless-windows-linux-chrome-design.md`, "The chrome
+ * question becomes four-valued" — this supersedes windows-support §E2).
  *
  * `tauri.conf.json`'s `titleBarStyle: "Overlay"` + `hiddenTitle` +
  * `trafficLightPosition` are **macOS-only** keys — Tauri ignores them
- * everywhere else, so Windows and Linux windows come up with ordinary
- * native decorations and no traffic lights. Any layout that compensates
- * for the overlay (the sidebar's tall brand band, a fixed
- * `data-tauri-drag-region` strip across the top) must therefore key on
- * "macOS overlay", NOT on `inDesktop()` — which is equally true on
- * Windows, where the same compensation would leave a dead ~48px strip
- * under a real title bar.
+ * everywhere else. Windows and Linux reach a comparable chromeless top edge
+ * a different way: `decorations: false`, stated in `tauri.windows.conf.json`
+ * and `tauri.linux.conf.json`, which removes the native frame outright and
+ * leaves no OS-drawn buttons at all, so the SPA owes both those windows
+ * min/max/close of its own.
+ *
+ * The layouts that compensate for a chromeless top edge — the sidebar's
+ * tall brand band, the fixed `data-tauri-drag-region` strip — were gated on
+ * plain `inDesktop()`, never on the overlay, so they already rendered on
+ * Windows and Linux, where the ~48px band was dead space beside a real
+ * title bar until `decorations: false` landed on each in turn.
+ * `windowChrome()` is what makes that gating deliberate — it names the
+ * chrome the window has rather than the runtime it happens to be in, so a
+ * layout can say which of the four presentations it is compensating for.
  *
  * UA sniffing rather than `@tauri-apps/plugin-os`: this decides
  * presentation only (never a security or capability gate), it must answer
@@ -20,13 +28,48 @@
  * async platform round-trip (and a plugin permission) for that would be
  * the worse trade.
  *
+ * The Linux branch accepts `X11` as well as `Linux` because WebKitGTK
+ * leads with `X11;` and is not Linux-only (a BSD carries `X11` and no
+ * `Linux` token). Branch ORDER, by contrast, is documentation rather than
+ * a tiebreak: no UA any of the three webviews emits carries two of these
+ * tokens, so nothing reaches a second branch and no test pins the order.
+ *
  * `inDesktop()` is checked first and short-circuits, so SSR/prerender
- * (no `navigator`) and browser dev both answer `false` without touching
- * the UA.
+ * (no `navigator`) and browser dev both answer `'browser'` without
+ * touching the UA.
  */
 import { inDesktop } from '../keychain';
 
-/** True only in the packaged desktop app on macOS, where the title bar is an overlay the SPA draws under. */
+/**
+ * Which window chrome the shell is drawing itself into.
+ *
+ * Four answers, not two: `decorations: false` gives Windows and Linux their own
+ * frameless chrome, so "is this the macOS overlay" stopped being enough.
+ *
+ *   'browser'       — a real browser tab. Draws no window furniture.
+ *   'macos-overlay' — `titleBarStyle: "Overlay"`: the OS still draws the
+ *                     traffic lights, the SPA draws under them.
+ *   'windows'       — frameless. The SPA draws min/max/close itself.
+ *   'linux'         — frameless too, with GNOME-INSPIRED controls: Linux has
+ *                     no single convention to match, so the value names the
+ *                     platform, not a promise to look native on it.
+ *
+ * An unrecognised desktop UA answers `'browser'` on purpose. It is the only
+ * value that draws nothing, and drawing our own controls over a real title bar
+ * is a worse failure than drawing none.
+ */
+export type WindowChrome = 'browser' | 'macos-overlay' | 'windows' | 'linux';
+
+export function windowChrome(): WindowChrome {
+  if (!inDesktop()) return 'browser';
+  const ua = navigator.userAgent;
+  if (ua.includes('Macintosh')) return 'macos-overlay';
+  if (ua.includes('Windows')) return 'windows';
+  if (ua.includes('Linux') || ua.includes('X11')) return 'linux';
+  return 'browser';
+}
+
+/** True only where the OS draws the title bar and the SPA draws under it. */
 export function overlayChrome(): boolean {
-  return inDesktop() && navigator.userAgent.includes('Macintosh');
+  return windowChrome() === 'macos-overlay';
 }

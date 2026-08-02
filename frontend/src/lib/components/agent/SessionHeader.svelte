@@ -90,7 +90,24 @@
 </script>
 
 {#if icmName || onArchive || onDelete || onToggleFiles}
-  <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
+  <!-- Clears the app-drawn window controls (frameless Windows and Linux) when
+       this header is the one band beneath them: a chat PRIMARY with no side
+       pane open.
+
+       Unconditional here on purpose — this component cannot see which column
+       it is in, and it does not have to. `--window-controls-inset` is SCOPED,
+       not global: `PaneHost` zeroes it for the primary when side panes exist
+       and for all pane content, so in every other arrangement this `calc()`
+       resolves to plain px-4. Read `PaneHost`'s scoping comment before
+       assuming this reserves space; it usually does not.
+
+       The `, 0px` fallback is required, not defensive: a `calc()` against an
+       undefined custom property is invalid at computed-value time and the
+       browser drops the whole `padding-right`, base px-4 included. -->
+  <div
+    class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2"
+    style="padding-right: calc(1rem + var(--window-controls-inset, 0px))"
+  >
     {#if icmName}
       <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
       <span class="text-ink-meta text-[12px]">
