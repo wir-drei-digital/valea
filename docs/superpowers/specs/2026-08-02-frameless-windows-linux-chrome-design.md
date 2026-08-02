@@ -454,9 +454,13 @@ Each step leaves the app working everywhere, macOS untouched throughout.
    layout branches, `fixed` top-right, actions, maximised state, listener
    cleanup, and the `--window-controls-inset` variable consumed by `PaneHost`'s
    header. Windows is usable frameless here.
-4. **Drag strip** — widened, ending before the controls; confirm the resize
-   edges arrive and that Tauri's resize child HWND does not eat the top of the
-   buttons.
+4. **Drag strip** — kept at 12px on every platform and ended before the
+   controls; confirm the resize edges arrive and that Tauri's resize child HWND
+   does not eat the top of the buttons. *(This line said "widened" until
+   2026-08-02 and contradicted the Drag surfaces section three pages up, which
+   had already been corrected. Widening it is a bug — a taller `fixed z-50`
+   sheet swallows clicks on `PaneHost`'s header buttons and calendar's
+   top-right actions.)*
 5. **Linux** — `tauri.linux.conf.json` (restated, no `shadow`), the
    GNOME-inspired branch, and the environment matrix.
 6. **Config drift guard** — a test reading all three Tauri config files and
