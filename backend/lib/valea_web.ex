@@ -18,7 +18,7 @@ defmodule ValeaWeb do
   """
 
   def static_paths,
-    do: ~w(_app assets fonts images favicon.ico favicon.png favicon.svg robots.txt)
+    do: ~w(_app assets fonts images favicon.ico favicon.png favicon.svg robots.txt theme-init.js)
 
   def router do
     quote do

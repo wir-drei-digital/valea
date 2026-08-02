@@ -1,14 +1,17 @@
 <!doctype html>
-<!-- Light-only app (DESIGN_SYSTEM: "Light only; dark mode deferred").
-     color-scheme drives UA chrome (scrollbars, form controls); the inline
-     background covers first paint + overscroll before layout.css loads. -->
-<html lang="en" style="background:#fbf8f1">
+<!-- The theme is applied by `static/theme-init.js` BEFORE first paint, so
+     neither the background nor `color-scheme` is hardcoded here any more.
+     It is an external file rather than an inline script because the
+     hash-mode CSP in svelte.config.js (`script-src 'self'`) blocks inline
+     scripts it did not generate — see docs/superpowers/specs/
+     2026-08-02-settings-shell-and-dark-mode-design.md. -->
+<html lang="en">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
-		<meta name="color-scheme" content="light" />
 		<link rel="icon" type="image/png" href="%sveltekit.assets%/favicon.png" />
+		<script src="%sveltekit.assets%/theme-init.js"></script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
