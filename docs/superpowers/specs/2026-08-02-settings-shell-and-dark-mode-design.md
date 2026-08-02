@@ -292,19 +292,29 @@ because it cannot import from the bundle without becoming render-blocking on the
 app chunk. `theme-init.test.ts` guards the duplication by evaluating the real
 file against a stubbed `document`/`localStorage`/`matchMedia` and asserting it
 produces the same result as `resolveTheme` for all six preference × OS
-combinations. A second assertion checks the built `index.html` actually
-references the file, so a rename cannot silently drop it.
+combinations.
+
+That test deliberately stops there. Whether the built page actually *references*
+the file, and whether the server actually serves it, cannot be asserted by
+`vitest run` — see [Testing](#testing) for why reading `build/index.html` from a
+unit test is worse than not testing it. Those two facts are release-path checks.
 
 ### The palette
 
 `.dark` redefines every colour token in `:root`. Non-colour tokens (radius,
 fonts, `--window-controls-inset`) are not redefined.
 
-**Direction of lift is preserved, not inverted.** In light, `canvas` is the
-darkest paper and `card` the lightest; a lifted element is lighter than its
-container. Dark keeps that relationship — `canvas` darkest, `card` lightest — so
-"lifted onto card paper" continues to mean the same thing and no component needs
-to reason about which theme it is in.
+**Direction of lift is preserved, not inverted.** In light, a lifted element is
+lighter than its container. Dark keeps that relationship along the elevation
+chain — `canvas` → `sidebar` → `track` → `surface` → `panel` → `card`, each
+lighter than the last — so "lifted onto card paper" continues to mean the same
+thing and no component needs to reason about which theme it is in.
+
+`pill`, `nav-active` and `tree-active` sit *above* `card` in luminance. That is
+not a break in the chain: they are interaction-state fills, not elevation
+levels, and they read as "this row is picked out" rather than "this surface is
+raised". They are lighter than their containers in both themes, which is the
+property that matters.
 
 Starting ramp, warm (hue ≈ 40°, low saturation) so it reads as night paper
 rather than neutral slate:
@@ -329,7 +339,7 @@ rather than neutral slate:
 | `--ink-secondary` | `#57503f` | `#bdb4a0` |
 | `--ink-subtitle` | `#6e6656` | `#a79d88` |
 | `--ink-meta` | `#948a75` | `#8a8071` |
-| `--ink-overline` | `#a89085` | `#a08c7e` |
+| `--ink-overline` | `#a89085` | `#8d7a6b` |
 
 Consequence colours keep their meanings and gain dark-appropriate values. Note
 `--act-hover` goes **lighter** than `--act` in dark, where light darkens it —
@@ -368,6 +378,30 @@ only. Dark mirrors the rule: `--ink-meta` on `--paper-surface` is the floor for
 meaningful text and **must measure at least as well as the light pairing does**;
 `--ink-overline` stays restricted to ≥700-weight overlines and counts. Any
 pairing below the floor is fixed, not documented as a known issue.
+
+Measured for the ramp above, on `--paper-surface` `#1e1a13`:
+
+| Ink | Dark | Light equivalent |
+|---|---|---|
+| heading | 14.19:1 | — |
+| body | 11.29:1 | — |
+| secondary | 8.41:1 | — |
+| subtitle | 6.45:1 | — |
+| meta | **4.46:1** | 3.22:1 — dark clears it |
+| overline | 4.23:1 | quieter than meta, as in light |
+
+The ordering matters as much as the numbers, and it is easy to get wrong in
+dark. An earlier draft used `#a08c7e` for the dark overline, which measured
+5.40:1 — *more* readable than `--ink-meta`, inverting the light ramp where
+overline is the quietest ink and is restricted precisely because it is the
+quietest. That would have left the "≥700 weight only" rule with no reason
+behind it, and invited someone to relax it. `#8d7a6b` keeps overline below meta
+in both themes, so the restriction is justified by the same fact in both.
+
+The lift ordering is likewise verified numerically, not by eye: the nine paper
+tokens ascend in luminance monotonically from `canvas` (L=0.0061) to
+`tree-active` (L=0.0303), so "lifted is lighter" holds in dark exactly as it
+does in light.
 
 ### Role tokens vs surface tokens
 
@@ -538,12 +572,22 @@ uses, so the white sheet reads as deliberate rather than unstyled.
 Pin only the container and the paragraph and those anchors keep resolving
 `--ink-heading`, which in dark is `#efe8d8` — near-white text on a white sheet,
 invisible. Every ink the white sheet contains has to be pinned, not just the
-body: link colour, underline colour and hover underline colour. These become
-**document-surface roles** (`--doc-bg`, `--doc-ink`, `--doc-link`,
-`--doc-link-underline`) that hold the same values in both themes, so the sheet
-is defined once and the plain-text and HTML branches can share it — rather than
-literals sprinkled at each call site, which is how `text-ink-heading` came to be
-there in the first place.
+body: link colour, underline colour and hover underline colour.
+
+**These cannot be shared as CSS variables across the two branches**, and saying
+so would be wrong. `HtmlMailView.svelte:42-44` records why: "the iframe document
+can't reach the app's CSS variables, and the CSP allows no external stylesheet."
+The iframe is a separate document with its own CSP, so it will always carry
+literals in its `srcdoc` string.
+
+The two branches are therefore single-sourced in **TypeScript, not CSS**: a
+`mail-document-palette.ts` module exports the sheet's values (background, ink,
+link, underline). The iframe interpolates them into its `srcdoc`; the
+plain-text branch feeds them to CSS custom properties scoped to the message
+card. One definition, two delivery mechanisms, and a test asserting the
+plain-text card's computed colours match the constants the iframe was given —
+which is the only way the "two views of one message share a surface" invariant
+can actually be enforced rather than asserted in a comment.
 
 **PDFs.** `PdfView.svelte` renders pages onto canvases via pdf.js. A typical PDF
 is a white page and stays one; nothing recolours it. The dark work is the
