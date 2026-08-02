@@ -304,17 +304,27 @@ unit test is worse than not testing it. Those two facts are release-path checks.
 `.dark` redefines every colour token in `:root`. Non-colour tokens (radius,
 fonts, `--window-controls-inset`) are not redefined.
 
-**Direction of lift is preserved, not inverted.** In light, a lifted element is
-lighter than its container. Dark keeps that relationship along the elevation
-chain — `canvas` → `sidebar` → `track` → `surface` → `panel` → `card`, each
-lighter than the last — so "lifted onto card paper" continues to mean the same
-thing and no component needs to reason about which theme it is in.
+**The elevation chain keeps its order.** Sorted by luminance, the light
+palette's structural surfaces run `canvas` → `track` → `sidebar` → `panel` →
+`surface` → `card`: the desk is darkest, a recessed control track sits above it,
+then the sidebar and rail chrome, then the content surface, with a card lifted
+highest. Dark reproduces **that** order, so "lifted onto card paper" means the
+same thing in both themes and no component has to reason about which one it is
+in.
 
-`pill`, `nav-active` and `tree-active` sit *above* `card` in luminance. That is
-not a break in the chain: they are interaction-state fills, not elevation
-levels, and they read as "this row is picked out" rather than "this surface is
-raised". They are lighter than their containers in both themes, which is the
-property that matters.
+Note the order is not the order the tokens are declared in, and getting it
+wrong is easy: an earlier draft of this palette put `panel` above `surface` and
+swapped `sidebar` with `track`, which is monotonic in its own ordering while
+silently inverting two relationships the light palette has. The invariant is
+checked against the light palette's actual ordering, not against a chain
+someone wrote down.
+
+**Interaction fills move the other way, and that is correct.** `pill`,
+`nav-active` and `tree-active` are *darker* than their surface in light and
+*lighter* than it in dark: to pick a row out you darken cream paper and lighten
+dark paper. Their invariant is therefore "stands off its surface", never "is
+lighter than" — the one place the two themes legitimately run in opposite
+directions.
 
 Starting ramp, warm (hue ≈ 40°, low saturation) so it reads as night paper
 rather than neutral slate:
@@ -322,10 +332,10 @@ rather than neutral slate:
 | Token | Light | Dark |
 |---|---|---|
 | `--paper-canvas` | `#e9e3d6` | `#14120c` |
-| `--paper-sidebar` | `#f3eee2` | `#17140e` |
-| `--paper-track` | `#eee8d9` | `#1a160f` |
+| `--paper-track` | `#eee8d9` | `#17140e` |
+| `--paper-sidebar` | `#f3eee2` | `#1a160f` |
+| `--paper-panel` | `#f7f2e7` | `#1c1811` |
 | `--paper-surface` | `#fbf8f1` | `#1e1a13` |
-| `--paper-panel` | `#f7f2e7` | `#221e16` |
 | `--paper-card` | `#fffefa` | `#27221a` |
 | `--paper-pill` | `#ece5d2` | `#2c271e` |
 | `--paper-nav-active` | `#e7dfca` | `#322c22` |
@@ -398,10 +408,21 @@ quietest. That would have left the "≥700 weight only" rule with no reason
 behind it, and invited someone to relax it. `#8d7a6b` keeps overline below meta
 in both themes, so the restriction is justified by the same fact in both.
 
-The lift ordering is likewise verified numerically, not by eye: the nine paper
-tokens ascend in luminance monotonically from `canvas` (L=0.0061) to
-`tree-active` (L=0.0303), so "lifted is lighter" holds in dark exactly as it
-does in light.
+The lift ordering is likewise verified numerically, not by eye — and against
+the light palette's ordering rather than a plausible-looking one:
+
+| Surface | Light L | Dark L |
+|---|---|---|
+| `canvas` | 0.7712 | 0.00608 |
+| `track` | 0.8090 | 0.00714 |
+| `sidebar` | 0.8570 | 0.00828 |
+| `panel` | 0.8905 | 0.00941 |
+| `surface` | 0.9399 | 0.01062 |
+| `card` | 0.9905 | 0.01650 |
+
+Both columns ascend, in the same order, so "lifted is lighter" holds in dark
+exactly as it does in light. The three interaction fills are excluded from this
+chain by design, per the note above.
 
 ### Role tokens vs surface tokens
 
