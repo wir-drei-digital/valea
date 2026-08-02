@@ -428,8 +428,25 @@
     file: 'file'
   };
 
-  async function createAndPrompt(text: string): Promise<void> {
-    if (descriptor.kind !== 'chat-new' || creating) return;
+  /**
+   * The unsent text of the new-session composer, held HERE rather than
+   * inside `Composer`, because this is the one `onSend` that can be refused:
+   * `Composer.submit` empties the box the instant it hands the text over,
+   * and every `return false` below happens after that. Without somewhere to
+   * hand it back, "The session could not be started. Please try again." /
+   * "Close this composer and start again" would land on a user whose
+   * paragraph had just been deleted — the one way the composer flow would be
+   * worse than the canned prompt it replaced.
+   */
+  let composerDraft = $state('');
+
+  async function sendFromComposer(text: string): Promise<void> {
+    if (!(await createAndPrompt(text))) composerDraft = text;
+  }
+
+  /** True only if a session was created; every refusal returns false so the text survives. */
+  async function createAndPrompt(text: string): Promise<boolean> {
+    if (descriptor.kind !== 'chat-new' || creating) return false;
     creating = true;
     createError = null;
 
@@ -452,7 +469,7 @@
     if (from && from.kind !== 'mail-message' && !icmId) {
       creating = false;
       createError = 'This project has no loadable identity. Run Diagnose from the sidebar.';
-      return;
+      return false;
     }
 
     // The grant is derived from `from.path` — never from `from.label`, which
@@ -484,13 +501,14 @@
           : result.error === 'input_unavailable' || result.error === 'context_doc_unavailable'
             ? 'That file is no longer there. Close this composer and start again from the message or page.'
             : 'The session could not be started. Please try again.';
-      return;
+      return false;
     }
     const data = result.data as { id: string };
     setInitialPrompt(data.id, text);
     void sessionsListStore.refresh();
     void recentSessionsStore.refresh();
     context.sessionCreated?.(data.id);
+    return true;
   }
 
   // --- Stick-to-bottom auto-scroll while a reply streams in ---
@@ -736,9 +754,10 @@
         </div>
       {/if}
       <Composer
+        bind:draft={composerDraft}
         busy={creating}
         configItems={[]}
-        onSend={(text) => void createAndPrompt(text)}
+        onSend={(text) => void sendFromComposer(text)}
         onStop={() => {}}
         onSetConfig={() => {}}
       />

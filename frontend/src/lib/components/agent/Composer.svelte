@@ -36,7 +36,8 @@
     onEditQueued = () => {},
     onDismissQueued = () => {},
     onSendQueuedNow = () => {},
-    placeholder = 'Message the agent…'
+    placeholder = 'Message the agent…',
+    draft = $bindable('')
   }: {
     busy: boolean;
     configItems: AcpItemLike[];
@@ -50,9 +51,17 @@
     onDismissQueued?: (id: string) => void;
     onSendQueuedNow?: (id: string) => void;
     placeholder?: string;
+    /**
+     * The unsent text in the box. Bindable so a caller whose `onSend` can
+     * FAIL can hand the text back: `submit` clears it the moment it hands
+     * over, and an unbound caller sees exactly the previous internal-state
+     * behavior (writes stay local). Only `ChatView`'s new-session composer
+     * binds it — creating a session is the one send that can be refused
+     * after the box has already been emptied.
+     */
+    draft?: string;
   } = $props();
 
-  let text = $state('');
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
   const LINE_HEIGHT_PX = 20; // matches text-[13.5px] leading-[1.5] rendered height
@@ -70,16 +79,22 @@
     textareaEl.style.height = `${Math.min(textareaEl.scrollHeight, MAX_HEIGHT_PX)}px`;
   }
 
+  // The box's height follows the VALUE, not the keystroke: a send empties it
+  // and a failed create fills it back in, and neither fires an `input` event,
+  // so a keystroke-only autogrow would leave a one-line box wrapped around
+  // several lines of restored text (and a several-line box around nothing
+  // after a send).
+  $effect(() => {
+    void draft;
+    autogrow();
+  });
+
   // Sending stays live while busy — `onSend` (store.send) queues it then.
   function submit() {
-    const value = text.trim();
+    const value = draft.trim();
     if (!value) return;
     onSend(value);
-    text = '';
-    // Collapse back to one line after send — the DOM value is already
-    // cleared via bind:value; recompute height on the next tick's input event
-    // won't fire since no keystroke follows, so reset it directly here.
-    if (textareaEl) textareaEl.style.height = 'auto';
+    draft = '';
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -247,7 +262,7 @@
     <div class="flex items-end gap-3 px-4 py-3">
       <textarea
         bind:this={textareaEl}
-        bind:value={text}
+        bind:value={draft}
         oninput={autogrow}
         onkeydown={onKeydown}
         rows="1"
@@ -270,7 +285,7 @@
         <button
           type="button"
           onclick={submit}
-          disabled={!text.trim()}
+          disabled={!draft.trim()}
           aria-label={busy ? 'Queue message' : 'Send message'}
           title={busy ? 'Queue message' : 'Send'}
           class="bg-act hover:bg-act-hover flex size-[30px] items-center justify-center rounded-full text-white transition-colors disabled:opacity-40"

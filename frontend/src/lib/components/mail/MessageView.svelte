@@ -471,11 +471,6 @@
   }
 
   /**
-   * Why the button cannot start a session, in the order the user can act on.
-   * A message with no file on disk was already refused — silently, by a bare
-   * `disabled` — so it joins the reasons rather than staying a mystery.
-   */
-  /**
    * Which ICM hosts the session this message would start. Mirrors
    * `routes/chat/+page.svelte`'s `primaryMountKey()` fallback: the first
    * enabled, non-degraded mount (`icmStore.groups` is already filtered to
@@ -491,6 +486,17 @@
    */
   const mailMountKey = $derived(mailStore.selectedAccount ? `mail-${mailStore.selectedAccount}` : null);
 
+  // Availability is only ever asserted from LOADED data (same guard as
+  // `MailPane`'s `known`): both stores start EMPTY and stay empty until
+  // their first fetch resolves — SSR is off, so that is the default state on
+  // a cold `/mail?message=…` load — and "no enabled project" read off an
+  // unfilled `icmStore.groups` would be a false, actionable-sounding
+  // accusation on a button that then silently no-ops when clicked.
+  // `icmStore.loaded` never flips on a failed `list_icms`, so `listError` is
+  // what ends the wait in that case (see `icm.svelte.ts`).
+  const projectsKnown = $derived(icmStore.loaded || icmStore.listError !== null);
+  const mailboxKnown = $derived(mailStore.statusLoaded);
+
   // Every reason the button can refuse, in the order the user can act on
   // them. The host-mount and account cases used to surface as an error
   // AFTER the click, from the create call that no longer happens here;
@@ -498,11 +504,15 @@
   const sessionRefusal = $derived(
     !message.path
       ? 'This message has no file on disk to open a session about'
-      : !mailMountKey
-        ? 'No mail account is selected'
-        : !hostMountKey
-          ? 'No enabled project can host the session. Enable one in the sidebar'
-          : sessionBesideRefusal
+      : !projectsKnown || !mailboxKnown
+        ? 'Still loading your projects and mailbox'
+        : icmStore.listError
+          ? 'Your projects could not be listed — see the sidebar'
+          : !mailMountKey
+            ? 'No mail account is selected'
+            : !hostMountKey
+              ? 'No enabled project can host the session. Enable one in the sidebar'
+              : sessionBesideRefusal
   );
 
   /**
