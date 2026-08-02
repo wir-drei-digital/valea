@@ -303,6 +303,43 @@ defmodule Valea.Api.AgentsTest do
       end
     end
 
+    # THE PRODUCTION MAIL PATH. Every other test in this describe reaches
+    # `opened_from/3` through a `context_doc` locator, which is not how a mail
+    # session is ever created: "Start a session" on a message sends an `input`
+    # locator (the message file is granted as one exact read path, and the
+    # premise must name THAT file, not the ICM's context doc). `input_abs` is
+    # also the arm that WINS when both locators are present, so it is the one
+    # arm a context-doc test can never exercise.
+    test "an input locator is what the premise names for a mail message", %{
+      ws: ws,
+      generation: generation,
+      icm: icm
+    } do
+      Valea.App.Config.set_harness_command(fake_cmd("happy"))
+
+      rel = "sources/mail/mara/views/messages/42.md"
+      File.mkdir_p!(Path.join([ws, "sources", "mail", "mara", "views", "messages"]))
+      File.write!(Path.join(ws, rel), "From: mara@example.com\nSubject: Invoice\n")
+
+      assert {:ok, %{id: id, input_path: input_path}} =
+               run(:create_session, %{
+                 mount_key: icm.mount_key,
+                 generation: generation,
+                 opened_from_kind: "mail_message",
+                 input: %{"kind" => "workspace", "path" => rel}
+               })
+
+      on_exit(fn -> kill_session(id) end)
+
+      # Asserted against the GRANTED path, never one rebuilt from `ws`: the
+      # locator resolver expands symlinks (`/var` → `/private/var` on macOS),
+      # and the premise has to name exactly the file the session may read.
+      assert input_path =~ rel
+      assert premise(ws, id) =~ "This session was opened from a mail message: #{input_path}."
+      assert [meta | _] = transcript_lines(ws, id)
+      assert Jason.decode!(meta)["opened_from_kind"] == "mail_message"
+    end
+
     test "a session created without an origin kind gets no premise paragraph", %{
       ws: ws,
       generation: generation,
