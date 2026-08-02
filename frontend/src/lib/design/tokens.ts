@@ -18,10 +18,19 @@ export type Palette = 'light' | 'dark';
  * Returns `{}` when the requested block does not exist yet.
  */
 export function readPalette(palette: Palette): Record<string, string> {
-  const css = readFileSync(CSS_PATH, 'utf8');
-  const selector = palette === 'light' ? ':root' : '.dark';
-  const start = css.indexOf(`${selector} {`);
-  if (start === -1) return {};
+  // Strip comments BEFORE searching. A prose mention of the selector followed
+  // by a brace — e.g. describing "the `.dark { ... }` block" in a comment —
+  // otherwise wins the search, and the walk below then reads a comment body
+  // and returns {}, which makes every palette invariant pass vacuously.
+  const css = readFileSync(CSS_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Anchored to the start of a line, so `html.dark {` in `@layer base` cannot
+  // match either — the old substring search only avoided it by accident of
+  // source order.
+  const selector = palette === 'light' ? ':root' : '\\.dark';
+  const m = new RegExp(`^\\s*${selector}\\s*\\{`, 'm').exec(css);
+  if (!m) return {};
+  const start = m.index;
 
   // Walk braces from the selector so nested blocks cannot end it early.
   let depth = 0;

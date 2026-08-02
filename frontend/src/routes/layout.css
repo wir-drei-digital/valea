@@ -103,6 +103,30 @@
      alternative was a `gutter` prop threaded through every route, which
      `NavToggle`'s comment records as having been tried and reverted. */
   --window-controls-inset: 0px;
+
+  /* ── Shadows ──────────────────────────────────────────────────────────────
+     Split into geometry + colour because they have two kinds of consumer and
+     `@theme inline` only serves one of them.
+
+     `@theme inline` substitutes a theme value's literal TEXT into the utility
+     it generates, so a hard-coded colour there is frozen at build time and no
+     `.dark` override can reach `.shadow-card`. Written as geometry plus
+     `var(--shadow-card-color)`, Tailwind still parses the two apart — the
+     utility comes out as
+       `--tw-shadow: 0 1px 2px var(--tw-shadow-color, var(--shadow-card-color))`
+     which keeps `shadow-<color>` modifiers composing AND follows the theme.
+
+     The second consumer is `box-shadow: var(--shadow-card)` in
+     `src/lib/editor/tiptap.css`, which is a separate stylesheet outside this
+     Tailwind compile. `@theme inline` emits NO custom property of its own (that
+     is what `inline` means), so those sites had no value at all until this
+     declaration existed — verified by compiling. Declaring the composed shadow
+     here serves them, and because `var()` resolves against the element, they
+     follow `.dark` through `--shadow-card-color` too. */
+  --shadow-card-color: rgba(42, 38, 32, 0.05);
+  --shadow-window-color: rgba(42, 38, 32, 0.28);
+  --shadow-card: 0 1px 2px var(--shadow-card-color);
+  --shadow-window: 0 24px 60px var(--shadow-window-color);
 }
 
 /* ── Night paper ───────────────────────────────────────────────────────────
@@ -110,20 +134,23 @@
    grey dark mode would be a different product at night.
 
    Direction of lift is PRESERVED, not inverted. The elevation chain
-   canvas -> sidebar -> track -> surface -> panel -> card gets lighter, so
+   canvas -> track -> sidebar -> panel -> surface -> card gets lighter, so
    "lifted onto card paper" means the same thing in both themes and no
-   component has to know which one it is in. `pill`, `nav-active` and
-   `tree-active` sit above `card`: they are interaction-state fills, not
-   elevation levels.
+   component has to know which one it is in. That is the measured luminance
+   order, and it is NOT the order the tokens are declared in; `contrast.test.ts`
+   asserts exactly this sequence. `pill`, `nav-active` and `tree-active` sit
+   above `card`: they are interaction-state fills, not elevation levels.
 
    `--ink-overline` is QUIETER than `--ink-meta` here, as in light. An
    earlier draft made it brighter, which measured fine but inverted the ramp
    and left the "overlines >= 700 weight only" rule with no reason behind
    it. `contrast.test.ts` pins the ordering.
 
-   Every value is 6-digit hex on purpose: `readPalette` lowercases but does
-   not normalise length, and `relativeLuminance` throws on 3- and 8-digit
-   forms, so a shorthand here would fail the invariants as a TypeError. */
+   Every value is 6-digit hex as house style, so the palette reads as one
+   column and diffs stay legible. `readPalette` lowercases but does not
+   normalise length: 3-digit shorthand would survive (`contrast.ts` expands it,
+   and `contrast.test.ts` asserts `relativeLuminance('#fff') === 1`), but an
+   8-digit `#rrggbbaa` throws `Error: not a hex colour`. */
 .dark {
   /* paper */
   --paper-canvas: #14120c;
@@ -146,9 +173,17 @@
   --ink-subtitle: #a79d88;
   --ink-meta: #8a8071;
   --ink-overline: #8d7a6b;
-  /* green — acts. Hover goes LIGHTER here; on dark paper, more is lighter. */
+  /* green — acts. Hover goes LIGHTER here; on dark paper, more is lighter.
+     But the lift is capped: `UpdateNotice.svelte` puts real label text in
+     `--primary-foreground` on `hover:bg-act-hover`, so the hover fill still
+     has to carry normal text at 4.5:1. `--act` already measures 5.15:1, which
+     leaves only a narrow band above it — the ceiling for 4.5:1 is luminance
+     0.1812 and `--act` sits at 0.1521. An earlier #3d9269 sailed past it at
+     3.77:1. This value takes most of that band (1.14x `--act`'s luminance)
+     and spends the rest of the "more" signal on chroma rather than lightness,
+     which costs no contrast. `contrast.test.ts` pins both palettes. */
   --act: #2f7a57;
-  --act-hover: #3d9269;
+  --act-hover: #2a8354;
   --act-tint: #1c2a22;
   --act-dot: #4fa97a;
   /* amber — suggests */
@@ -201,13 +236,12 @@
   --ring: var(--act);
 
   /* Shadows are near-invisible on dark paper — an elevation system that
-     silently stops working. Deepened, and cards lean on --paper-border.
-     NOTE: this reaches the `box-shadow: var(--shadow-card)` call sites in
-     `src/lib/editor/tiptap.css` only. The `shadow-card` UTILITY is declared in
-     `@theme inline` below, which substitutes the literal value into the
-     generated class, so that half does not follow the theme yet. */
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.45);
-  --shadow-window: 0 24px 60px rgba(0, 0, 0, 0.65);
+     silently stops working. Only the COLOUR is overridden: the geometry is
+     single-sourced next to `:root`'s declaration, and `--shadow-card` there
+     resolves `var(--shadow-card-color)` lazily, so it picks this up on any
+     element inside `.dark` without being restated. */
+  --shadow-card-color: rgba(0, 0, 0, 0.45);
+  --shadow-window-color: rgba(0, 0, 0, 0.65);
 }
 
 @theme inline {
@@ -272,9 +306,10 @@
   --font-display: 'Newsreader Variable', georgia, serif;
   --font-sans: 'Instrument Sans Variable', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
-  /* shadows (design system geometry) */
-  --shadow-card: 0 1px 2px rgba(42, 38, 32, 0.05);
-  --shadow-window: 0 24px 60px rgba(42, 38, 32, 0.28);
+  /* shadows — geometry here, colour via the token, so `.dark` can re-point the
+     colour without the utility freezing a literal. See `:root` for why. */
+  --shadow-card: 0 1px 2px var(--shadow-card-color);
+  --shadow-window: 0 24px 60px var(--shadow-window-color);
 }
 
 @layer base {

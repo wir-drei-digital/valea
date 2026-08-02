@@ -49,7 +49,7 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
       'paper-canvas', 'paper-track', 'paper-sidebar', 'paper-panel', 'paper-surface', 'paper-card',
       'paper-pill', 'paper-nav-active', 'paper-tree-active',
       'ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline',
-      'primary-foreground',
+      'primary-foreground', 'act', 'act-hover',
       'avatar-fill-1', 'avatar-fill-2', 'avatar-fill-3', 'avatar-fill-4'
     ];
     // Non-emptiness first: an absent or differently-formatted block yields {},
@@ -97,6 +97,31 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
       expect(Math.abs(delta), `${token} must be distinguishable from the surface`).toBeGreaterThan(0.005);
       expect(delta < 0, `${token} must be ${expectDarker ? 'darker' : 'lighter'} than the surface`).toBe(expectDarker);
     }
+  });
+
+  // `UpdateNotice.svelte:38` renders real label text in --primary-foreground on
+  // `hover:bg-act-hover`, so the HOVER fill carries normal text and owes the
+  // same 4.5:1 as the resting fill — a threshold it is much easier to miss on,
+  // because nothing shows it until the pointer is down on the control. Dark's
+  // first draft (#3d9269) measured 3.77:1 for exactly that reason.
+  it('the act fill carries its label at 4.5:1, resting and on hover', () => {
+    const fg = p['primary-foreground'];
+    for (const token of ['act', 'act-hover']) {
+      expect(contrastRatio(p[token], fg), `${token} vs primary-foreground`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  // ...and hover must still read as "more". Same shape as the interaction
+  // fills: light darkens to intensify, dark lightens, so the direction flips
+  // but "differs, in the palette's own direction" does not. Without this, the
+  // 4.5:1 rule above could be satisfied by making dark's hover DARKER than
+  // --act, which on dark paper reads as the button receding on hover.
+  it('the act hover reads as more, in the direction its paper allows', () => {
+    const delta = relativeLuminance(p['act-hover']) - relativeLuminance(p['act']);
+    expect(Math.abs(delta), 'act-hover must be distinguishable from act').toBeGreaterThan(0.005);
+    expect(delta < 0, `act-hover must be ${palette === 'light' ? 'darker' : 'lighter'} than act`).toBe(
+      palette === 'light'
+    );
   });
 
   // The invariant AccountSwitcher.svelte:38 asserts in a comment:
