@@ -41,6 +41,7 @@
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
   import { sessionCreateOpts } from './session-create-opts';
+  import { originLabel } from './origin-label';
 
   let {
     descriptor,
@@ -378,39 +379,17 @@
   let createError = $state<string | null>(null);
 
   /**
-   * What the attachment chip says — the whole visible evidence that this
-   * composer is pointed at a source, now that the entry points no longer send
-   * a canned first turn.
+   * What the attachment chip says — the fallback chain and its blank-chip and
+   * untrusted-label notes live in `originLabel`.
    *
    * A `$derived` reading `descriptor`, never a value captured at init:
    * `label` is deliberately excluded from `paneIdentity` (Task 4), so a
    * label-only change RE-RENDERS this pane instead of remounting it, and a
    * snapshot would show the stale label for the rest of the pane's life.
-   *
-   * `||` and `.trim()` at every step, not `??`: the chain must not be able to
-   * produce a BLANK chip. `parseOrigin` only rejects a FALSY label, so a
-   * whitespace-only one survives it; and a hand-written trailing-slash path
-   * (`mail-message/INBOX%2F`) makes the basename `''`. Neither is nullish, so
-   * `??` would hand the chip an empty string and render an icon with nothing
-   * beside it. Null when nothing is displayable — then no chip renders at all,
-   * which is honest, where a blank one is just broken.
-   *
-   * SECURITY: `label` is URL-supplied and untrusted. It is display-only —
-   * every grant comes from `path` (see `createAndPrompt`) — it is capped at
-   * `ORIGIN_LABEL_CAP` by the parser, and it reaches the DOM only through
-   * plain interpolation. Never `{@html}`.
    */
-  const originLabel = $derived.by(() => {
-    const from = descriptor.kind === 'chat-new' ? descriptor.from : null;
-    if (!from) return null;
-    // Dropping empty segments makes "INBOX/" read as "INBOX" rather than
-    // falling through to the full path — a basename is what a human can use.
-    const segments = from.path
-      .split('/')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return from.label?.trim() || segments[segments.length - 1] || from.path.trim() || null;
-  });
+  const chipLabel = $derived.by(() =>
+    originLabel(descriptor.kind === 'chat-new' ? descriptor.from : null)
+  );
 
   /**
    * The unsent text of the new-session composer, held HERE rather than
@@ -695,10 +674,10 @@
       {#if createError}
         <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
       {/if}
-      {#if originLabel}
+      {#if chipLabel}
         <!-- Without this the change trades a canned turn the user did not want
              for an empty box with no visible evidence the source is in play.
-             See `originLabel` for the untrusted-label and blank-chip notes.
+             See `origin-label.ts` for the untrusted-label and blank-chip notes.
              `text-ink-subtitle`, not `text-ink-meta`: meta ink on this tint is
              2.79:1, and this chip is the session's ONLY attachment signal, not
              a count sitting beside legible text. The paperclip is decorative,
@@ -710,7 +689,7 @@
           >
             <Paperclip class="size-3.5 shrink-0" aria-hidden="true" />
             <span class="sr-only">Attached: </span>
-            <span class="truncate">{originLabel}</span>
+            <span class="truncate">{chipLabel}</span>
           </span>
         </div>
       {/if}
