@@ -77,6 +77,18 @@ describe('paneRefusal', () => {
     expect(paneRefusal({ open: 1, slots: 2, openKinds: ['chat'], wanted: 'chat-new' })).toBeNull();
     expect(paneRefusal({ open: 1, slots: 2, openKinds: ['chat-new'], wanted: 'chat' })).toBeNull();
   });
+
+  // The pairing that bit: mail's "Start a session" opens a `chat-new`, so with
+  // a composer already beside the reader it must refuse IN WORDS. Both hosts
+  // once asked about `'chat'` here, which is null above — the button rendered
+  // live and `openBeside`'s own guard then swallowed the click. `MessageView`
+  // now reads the kind off the descriptor it opens, and this is what that kind
+  // has to answer.
+  it('refuses a second new-session pane rather than answering null', () => {
+    expect(paneRefusal({ open: 1, slots: 2, openKinds: ['chat-new'], wanted: 'chat-new' })).toBe(
+      alreadyOpenRefusal('chat-new')
+    );
+  });
 });
 
 describe('alreadyOpenRefusal', () => {

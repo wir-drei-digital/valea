@@ -48,7 +48,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import type { ChatNewPaneDescriptor } from '$lib/panes/pane-route';
+  import type { ChatNewPaneDescriptor, PaneDescriptor } from '$lib/panes/pane-route';
   import {
     addressEmail,
     addressListLabel,
@@ -76,7 +76,7 @@
   let {
     message,
     onStartSessionBeside,
-    sessionBesideRefusal = null
+    besideRefusal = undefined
   }: {
     message: MailMessageDetail;
     /**
@@ -89,11 +89,19 @@
      */
     onStartSessionBeside: (d: ChatNewPaneDescriptor) => void;
     /**
-     * Why no session can open beside this message right now — the row is full,
-     * the window is too narrow, or one is already open. Rendered on the button
-     * rather than discovered by clicking it; `pane-offer.ts` writes the words.
+     * Why no pane of a given kind can open beside this message right now — the
+     * row is full, the window is too narrow, or one is already open.
+     * `pane-offer.ts` writes the words.
+     *
+     * A FUNCTION, not the answer for a kind the host picked. Both hosts used
+     * to compute `besideRefusal('chat')` while this component opened a
+     * `chat-new`, and `pane-offer.ts` compares kinds raw — so with a composer
+     * already beside, the button rendered live and the host's own
+     * `openBeside` guard then dropped the click on the floor. This way the
+     * kind is read off the descriptor that will actually be opened, one line
+     * below where it is built, and the two cannot drift apart again.
      */
-    sessionBesideRefusal?: string | null;
+    besideRefusal?: (kind: PaneDescriptor['kind']) => string | null;
   } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
@@ -497,10 +505,48 @@
   const projectsKnown = $derived(icmStore.loaded || icmStore.listError !== null);
   const mailboxKnown = $derived(mailStore.statusLoaded);
 
+  /**
+   * The pane "Start a session about this message" would open (Spec D §B/§E) —
+   * built ONCE, so the button's refusal and the button's click are answering
+   * about the same thing. `null` whenever a precondition is missing.
+   *
+   * Spec 2026-08-02: no session is created here any more. The composer opens
+   * with the message attached and NOTHING sent; `ChatView.createAndPrompt`
+   * creates the session on send — with the same exact-file `input` grant and
+   * `includeMounts` this used to pass — so abandoning the composer leaves
+   * nothing behind. The mail contract the old canned prompt spelled out (ops
+   * vocabulary, never touch maildir/, you cannot send) is already injected as
+   * system prompt on every mail-mounted session by `SessionSettings`, and the
+   * message it is about now rides the origin premise, so the prompt was pure
+   * duplication.
+   */
+  const sessionDescriptor = $derived<ChatNewPaneDescriptor | null>(
+    message.path && mailMountKey && hostMountKey
+      ? {
+          kind: 'chat-new',
+          mountKey: hostMountKey,
+          from: {
+            kind: 'mail-message',
+            path: message.path,
+            mount: mailMountKey,
+            // Display only, and never a grant — `subject` is already the
+            // "(no subject)" fallback, so this is never empty.
+            label: subject
+          }
+        }
+      : null
+  );
+
   // Every reason the button can refuse, in the order the user can act on
   // them. The host-mount and account cases used to surface as an error
   // AFTER the click, from the create call that no longer happens here;
   // they are static preconditions, so they belong on the button.
+  //
+  // The last rung asks the host about `sessionDescriptor.kind` rather than
+  // about a kind spelled out here: what this opens changed from `chat` to
+  // `chat-new` once and the hosts' hardcoded `'chat'` did not follow, which
+  // made the button render live beside an open composer and then do nothing
+  // at all when clicked.
   const sessionRefusal = $derived(
     !message.path
       ? 'This message has no file on disk to open a session about'
@@ -512,40 +558,19 @@
             ? 'No mail account is selected'
             : !hostMountKey
               ? 'No enabled project can host the session. Enable one in the sidebar'
-              : sessionBesideRefusal
+              : sessionDescriptor
+                ? (besideRefusal?.(sessionDescriptor.kind) ?? null)
+                : null
   );
 
   /**
-   * "Start a session about this message" (Spec D §B/§E).
-   *
-   * Spec 2026-08-02: no session is created here any more. The composer opens
-   * with the message attached and NOTHING sent; `ChatView.createAndPrompt`
-   * creates the session on send — with the same exact-file `input` grant and
-   * `includeMounts` this used to pass — so abandoning the composer leaves
-   * nothing behind. The mail contract the old canned prompt spelled out (ops
-   * vocabulary, never touch maildir/, you cannot send) is already injected as
-   * system prompt on every mail-mounted session by `SessionSettings`, and the
-   * message it is about now rides the origin premise, so the prompt was pure
-   * duplication.
-   *
    * The refusal is re-checked here and not merely rendered: the button is
    * `aria-disabled`, which leaves it clickable on purpose, and a composer
    * opened for a pane that cannot open is a composer left nowhere.
    */
   function startSession(): void {
-    if (sessionRefusal || !message.path || !mailMountKey || !hostMountKey) return;
-    onStartSessionBeside({
-      kind: 'chat-new',
-      mountKey: hostMountKey,
-      from: {
-        kind: 'mail-message',
-        path: message.path,
-        mount: mailMountKey,
-        // Display only, and never a grant — `subject` is already the
-        // "(no subject)" fallback, so this is never empty.
-        label: subject
-      }
-    });
+    if (sessionRefusal || !sessionDescriptor) return;
+    onStartSessionBeside(sessionDescriptor);
   }
 </script>
 
