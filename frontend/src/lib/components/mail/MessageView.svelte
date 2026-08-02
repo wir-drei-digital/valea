@@ -41,6 +41,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import HtmlMailView from './HtmlMailView.svelte';
+  import { MAIL_DOCUMENT_PALETTE as DOC } from './mail-document-palette';
   import { api } from '$lib/api/client';
   import { rawFileOpenUrl } from '$lib/components/files/raw-url';
   import { inDesktop } from '$lib/keychain';
@@ -850,19 +851,26 @@
     <HtmlMailView html={message.html} {allowRemote} />
   {:else}
     <!-- The same white reading card the HTML view's iframe provides, so the
-         two views of one message share a surface.
+         two views of one message share a surface — now enforced by
+         `mail-document-palette.ts` rather than by two sets of values that
+         happen to match. Nothing here may carry an app ink token: the sheet
+         stays light in both themes, so `text-ink-body` would go pale on
+         white and `text-ink-heading` (the old link colour) near-invisible.
          The `{#each}` sits tight against the text on purpose: inside
          `whitespace-pre-wrap` any newline or indent between these tags would
          render as literal whitespace in the message. -->
-    <div class="border-paper-border bg-paper-card rounded-xl border px-5 py-4">
+    <div
+      class="border-paper-border rounded-xl border px-5 py-4"
+      style="background:{DOC.background}; color:{DOC.ink}; --mail-sheet-link:{DOC.link}; --mail-sheet-link-line:{DOC.linkUnderline}; --mail-sheet-link-line-hover:{DOC.linkUnderlineHover}"
+    >
       <p
-        class="text-ink-body max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap"
+        class="max-w-[620px] text-[14px] leading-[1.65] whitespace-pre-wrap"
       >{#each bodySegments as segment, i (i)}{#if segment.href}{@const href = segment.href}<a
             {href}
             target="_blank"
             rel="noopener noreferrer"
             onclick={(event) => onLinkClick(event, href)}
-            class="text-ink-heading decoration-paper-button-border underline underline-offset-2 hover:decoration-ink-secondary"
+            class="text-[color:var(--mail-sheet-link)] decoration-[color:var(--mail-sheet-link-line)] underline underline-offset-2 transition-colors hover:decoration-[color:var(--mail-sheet-link-line-hover)]"
           >{segment.text}</a>{:else}{segment.text}{/if}{/each}</p>
     </div>
   {/if}

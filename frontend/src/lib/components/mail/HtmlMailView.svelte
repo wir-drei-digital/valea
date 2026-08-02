@@ -21,6 +21,7 @@
   // `openExternal` (the user's real browser / the desktop's open_external
   // command) — inside the sandbox they would otherwise just dead-end.
   import { openExternal } from '$lib/shell/external-link';
+  import { MAIL_DOCUMENT_PALETTE as DOC } from './mail-document-palette';
   import { replaceDanglingInlineImages } from './mail-shapes';
 
   let { html, allowRemote = false }: { html: string; allowRemote?: boolean } = $props();
@@ -39,18 +40,21 @@
   //
   // `replaceDanglingInlineImages` swaps every unresolved `cid:` img (its
   // attachment never landed — see `get_mail_message`'s inlining) for a
-  // labeled `.valea-img-unavailable` chip, styled below in the maildir
-  // palette's literal values: the iframe document can't reach the app's
-  // CSS variables, and the CSP allows no external stylesheet.
+  // labeled `.valea-img-unavailable` chip. Both the chip and the sheet
+  // under it are styled from `mail-document-palette.ts`, whose literals
+  // `MessageView`'s plain-text branch shares: this iframe document can't
+  // reach the app's CSS variables, and the CSP allows no external
+  // stylesheet, so TypeScript is the only place one definition can serve
+  // both views of a message.
   const srcdoc = $derived(
     `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
       `<style>` +
-      `html{background:#fff}` +
-      `body{margin:12px;font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1c1c1c;word-break:break-word}` +
+      `html{background:${DOC.background}}` +
+      `body{margin:12px;font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:${DOC.ink};word-break:break-word}` +
       `img{max-width:100%;height:auto}` +
       `.valea-img-unavailable{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;` +
-      `border:1.5px dashed #d8cfb9;border-radius:8px;background:#fbf8f1;color:#948a75;font-size:12.5px;line-height:1.4}` +
+      `border:1.5px dashed ${DOC.chipBorder};border-radius:8px;background:${DOC.chipBackground};color:${DOC.chipInk};font-size:12.5px;line-height:1.4}` +
       `.valea-img-unavailable svg{flex-shrink:0}` +
       `</style></head><body>${replaceDanglingInlineImages(html)}</body></html>`
   );
@@ -90,6 +94,6 @@
   sandbox="allow-same-origin"
   referrerpolicy="no-referrer"
   onload={onLoad}
-  style={`height: ${height}px`}
-  class="border-paper-border w-full rounded-xl border bg-white"
+  style={`height: ${height}px; background: ${DOC.background}`}
+  class="border-paper-border w-full rounded-xl border"
 ></iframe>
