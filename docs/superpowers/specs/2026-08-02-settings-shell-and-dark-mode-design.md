@@ -21,7 +21,7 @@ here rather than left to contradict the code.
 Explicitly **not** in scope: any setting other than the harness command and the
 theme; per-workspace themes (the preference is per-machine); a custom or
 user-authored palette; and dark-mode rewriting of sender HTML in mail (see
-[Mail keeps its white sheet](#mail-keeps-its-white-sheet)).
+[Original-document surfaces stay light](#original-document-surfaces-stay-light)).
 
 ## Background: why dark mode is cheap here
 
@@ -43,8 +43,8 @@ as a Tailwind colour. Measured across the codebase:
 
 | Surface | Hardcoded colours |
 |---|---|
-| 152 `.svelte` components, hex literals | 8 total — 5 in code, 3 inside comments |
-| the 5 live hex literals | 4 in the mail iframe's `srcdoc`, 1 the Windows close red |
+| 152 `.svelte` components, hex literals | 9 total — 6 in code, 3 inside comments |
+| the 6 live hex literals | 5 in the mail iframe's `srcdoc`, 1 the Windows close red |
 | `src/lib/editor/tiptap.css` | no hex; one `rgba()` (`--ttp-shadow`, `tiptap.css:42`) |
 | all components, `rgba(` | 1 (`Onboarding.svelte:30`) |
 | SVG (`Logo`, `PlantGrowth`) | 0 literals — every `fill`/`stroke` is `var(--…)` |
@@ -66,6 +66,17 @@ Its current body moves into `settings/sections/AgentSection.svelte` minus the
 `Dialog.*` chrome; its load/save/reset logic and trust-model comment travel with
 it unchanged. This is a move, not a rewrite — the harness consent step is
 security-relevant and must not be quietly re-implemented.
+
+```
+src/lib/components/settings/
+  SettingsModal.svelte        dialog shell: nav column + section pane
+  SettingsNav.svelte          the nav list inside the dialog
+  settings-sections.ts        the registry (pure data, no Svelte)
+  settings-sections.test.ts
+  sections/
+    AgentSection.svelte       moved from agent/HarnessSettingsModal.svelte
+    AppearanceSection.svelte  new
+```
 
 "Verbatim move" is the intent but is **not achievable mechanically**, and
 pretending otherwise is how the consent step gets damaged. Two things must be
@@ -100,17 +111,6 @@ executable path. That is a **pre-existing** consent gap, it is not created or
 worsened by this restructure, and closing it needs a backend change. It is
 recorded here and left for its own change rather than smuggled into a settings
 reshuffle.
-
-```
-src/lib/components/settings/
-  SettingsModal.svelte        dialog shell: nav column + section pane
-  SettingsNav.svelte          the nav list inside the dialog
-  settings-sections.ts        the registry (pure data, no Svelte)
-  settings-sections.test.ts
-  sections/
-    AgentSection.svelte       moved from agent/HarnessSettingsModal.svelte
-    AppearanceSection.svelte  new
-```
 
 ### The registry is data
 
@@ -259,10 +259,28 @@ caught. (The Phoenix response header at `spa_controller.ex:35` does permit
 meta, and the meta is the stricter one. `svelte.config.js` documents this.)
 
 A same-origin `<script src="%sveltekit.assets%/theme-init.js">` satisfies
-`script-src 'self'` with no hash to maintain — the same mechanism `app.html:12`
-already uses for the favicon. It also makes the code a real `.js` file that can
-be unit-tested directly, instead of a string embedded in HTML that can only be
-regex-asserted.
+`script-src 'self'` with no hash to maintain. It also makes the code a real
+`.js` file that can be unit-tested directly, instead of a string embedded in
+HTML that can only be regex-asserted.
+
+**It must be added to Phoenix's static allowlist or it will 404.**
+`backend/lib/valea_web.ex:20` serves only:
+
+```elixir
+~w(_app assets fonts images favicon.ico favicon.png favicon.svg robots.txt)
+```
+
+A root `/theme-init.js` is not on that list. (The favicon works precisely
+*because* `favicon.png` is named there — so "it works like the favicon" is not
+an argument, it is the thing that has to be arranged.) Either `theme-init.js`
+joins `static_paths`, or the file ships under `static/assets/` so it is served
+by the already-allowlisted `assets` prefix. **Decision: add it to
+`static_paths`**, because an explicit name is greppable and a file under
+`assets/` looks like build output while being hand-written.
+
+This must be verified in **both** delivery paths — Phoenix serving the SPA, and
+the Tauri production bundle — since a 404 here degrades exactly the way an
+inline-script CSP block does: silently, and only outside the dev server.
 
 The script stays tiny and dependency-free: read `valea.theme`, resolve against
 `matchMedia`, set the class, `color-scheme` and background. It must not throw
@@ -363,30 +381,86 @@ near-white is what you want on a dark green button, so nobody noticed. In dark
 mode they diverge completely: `--paper-card` becomes `#27221a`, and dark ink on
 a dark green fill measures roughly **3.0:1**, under the 4.5:1 normal text needs.
 
-Confirmed sites:
+The role has **three different spellings** in the codebase today, which is why
+the bug went unnoticed — no single grep shows it:
 
-| Site | Usage |
-|---|---|
-| `UpdateNotice.svelte:38` | `bg-act … text-paper-card` |
-| `TaskEditor.svelte:105` | `bg-act text-paper-card` |
-| `TaskRow.svelte:83` | `bg-act text-paper-card` |
-| `AccountSwitcher.svelte:62` and `:96` | avatar ink over four consequence fills |
-| `tiptap.css:39` | `--ttp-primary-text: var(--paper-card)` (active bubble-menu controls, used at `:535`) |
+| Site | Spelling | Dark behaviour |
+|---|---|---|
+| `UpdateNotice.svelte:38` | `bg-act … text-paper-card` | breaks |
+| `TaskEditor.svelte:105` | `bg-act text-paper-card` | breaks |
+| `TaskRow.svelte:83` | `bg-act text-paper-card` | breaks |
+| `AccountSwitcher.svelte:62`, `:96` | avatar ink, `text-paper-card` | breaks |
+| `tiptap.css:39` | `--ttp-primary-text: var(--paper-card)` (used at `:535`) | breaks |
+| `Composer.svelte:291` | `bg-act … text-white` | works, but bypasses tokens |
+| `MessageItem.svelte:34` | `bg-act … text-white` | works, but bypasses tokens |
 
-The codebase already has the right token for this role — `layout.css:62` defines
-`--primary-foreground: #fffefa` and `tiptap.css:18` even documents
+The codebase already has the right token — `layout.css:62` defines
+`--primary-foreground: #fffefa`, and `tiptap.css:18` even documents
 `--ttp-primary-text` as "matches `--primary-foreground`". The work is to make
-those uses say what they mean:
+all seven say what they mean:
 
 - Every on-accent foreground moves to `--primary-foreground` (exposed as
   `text-primary-foreground`), which stays near-white in **both** themes because
-  all four consequence fills stay dark enough to carry light ink.
-- `--ttp-primary-text` points at `--primary-foreground` rather than
-  `--paper-card`.
+  the consequence fills stay dark enough to carry light ink.
+- `--ttp-primary-text` points at `--primary-foreground` rather than `--paper-card`.
+- The two `text-white` sites move too. They are not broken, but leaving them
+  means the role has two spellings and the next person picks the wrong one.
 
 This migration ships **before** the `.dark` block, as a no-op refactor in light
-mode: `--primary-foreground` is `#fffefa` and `--paper-card` is `#fffefa`, so
-light rendering is byte-identical and the change is safe to verify on its own.
+mode: `--primary-foreground` and `--paper-card` are both `#fffefa`, so light
+rendering is byte-identical and the change is safe to verify on its own.
+
+### The inverse: ink tokens used as fills
+
+The same confusion runs the other way, and one instance interacts badly with the
+migration above.
+
+`AccountSwitcher.svelte:38` defines the avatar palette as:
+
+```ts
+const AVATAR_FILLS = ['bg-act', 'bg-warn-dot', 'bg-suggest-dash', 'bg-ink-secondary'];
+```
+
+Its comment reads "the consequence palette's dark tones — every fill carries the
+white initial at contrast". **That claim is already false today**, before dark
+mode exists. Measured against `--primary-foreground` (`#fffefa`), with the
+initials rendered at `text-[11px] font-semibold` — normal text, so the 4.5:1
+threshold applies:
+
+| Fill | Light (today) | Dark (proposed) |
+|---|---|---|
+| `--act` | 7.48:1 ✅ | 5.15:1 ✅ |
+| `--warn-dot` | **3.44:1 ❌** | **3.02:1 ❌** |
+| `--suggest-dash` | **2.38:1 ❌** | **3.36:1 ❌** |
+| `--ink-secondary` | 7.93:1 ✅ | **2.04:1 ❌** |
+
+Two of the four have never met the invariant their own comment asserts. Dark
+mode does not cause this; it exposes it, and adds a fourth failure because
+`--ink-secondary` inverts from `#57503f` to a light `#bdb4a0`.
+
+The root cause is role confusion three times over. `--warn-dot` is a *dot*
+colour, `--suggest-dash` is a *dashed-border* colour, and `--ink-secondary` is
+*ink* — none is a surface, and none was ever sized to carry text. They were
+picked because they looked right at 24px.
+
+The fix is a dedicated set of **avatar fill tokens**, defined per theme and
+contrast-checked against `--primary-foreground` as a stated requirement rather
+than an assumption. The four accounts keep four visually distinct colours in the
+Paper & ink family; they simply stop borrowing tokens that mean something else.
+The comment is rewritten, since the palette is no longer "the consequence
+palette's dark tones".
+
+Scope note: two of these failures are pre-existing and would be equally real if
+this spec were abandoned. They are fixed here rather than filed separately
+because the migration touches these exact lines, and shipping a change that
+leaves a measured 2.38:1 in place while claiming a contrast pass would be worse
+than not measuring at all.
+
+**Not a bug, checked and dismissed:** `IcmProjects.svelte:254` (`bg-ink-meta`)
+and `TaskRow.svelte:83` (`border-ink-meta`) also use ink tokens non-textually,
+but they are 4px dots and hairlines with nothing on top of them. A mark that
+tracks the ink ramp stays correctly visible against paper in both themes, which
+is what the ink ramp is for. They are left alone.
 
 ### Shadows
 
@@ -452,6 +526,25 @@ white sheet to preserve the stated invariant, or the invariant is retired.
 dark ink as the iframe, because the promise the comment makes is the right one
 and a message should not change character based on its MIME type.
 
+The surrounding chrome does **not** need changing: the message is an `article`
+with `gap-6` (`MessageView.svelte:577`), header and actions are a separately
+tokenized region (`:578-588`), the body card already carries a tokenized rounded
+border (`:857`), and attachments start their own block after it (`:870`). That
+is the same dark-chrome-around-a-light-document composition HTML mail already
+uses, so the white sheet reads as deliberate rather than unstyled.
+
+**The trap is the link.** `MessageView.svelte:865` styles inline links as
+`text-ink-heading … decoration-paper-button-border hover:decoration-ink-secondary`.
+Pin only the container and the paragraph and those anchors keep resolving
+`--ink-heading`, which in dark is `#efe8d8` — near-white text on a white sheet,
+invisible. Every ink the white sheet contains has to be pinned, not just the
+body: link colour, underline colour and hover underline colour. These become
+**document-surface roles** (`--doc-bg`, `--doc-ink`, `--doc-link`,
+`--doc-link-underline`) that hold the same values in both themes, so the sheet
+is defined once and the plain-text and HTML branches can share it — rather than
+literals sprinkled at each call site, which is how `text-ink-heading` came to be
+there in the first place.
+
 **PDFs.** `PdfView.svelte` renders pages onto canvases via pdf.js. A typical PDF
 is a white page and stays one; nothing recolours it. The dark work is the
 *framing* — page gaps, borders and the surrounding scroll surface — which is
@@ -463,6 +556,12 @@ PNGs and SVGs authored for a light backing, which can become illegible on dark
 paper. Policy: image content is never altered; the image sits on a
 `--paper-card` backing so transparency composites against a predictable surface
 rather than the canvas.
+
+This makes the result *predictable*, not *legible* — a dark-on-transparent icon
+still disappears against dark paper, and only recolouring the image could fix
+that, which the policy forbids. Accepted deliberately: silently altering a
+user's image is the worse failure. The browser pass checks a dark-on-transparent
+PNG so the limitation is seen rather than discovered later.
 
 ### Chrome that does not follow the palette
 
@@ -481,10 +580,11 @@ palette. This is deliberate: application identity is stable across themes, the
 way it is for every other desktop app. Stated so it is not later filed as a bug.
 
 **The Logo does change, and that is a decision.** `Logo.svelte:9` fills the disc
-with `--act`, but the sprig at `:21` and `:26` uses `--paper-card`. Under the
+with `--act`, but the sprig uses `--paper-card` in three places — the stem
+stroke at `:14` and the leaf fills at `:21` and `:26`. Under the
 palette swap the currently cream sprig becomes dark brown against the green
 disc. That is a brand mark changing appearance, not a layout bug. **Decision:
-the sprig moves to `--primary-foreground`** — the same role-token migration as
+the sprig moves to `--primary-foreground`, all three lines** — the same role-token migration as
 [Role tokens vs surface tokens](#role-tokens-vs-surface-tokens) — so the mark
 renders identically in both themes.
 
@@ -506,9 +606,9 @@ dark window background, which is unobtrusive under both themes.
 |---|---|
 | `stores/theme.test.ts` | `resolveTheme` across all three preferences; persistence round trip; unrecognised values (`"DARK"`, `" dark "`, `null`, a JSON object); no-`localStorage` guard; `getItem` throwing on access; `setItem` throwing after a successful read |
 | `stores/theme.test.svelte.ts` | Following an OS change while on `'system'`; **not** following it while pinned to `'light'`/`'dark'`; class and `color-scheme` applied on change; the `matchMedia` listener is removed on teardown and not double-registered across HMR |
-| `theme-init.test.ts` | Evaluates the real `static/theme-init.js` against stubbed globals; agrees with `resolveTheme` on all six preference × OS combinations; survives storage that throws; the built `index.html` references the file |
+| `theme-init.test.ts` | Evaluates the real `static/theme-init.js` against stubbed globals; agrees with `resolveTheme` on all six preference × OS combinations; survives storage that throws |
 | `settings/settings-sections.test.ts` | Pins that `agent` and `appearance` are both present and in that order, ids unique, `DEFAULT_SECTION` is a real id |
-| `contrast.test.ts` | Every on-accent pairing (`--primary-foreground` over each of the four consequence fills) and `--ink-meta`/`--ink-overline` over each paper surface, in **both** palettes, against the floors in `DESIGN_SYSTEM.md:56` |
+| `contrast.test.ts` | Every on-accent pairing (`--primary-foreground` over each consequence fill **and over every entry in `AVATAR_FILLS`**) plus `--ink-meta`/`--ink-overline` over each paper surface, in **both** palettes, against the floors in `DESIGN_SYSTEM.md:56` |
 
 The runes test uses the `runes` vitest project added in the issue #4 fix
 (`*.test.svelte.ts` + `vitest-env-svelte-client.ts`). `matchMedia` does not
@@ -518,7 +618,19 @@ exist in that environment and is stubbed per test.
 defect described in [Role tokens vs surface tokens](#role-tokens-vs-surface-tokens),
 which every other test listed here would have passed. It parses the token values
 out of `layout.css` so it fails when the palette changes, not when a snapshot
-does.
+does. It is also the test that fails **today** on two avatar fills, which is the
+point — it encodes the invariant `AccountSwitcher.svelte:38` only claims in a
+comment.
+
+**Delivery is verified against a build, not a unit test.** Whether
+`theme-init.js` is actually referenced and actually served cannot be asserted by
+`vitest run`: there is no build prerequisite in `vite.config.ts`, so a test
+reading `build/index.html` would pass vacuously on a stale artifact or fail on a
+clean checkout. Both failure modes are worse than no test. Instead it is a
+release-path check — build, serve through Phoenix, confirm `/theme-init.js`
+returns 200 and the class is on `<html>` before first paint — recorded with the
+manual checks below. This is the same class of gap that made the CSP problem
+invisible: it only exists outside the dev server.
 
 **Not covered by unit tests, deliberately.** There is no DOM component-test
 project in this repo (`vite.config.ts` runs Node-based Vitest). Settings nav
