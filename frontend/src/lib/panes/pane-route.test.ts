@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ORIGIN_LABEL_CAP,
   PANE_CAP,
   chatNavigatorFromUrl,
+  chatNewHref,
+  chatNewParam,
   dedupeSurfaces,
   paneIdentity,
   panesEqual,
@@ -13,6 +16,7 @@ import {
   promoteTarget,
   serializePaneParam,
   withPanes,
+  type ChatNewPaneDescriptor,
   type FilesPaneDescriptor,
   type PaneDescriptor
 } from './pane-route';
@@ -31,7 +35,7 @@ const filesEmpty = files([]);
 const filesOne = files(['AGENTS.md']);
 const filesTwo = files(['planning/CONTEXT.md', 'AGENTS.md']);
 const chat: PaneDescriptor = { kind: 'chat', sessionId: 'sess-123' };
-const chatNew: PaneDescriptor = { kind: 'chat-new', mountKey: 'life' };
+const chatNew: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: null };
 const mailList: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: null };
 const mailMsg: PaneDescriptor = { kind: 'mail', account: 'mara@example.com', msgId: '8842' };
 
@@ -173,6 +177,167 @@ describe('parsePaneParam fails closed', () => {
     'files:m/@1'
   ])('%s -> null', (raw) => {
     expect(parsePaneParam(raw as string | null)).toBeNull();
+  });
+});
+
+describe('chat-new origin', () => {
+  const origin = {
+    kind: 'mail-message' as const,
+    path: 'views/INBOX/42.md',
+    mount: 'mail-mara',
+    label: 'Liefertermin'
+  };
+
+  it('round-trips a full origin', () => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: origin };
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  it('round-trips an origin with no mount and no label', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'notes/CONTEXT.md' }
+    };
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  // Old links keep working and keep their exact wire form.
+  it('leaves the blank composer wire form untouched', () => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'life', from: null };
+    expect(serializePaneParam(d)).toBe('chat:new:life');
+    expect(parsePaneParam('chat:new:life')).toEqual(d);
+  });
+
+  it('encodes a path so its slashes cannot look like extra fields', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'file', path: 'a/b/c.pdf' }
+    };
+    expect(serializePaneParam(d)).toBe('chat:new:life/file/a%2Fb%2Fc.pdf');
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  // A present-but-unreadable origin must NOT degrade to a blank composer:
+  // opening detached while looking normal is the bug the descriptor exists
+  // to prevent.
+  it.each([
+    ['chat:new:life/mail-message', 'two fields'],
+    ['chat:new:life/nope/x.md', 'unknown kind'],
+    ['chat:new:life/page/', 'empty path'],
+    ['chat:new:life/page/a/b/c/d', 'too many fields']
+  ])('fails closed on a broken origin (%s)', (raw) => {
+    expect(parsePaneParam(raw)).toBeNull();
+  });
+
+  // The label is display-only and the mount feeds `includeMounts`, so the two
+  // must never swap slots. An absent mount with a present label therefore
+  // keeps its empty segment: collapsing it (dropping every empty rather than
+  // only the trailing ones) would slide the untrusted label into the mount
+  // position — into the grant slot — and still round-trip clean.
+  it('keeps the empty mount slot when a label follows it', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'Label' }
+    };
+    expect(serializePaneParam(d)).toBe('chat:new:life/page/n.md//Label');
+    expect(parsePaneParam(serializePaneParam(d))).toEqual(d);
+  });
+
+  it('caps a hostile label', () => {
+    const long = 'x'.repeat(500);
+    const parsed = parsePaneParam(`chat:new:life/page/n.md//${long}`);
+    expect(parsed).not.toBeNull();
+    expect((parsed as ChatNewPaneDescriptor).from?.label).toHaveLength(ORIGIN_LABEL_CAP);
+  });
+
+  // An ordinary marketing subject: long enough to hit the cap, with an emoji
+  // straddling the boundary. Cutting UTF-16 code units there leaves a lone
+  // high surrogate, `encodeURIComponent` throws `URIError` on one, and it
+  // throws while `/mail` is evaluating every row's href — the message list,
+  // not just the button. Cap by code point and cap on serialize too, and the
+  // whole cycle is stable.
+  it('survives an emoji sitting exactly on the cap boundary', () => {
+    const label = `${'x'.repeat(ORIGIN_LABEL_CAP - 1)}📧 and more`;
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/42.md', mount: 'mail-mara', label }
+    };
+    const once = parsePaneParam(serializePaneParam(d)) as ChatNewPaneDescriptor;
+    expect(once.from?.label).toBe(`${'x'.repeat(ORIGIN_LABEL_CAP - 1)}📧`);
+    // The re-serialize is the throw site the reviewer reproduced.
+    expect(() => serializePaneParam(once)).not.toThrow();
+    expect(parsePaneParam(serializePaneParam(once))).toEqual(once);
+  });
+
+  // `parse(serialize(d)) === parse(serialize(parse(serialize(d))))` for a
+  // label past the cap: without capping on serialize the second pass differed
+  // from the first.
+  it('reaches a fixed point on an over-long label', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'y'.repeat(500) }
+    };
+    const once = parsePaneParam(serializePaneParam(d)) as PaneDescriptor;
+    expect(serializePaneParam(once)).toBe(serializePaneParam(d));
+    expect(parsePaneParam(serializePaneParam(once))).toEqual(once);
+  });
+
+  // "A different subject still is a different pane" — without this, opening a
+  // composer for message A then B recycles the pane and keeps A attached.
+  it('gives two origins under one mount distinct identities', () => {
+    const a: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/1.md' }
+    };
+    const b: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/2.md' }
+    };
+    expect(paneIdentity(a)).not.toBe(paneIdentity(b));
+  });
+
+  // The path alone does not identify an origin. The same path can name a
+  // different subject under a different kind (one Knowledge entry opened as
+  // `page` vs as `file`) or a different mount (the same message id in two
+  // mailboxes) — and recycling across either is the same "A stays attached
+  // while the URL says B" bug.
+  it('separates two origins that differ only in kind', () => {
+    const asPage: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md' }
+    };
+    const asFile: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'file', path: 'n.md' }
+    };
+    expect(paneIdentity(asPage)).not.toBe(paneIdentity(asFile));
+  });
+
+  it('separates two origins that differ only in mount', () => {
+    const inA: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'n.md', mount: 'mail-a' }
+    };
+    const inB: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'n.md', mount: 'mail-b' }
+    };
+    expect(paneIdentity(inA)).not.toBe(paneIdentity(inB));
+    // ...and an absent mount is its own case, not a match for either.
+    expect(paneIdentity(inA)).not.toBe(
+      paneIdentity({ kind: 'chat-new', mountKey: 'life', from: { kind: 'mail-message', path: 'n.md' } })
+    );
   });
 });
 
@@ -449,5 +614,87 @@ describe('promoteTarget', () => {
     expect(out.searchParams.get('all')).toBeNull();
     expect(out.searchParams.get('icm')).toBeNull();
     expect(out.searchParams.get('drafts')).toBeNull();
+  });
+
+  it('promotes a blank composer to the composer route', () => {
+    const url = new URL('https://x/mail?account=mara%40example.com');
+    const out = new URL(promoteTarget(chatNew, url, [chatNew]), 'https://x');
+    expect(out.pathname).toBe('/chat');
+    expect(out.searchParams.get('icm')).toBe('life');
+    expect(out.searchParams.get('from')).toBeNull();
+    expect(out.searchParams.get('session')).toBeNull();
+  });
+
+  // ⤢ on an origin-bearing composer must not quietly detach it. A promoted
+  // composer that lost `from` looks completely normal while being attached to
+  // nothing — the exact bug the origin exists to prevent, through a different
+  // door.
+  it('carries the origin through ⤢ so the route round-trips it', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: {
+        kind: 'mail-message',
+        path: 'views/INBOX/42.md',
+        mount: 'mail-mara',
+        label: 'Liefertermin'
+      }
+    };
+    const url = new URL('https://x/mail?account=mara%40example.com&pane=mail:a%40b.com');
+    const out = new URL(promoteTarget(d, url, [d, mailList]), 'https://x');
+    expect(out.pathname).toBe('/chat');
+    expect(parsePaneParam(chatNewParam(out))).toEqual(d);
+    // The surviving pane rides along, and appending it must not disturb the
+    // origin — mutating `searchParams` re-serializes the whole query.
+    expect(out.searchParams.getAll('pane')).toEqual([serializePaneParam(mailList)]);
+  });
+});
+
+describe('chatNewParam / chatNewHref', () => {
+  it('is null without an ICM, so the route shows no composer', () => {
+    expect(chatNewParam(new URL('https://x/chat'))).toBeNull();
+    expect(chatNewParam(new URL('https://x/chat?icm='))).toBeNull();
+    expect(chatNewParam(new URL('https://x/chat?session=a91f'))).toBeNull();
+  });
+
+  it('reads a bare ?icm= as the blank composer', () => {
+    expect(parsePaneParam(chatNewParam(new URL('https://x/chat?icm=life')))).toEqual(chatNew);
+    expect(chatNewHref(chatNew)).toBe('/chat?icm=life');
+  });
+
+  it.each([
+    { kind: 'page' as const, path: 'notes/CONTEXT.md' },
+    { kind: 'file' as const, path: 'a/b/c.pdf' },
+    { kind: 'page' as const, path: 'n.md', label: 'Label' },
+    { kind: 'mail-message' as const, path: 'views/INBOX/42.md', mount: 'mail-mara' },
+    {
+      kind: 'mail-message' as const,
+      path: 'views/INBOX/42.md',
+      mount: 'mail-mara',
+      label: 'Liefertermin'
+    },
+    // The pathological one: a real `/` and a literal `%2F` in the same path.
+    // `searchParams.get` decodes once, so `?from=` has to be encoded once MORE
+    // than the pane param is or these two would come back as different fields.
+    { kind: 'file' as const, path: 'a/b%2Fc/d e.pdf', label: 'a&b=c#d' }
+  ])('round-trips %j through the route', (from) => {
+    const d: PaneDescriptor = { kind: 'chat-new', mountKey: 'my icm/2', from };
+    const url = new URL(chatNewHref(d), 'https://x');
+    expect(parsePaneParam(chatNewParam(url))).toEqual(d);
+  });
+
+  it('is the same wire form the pane param uses, not a second spelling', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'Label' }
+    };
+    const url = new URL(chatNewHref(d), 'https://x');
+    expect(chatNewParam(url)).toBe(serializePaneParam(d));
+  });
+
+  it('fails closed on a hand-written ?from= that does not parse', () => {
+    const url = new URL('https://x/chat?icm=life&from=nope%2Fx.md');
+    expect(parsePaneParam(chatNewParam(url))).toBeNull();
   });
 });

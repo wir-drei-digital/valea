@@ -282,9 +282,36 @@ defmodule Valea.Agents.SessionSettings do
     Related ICMs available to this session (read their entrypoint only when your
     routing calls for it; they do not load automatically):
     #{related}
-    #{mail_accounts_paragraph(scope)}
+    #{mail_accounts_paragraph(scope)}#{opened_from_paragraph(scope)}
     """
   end
+
+  # Spec 2026-08-02: the session's PREMISE, not one more available thing. An
+  # entry point that opens on a specific message or page used to say so by
+  # auto-sending a canned first turn; this replaces that turn, so the wording
+  # has to do what the turn did — establish the subject AND get the file read
+  # before the user's own instruction (which will say "this invoice", never a
+  # path) is acted on.
+  #
+  # It deliberately does NOT say how the path became readable: a mail
+  # message arrives as `input` (an explicit Read() allow), a Knowledge entry
+  # as `context_doc` (no grant — it already sits inside the primary's read
+  # root). Claiming a mechanism would be wrong for one of the two.
+  defp opened_from_paragraph(scope) do
+    case Map.get(scope, :opened_from) do
+      %{path: path, kind: kind} when is_binary(path) ->
+        "\nThis session was opened from #{opened_from_noun(kind)}: #{path}. " <>
+          "The user started here deliberately — treat it as the subject of this " <>
+          "session and read it before acting on their first instruction.\n"
+
+      _none ->
+        ""
+    end
+  end
+
+  defp opened_from_noun(:mail_message), do: "a mail message"
+  defp opened_from_noun(:page), do: "a page in this ICM"
+  defp opened_from_noun(:file), do: "a file in this ICM"
 
   # Every session learns WHICH mail accounts exist, even when none is in
   # scope: an agent asked about mail should name the mailboxes and the way

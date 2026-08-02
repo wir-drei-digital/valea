@@ -26,8 +26,10 @@
   import { ChatPaneState } from '$lib/panes/chat-pane-runtime.svelte';
   import {
     chatNavigatorFromUrl,
+    chatNewParam,
     dedupeSurfaces,
     hrefWithPanes,
+    parsePaneParam,
     parsePanes,
     type PaneDescriptor
   } from '$lib/panes/pane-route';
@@ -148,8 +150,25 @@
   // `dedupeSurfaces` drops a pane that would duplicate this route's own chat
   // surface, and always allocates — which is what keeps `PaneHost` re-deriving
   // its row layout rather than writing stale sizes back over a dragged ratio.
+  //
+  // `?session=` names an open transcript; `?icm=` with no session is the
+  // NEW-session composer (what `routeFor({kind:'chat-new'})` promotes to, and
+  // where Knowledge's "start a session with this entry" navigates). `?from=`
+  // carries the origin, serialized exactly as it is inside a pane param —
+  // `chatNewParam` composes the two into that one wire form, so the route and
+  // a pane can never read an origin differently.
+  //
+  // The route does NOT inherit the parser's guarantee whole. `parsePaneParam`
+  // fails the WHOLE descriptor on an unreadable origin so a detached composer
+  // can never look like an attached one; here that null falls through to the
+  // empty state below, whose "Start a session" button calls `startSession` —
+  // which still reads the same `?icm=` and would create the very session the
+  // parser refused. That is tolerable only because the empty state makes no
+  // attachment claim: nothing on it says "about this message", so a session
+  // started from it is an ordinary blank session and the user is not misled.
+  // A composer that rendered normally while attached to nothing would not be.
   const primaryDescriptor = $derived<PaneDescriptor | null>(
-    selectedId ? { kind: 'chat', sessionId: selectedId } : null
+    selectedId ? { kind: 'chat', sessionId: selectedId } : parsePaneParam(chatNewParam(page.url))
   );
   const panes = $derived(dedupeSurfaces(primaryDescriptor, parsePanes(page.url.searchParams)));
 
@@ -172,6 +191,22 @@
     panes: () => panes,
     primary: () => primaryDescriptor
   });
+
+  /**
+   * The composer this route is showing as its PRIMARY started its session.
+   * The pane host answers this by rewriting that pane's descriptor; the
+   * primary's descriptor IS the URL, so it navigates — which is what turns
+   * `paneIdentity` from `chat-new:…` into `chat:<id>`, mounts a fresh
+   * `ChatView`, and lets it fire the prompt it stashed.
+   *
+   * `?icm=`/`?from=` are deliberately dropped: the composer is spent. It
+   * REPLACES rather than pushes, exactly as the pane host does, so Back does
+   * not step onto a dead composer whose message has already been sent.
+   */
+  function startedAsPrimary(id: string): void {
+    const target = `/chat?${showAllPane ? 'all=1&' : ''}session=${encodeURIComponent(id)}`;
+    void goto(hrefWithPanes(target, page.url), { replaceState: true });
+  }
 
   /**
    * A row in the sessions navigator. `ChatPane` calls `context.openPane` for
@@ -206,6 +241,7 @@
     // The other two thirds of the session header's file-browser TOGGLE.
     besideOpen: wiring.besideOpen,
     closeBeside: wiring.closeBeside,
+    sessionCreated: startedAsPrimary,
     onArchived: afterArchive
   };
 </script>
@@ -229,12 +265,17 @@
         onPromote={wiring.promotePane}
       >
         {#snippet primary()}
-          <!-- A null descriptor is the "no session selected" state. The
+          <!-- Both chat descriptors reach `ChatView`: a transcript, and the
+               new-session composer a `?icm=` with no `?session=` describes.
+               A null descriptor is the "no session selected" state. The
                navigator still renders beside it, because "Show all" lands
                here with nothing selected and an empty state with no way to
                pick a session would be a dead end. -->
           <ChatPane
-            descriptor={primaryDescriptor?.kind === 'chat' ? primaryDescriptor : null}
+            descriptor={primaryDescriptor?.kind === 'chat' ||
+            primaryDescriptor?.kind === 'chat-new'
+              ? primaryDescriptor
+              : null}
             context={primaryContext}
             state={primaryChatState}
           >

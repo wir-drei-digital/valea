@@ -154,6 +154,9 @@ defmodule Valea.Agents.SessionServerTest do
              "context_doc" => nil,
              "input" => nil,
              "include_mounts" => [],
+             # Spec 2026-08-02: recorded so `resume_agent_session` can rebuild
+             # the session's origin; nil for a session opened from nothing.
+             "opened_from_kind" => nil,
              "title" => "Test",
              "harness" => "claude_code",
              "generation" => meta["generation"],

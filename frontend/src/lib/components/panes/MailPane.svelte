@@ -15,7 +15,7 @@
   import { watchMailSelection } from '$lib/components/mail/mail-selection.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import type { PaneContext } from '$lib/panes/context';
-  import type { MailPaneDescriptor } from '$lib/panes/pane-route';
+  import type { MailPaneDescriptor, PaneDescriptor } from '$lib/panes/pane-route';
 
   let {
     descriptor,
@@ -44,11 +44,13 @@
   // same refusal as on the route, because the host answers both. A host that
   // offers no append at all is its own reason: the alternative is a button that
   // creates a real session and puts it nowhere.
-  const sessionRefusal = $derived(
+  //
+  // Passed as a function so the KIND comes from the descriptor `MessageView`
+  // will open rather than from a guess made here — see the prop's note.
+  const sessionRefusal = (kind: PaneDescriptor['kind']): string | null =>
     context.openBeside
-      ? (context.besideRefusal?.('chat') ?? null)
-      : 'This view cannot open a session beside it'
-  );
+      ? (context.besideRefusal?.(kind) ?? null)
+      : 'This view cannot open a session beside it';
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1">
@@ -73,8 +75,8 @@
     {:else if selection.activeId === descriptor.msgId && selection.detail}
       <MessageView
         message={selection.detail}
-        onSessionBeside={(id) => context.openBeside?.({ kind: 'chat', sessionId: id })}
-        sessionBesideRefusal={sessionRefusal}
+        onStartSessionBeside={(d) => context.openBeside?.(d)}
+        besideRefusal={sessionRefusal}
       />
     {:else if selection.failed}
       <p class="text-warn-ink text-[13px]" role="alert">This message could not be loaded.</p>

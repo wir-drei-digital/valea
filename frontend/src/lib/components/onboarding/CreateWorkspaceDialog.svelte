@@ -83,7 +83,14 @@
       // A freshly-created ICM is the prime moment to offer its methodology
       // skill — fire the one-time offer before navigating into it.
       void skillsOfferStore.offerFor(mountKey);
-      void goto(`/chat?icm=${mountKey}`);
+      // Bare `/chat`, NOT `/chat?icm=<mountKey>`: that param now means "open a
+      // new-session composer", which would replace first-run orientation copy
+      // with a bare composer and — worse — route an unconfigured harness to a
+      // one-line inline hint instead of the doctor panel, on the one path where
+      // an unconfigured harness is the EXPECTED failure. Exactly equivalent
+      // here: "Start fresh" has just minted the only mount there is, so the
+      // route's own `resolveIcmSelection(null, …)` fallback picks the same key.
+      void goto('/chat');
     }
   };
 

@@ -649,4 +649,39 @@ defmodule Valea.Agents.SessionScopeTest do
       refute String.contains?(value, "/rpc/")
     end
   end
+
+  describe "opened_from" do
+    test "carries the origin onto the scope when given", %{
+      ws: ws,
+      home: home,
+      generation: generation
+    } do
+      root = mounted_primary!(ws, home)
+
+      assert {:ok, scope} =
+               SessionScope.resolve(%{
+                 kind: "chat",
+                 mount_key: "coaching",
+                 generation: generation,
+                 session_id: "s-opened-from",
+                 opened_from: %{path: Path.join(root, "CONTEXT.md"), kind: :page}
+               })
+
+      assert scope.opened_from == %{path: Path.join(root, "CONTEXT.md"), kind: :page}
+    end
+
+    test "is nil when the caller gives none", %{ws: ws, home: home, generation: generation} do
+      mounted_primary!(ws, home)
+
+      assert {:ok, scope} =
+               SessionScope.resolve(%{
+                 kind: "chat",
+                 mount_key: "coaching",
+                 generation: generation,
+                 session_id: "s-no-origin"
+               })
+
+      assert scope.opened_from == nil
+    end
+  end
 end

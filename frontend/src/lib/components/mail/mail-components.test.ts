@@ -39,7 +39,6 @@ import {
   mailMaintenanceErrorMessage,
   syncErrorText,
   syncNowErrorMessage,
-  messageSessionPrompt,
   opResultMessage,
   cleanupPrompt,
   draftStatusBadge,
@@ -851,16 +850,6 @@ describe('syncNowErrorMessage', () => {
     ['anything_else', 'Could not start a sync. Please try again.']
   ])('maps error code=%s to a calm sentence', (code, expected) => {
     expect(syncNowErrorMessage(code)).toBe(expected);
-  });
-});
-
-describe('messageSessionPrompt', () => {
-  it('references the granted path, the mail mount, and the no-send rule', () => {
-    const prompt = messageSessionPrompt('/ws/sources/mail/mara/views/messages/m1.md', 'mail-mara');
-    expect(prompt).toContain('`/ws/sources/mail/mara/views/messages/m1.md`');
-    expect(prompt).toContain('`mail-mara`');
-    expect(prompt).toContain('ops/pending/');
-    expect(prompt).toContain('you cannot send anything');
   });
 });
 

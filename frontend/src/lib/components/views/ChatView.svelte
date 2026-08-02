@@ -18,6 +18,7 @@
   // family of reasons — an unrelated URL change (e.g. opening a side pane,
   // `?pane=`) must not tear down and rejoin a live session's channel.
   import { onMount } from 'svelte';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
   import { api } from '$lib/api/client';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
   import { mountsStore } from '$lib/stores/mounts.svelte';
@@ -39,6 +40,8 @@
   import { checkExistence, deriveFileActivity } from '$lib/components/agent/file-activity';
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
+  import { sessionCreateOpts } from './session-create-opts';
+  import { originLabel, originMount } from './origin-label';
 
   let {
     descriptor,
@@ -375,24 +378,85 @@
   let creating = $state(false);
   let createError = $state<string | null>(null);
 
-  async function createAndPrompt(text: string): Promise<void> {
-    if (descriptor.kind !== 'chat-new' || creating) return;
+  /**
+   * What the attachment chip says — the fallback chain and its blank-chip and
+   * untrusted-label notes live in `originLabel`.
+   *
+   * A `$derived` reading `descriptor`, never a value captured at init:
+   * `label` is deliberately excluded from `paneIdentity` (Task 4), so a
+   * label-only change RE-RENDERS this pane instead of remounting it, and a
+   * snapshot would show the stale label for the rest of the pane's life.
+   */
+  const chipOrigin = $derived(descriptor.kind === 'chat-new' ? descriptor.from : null);
+  const chipLabel = $derived(originLabel(chipOrigin));
+  /** The mount the session is scoped into — see `originMount` for why it shows. */
+  const chipMount = $derived(originMount(chipOrigin));
+
+  /**
+   * The unsent text of the new-session composer, held HERE rather than
+   * inside `Composer`, because this is the one `onSend` that can be refused:
+   * `Composer.submit` empties the box the instant it hands the text over,
+   * and every `return false` below happens after that. Without somewhere to
+   * hand it back, "The session could not be started. Please try again." /
+   * "Close this composer and start again" would land on a user whose
+   * paragraph had just been deleted — the one way the composer flow would be
+   * worse than the canned prompt it replaced.
+   */
+  let composerDraft = $state('');
+
+  async function sendFromComposer(text: string): Promise<void> {
+    if (!(await createAndPrompt(text))) composerDraft = text;
+  }
+
+  /** True only if a session was created; every refusal returns false so the text survives. */
+  async function createAndPrompt(text: string): Promise<boolean> {
+    if (descriptor.kind !== 'chat-new' || creating) return false;
     creating = true;
     createError = null;
-    const result = await api.createAgentSession(descriptor.mountKey, workspaceStore.generation ?? 0);
+
+    // PARSED IS NOT RESOLVABLE — see `sessionCreateOpts`, which owns the whole
+    // derivation (wire spelling, mail exemption, and the refusal for a
+    // `page`/`file` origin whose ICM has no loadable id). The lookup stays
+    // here because it reads a store; only the copy for its refusal does.
+    const outcome = sessionCreateOpts({
+      from: descriptor.from,
+      icmId: mountsStore.mounts.find((m) => m.mountKey === descriptor.mountKey)?.id
+    });
+
+    if (!outcome.ok) {
+      creating = false;
+      createError = 'This project has no loadable identity. Run Diagnose from the sidebar.';
+      return false;
+    }
+
+    const result = await api.createAgentSession(
+      descriptor.mountKey,
+      workspaceStore.generation ?? 0,
+      outcome.opts
+    );
     creating = false;
     if (!result.ok) {
       createError =
         result.error === 'harness_unavailable'
           ? "The assistant isn't ready — open Agent settings (the gear in the sidebar) and run the checks."
-          : 'The session could not be started. Please try again.';
-      return;
+          : result.error === 'input_unavailable' || result.error === 'context_doc_unavailable'
+            ? 'That file is no longer there. Close this composer and start again from the message or page.'
+            : // `/chat?icm=<disabled-or-bogus>` renders a composer perfectly
+              // well — the mount is only checked when the session is created —
+              // so this is the one arm the user reaches by following a stale
+              // or hand-written link. Same sentence the route's own
+              // `errorMessage` uses, because it is the same situation.
+              result.error === 'icm_unavailable'
+              ? "That ICM isn't available. Enable it in Knowledge and try again."
+              : 'The session could not be started. Please try again.';
+      return false;
     }
     const data = result.data as { id: string };
     setInitialPrompt(data.id, text);
     void sessionsListStore.refresh();
     void recentSessionsStore.refresh();
     context.sessionCreated?.(data.id);
+    return true;
   }
 
   // --- Stick-to-bottom auto-scroll while a reply streams in ---
@@ -618,10 +682,45 @@
       {#if createError}
         <p class="text-warn-ink px-4 pt-2 text-[12px]" role="alert">{createError}</p>
       {/if}
+      {#if chipLabel || chipMount}
+        <!-- Without this the change trades a canned turn the user did not want
+             for an empty box with no visible evidence the source is in play.
+             See `origin-label.ts` for the untrusted-label and blank-chip notes.
+             `text-ink-subtitle`, not `text-ink-meta`: meta ink on this tint is
+             2.79:1, and this chip is the session's ONLY attachment signal, not
+             a count sitting beside legible text. The paperclip is decorative,
+             so the relation it draws has to exist in text for a screen reader
+             — hence the visually-hidden prefix.
+             The mount rides along in the SAME ink, not meta: it is what the
+             session is scoped INTO (`includeMounts` — a whole mail account),
+             so it is the security-legible half of this chip, not a caption.
+             See `origin-label.ts`. -->
+        <div class="px-4 pb-2">
+          <span
+            class="bg-paper-track text-ink-subtitle inline-flex max-w-full items-center gap-1.5 truncate rounded-md px-2 py-1 text-[12px]"
+          >
+            <Paperclip class="size-3.5 shrink-0" aria-hidden="true" />
+            <span class="sr-only">Attached: </span>
+            {#if chipLabel}
+              <span class="truncate">{chipLabel}</span>
+            {/if}
+            {#if chipMount}
+              {#if chipLabel}
+                <span class="shrink-0 opacity-60" aria-hidden="true">·</span>
+              {/if}
+              <span class="sr-only">in </span>
+              <!-- `shrink-0`: when the two compete for width the LABEL gives
+                   way, because the mount is the grant. -->
+              <span class="max-w-[16ch] shrink-0 truncate">{chipMount}</span>
+            {/if}
+          </span>
+        </div>
+      {/if}
       <Composer
+        bind:draft={composerDraft}
         busy={creating}
         configItems={[]}
-        onSend={(text) => void createAndPrompt(text)}
+        onSend={(text) => void sendFromComposer(text)}
         onStop={() => {}}
         onSetConfig={() => {}}
       />

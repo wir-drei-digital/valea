@@ -13,12 +13,13 @@
   //
   // Spec D deletion wave: the "Run triage" workflow action that used to
   // live in the actions strip below the hairline is gone along with the
-  // whole queue/workflow subsystem. Task 11 replaces it with "Start a
-  // session about this message" — same exact-read-grant + one-shot opening
-  // prompt pattern as Knowledge's "Start a session with this page"
-  // (`EntryMenu.svelte`'s `startSessionWithEntry`), just keyed off
-  // `message.path` and `contextDoc` swapped for `input` (a workspace
-  // locator, not an ICM one — mail messages live outside any ICM's tree).
+  // whole queue/workflow subsystem. Task 11 replaced it with "Start a
+  // session about this message", which since 2026-08-02 OPENS A COMPOSER
+  // with this message attached rather than creating a session and sending a
+  // canned prompt — same shape as Knowledge's "Start a session with this
+  // page" (`EntryMenu.svelte`'s `startSessionWithEntry`), just keyed off
+  // `message.path` (a workspace locator, not an ICM one — mail messages
+  // live outside any ICM's tree) plus the account's mail mount.
   import Archive from '@lucide/svelte/icons/archive';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -47,7 +48,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { mailStore } from '$lib/stores/mail.svelte';
   import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { setInitialPrompt } from '$lib/stores/initial-prompt';
+  import type { ChatNewPaneDescriptor, PaneDescriptor } from '$lib/panes/pane-route';
   import {
     addressEmail,
     addressListLabel,
@@ -62,7 +63,6 @@
     markUnreadOp,
     messageHref,
     messageSeen,
-    messageSessionPrompt,
     moveTargets,
     opResultMessage,
     relativeTime,
@@ -75,23 +75,33 @@
 
   let {
     message,
-    onSessionBeside,
-    sessionBesideRefusal = null
+    onStartSessionBeside,
+    besideRefusal = undefined
   }: {
     message: MailMessageDetail;
     /**
-     * Where the session this message starts goes: BESIDE the message, as a
-     * chat pane, rather than a navigation to `/chat` that takes the message
-     * off screen. The host owns the placement (a route appends to `?pane=`, a
-     * pane asks its own host to), which is why this is a callback.
+     * Where the composer this message opens goes: BESIDE the message, as a
+     * `chat-new` pane, rather than a navigation to `/chat` that takes the
+     * message off screen. The host owns the placement (a route appends to
+     * `?pane=`, a pane asks its own host to), which is why this is a
+     * callback. It hands over a DESCRIPTOR, not a session id — nothing has
+     * been created yet at this point.
      */
-    onSessionBeside: (sessionId: string) => void;
+    onStartSessionBeside: (d: ChatNewPaneDescriptor) => void;
     /**
-     * Why no session can open beside this message right now — the row is full,
-     * the window is too narrow, or one is already open. Rendered on the button
-     * rather than discovered by clicking it; `pane-offer.ts` writes the words.
+     * Why no pane of a given kind can open beside this message right now — the
+     * row is full, the window is too narrow, or one is already open.
+     * `pane-offer.ts` writes the words.
+     *
+     * A FUNCTION, not the answer for a kind the host picked. Both hosts used
+     * to compute `besideRefusal('chat')` while this component opened a
+     * `chat-new`, and `pane-offer.ts` compares kinds raw — so with a composer
+     * already beside, the button rendered live and the host's own
+     * `openBeside` guard then dropped the click on the floor. This way the
+     * kind is read off the descriptor that will actually be opened, one line
+     * below where it is built, and the two cannot drift apart again.
      */
-    sessionBesideRefusal?: string | null;
+    besideRefusal?: (kind: PaneDescriptor['kind']) => string | null;
   } = $props();
 
   const frontmatter = $derived((message.frontmatter ?? {}) as Record<string, unknown>);
@@ -130,8 +140,6 @@
   /** The attachment whose open is mid-flight — one at a time, and the chip says so. */
   let openingPath: string | null = $state(null);
   let attachmentError = $state<string | null>(null);
-  let starting = $state(false);
-  let sessionError = $state<string | null>(null);
   /** Which of Reply/Reply-all/Forward is resolving the account's own address, if any. */
   let composing = $state<ComposeMode | null>(null);
   let opBusy = $state(false);
@@ -193,15 +201,13 @@
   }
 
   // A different message was opened — drop this session's local "just
-  // copied a path" affordance, any stale session-start/op error, and the
-  // per-message trust/view state so none bleeds into the newly-selected
-  // message's view.
+  // copied a path" affordance, any stale op error, and the per-message
+  // trust/view state so none bleeds into the newly-selected message's view.
   $effect(() => {
     void message.path;
     copiedPath = null;
     openingPath = null;
     attachmentError = null;
-    sessionError = null;
     composing = null;
     opError = null;
     seenOverride = null;
@@ -473,63 +479,98 @@
   }
 
   /**
-   * Why the button cannot start a session, in the order the user can act on.
-   * A message with no file on disk was already refused — silently, by a bare
-   * `disabled` — so it joins the reasons rather than staying a mystery.
-   */
-  const sessionRefusal = $derived(
-    !message.path ? 'This message has no file on disk to open a session about' : sessionBesideRefusal
-  );
-
-  /**
-   * "Start a session about this message" (Spec D §B/§E) — mints a session
-   * granted read access to exactly this message file (`opts.input`, a
-   * workspace locator — mail messages live under `sources/mail/`, outside
-   * any ICM's own tree, unlike Knowledge's `contextDoc` grant), stashes the
-   * opening prompt under the new session id, and hands the id to the host,
-   * which opens it BESIDE this message. Mount selection mirrors
+   * Which ICM hosts the session this message would start. Mirrors
    * `routes/chat/+page.svelte`'s `primaryMountKey()` fallback: the first
    * enabled, non-degraded mount (`icmStore.groups` is already filtered to
    * exactly that set — see `icm.svelte.ts`).
-   *
-   * The refusal is re-checked here and not merely rendered: the button is
-   * `aria-disabled`, which leaves it clickable on purpose, and a session
-   * created for a pane that cannot open is a real session left nowhere.
    */
-  async function startSession(): Promise<void> {
-    const account = mailStore.selectedAccount;
-    if (sessionRefusal || !message.path || !account) return;
-    starting = true;
-    sessionError = null;
-    try {
-      const mountKey = icmStore.groups[0]?.mount;
-      if (!mountKey) {
-        sessionError = 'No enabled project can host the session. Enable one in the sidebar.';
-        return;
-      }
-      // The session is opted into the whole account's mail mount (T14
-      // `includeMounts`) on top of the exact-file input grant — the agent can
-      // read the mailbox views and write ops/drafts. It cannot send: a draft
-      // it writes goes out only when the user pushes or sends it from the
-      // Drafts panel (spec G §Invariant rewrite).
-      const mailMountKey = `mail-${account}`;
-      const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
-        input: { kind: 'workspace', path: message.path },
-        includeMounts: [mailMountKey]
-      });
-      if (!result.ok) {
-        sessionError =
-          result.error === 'input_unavailable'
-            ? "This message file isn't available on disk anymore."
-            : `Couldn't start the session (${result.error}).`;
-        return;
-      }
-      const data = result.data as { id: string; inputPath: string | null };
-      setInitialPrompt(data.id, messageSessionPrompt(data.inputPath ?? message.path, mailMountKey));
-      onSessionBeside(data.id);
-    } finally {
-      starting = false;
-    }
+  const hostMountKey = $derived(icmStore.groups[0]?.mount ?? null);
+  /**
+   * The account's `mail-<slug>` mount. The composer opts the session into
+   * the WHOLE account mount (T14 `includeMounts`) on top of the exact-file
+   * grant, so the agent can read the mailbox views and write ops/drafts. It
+   * cannot send: a draft it writes goes out only when the user pushes or
+   * sends it from the Drafts panel (spec G §Invariant rewrite).
+   */
+  const mailMountKey = $derived(mailStore.selectedAccount ? `mail-${mailStore.selectedAccount}` : null);
+
+  // Availability is only ever asserted from LOADED data (same guard as
+  // `MailPane`'s `known`): both stores start EMPTY and stay empty until
+  // their first fetch resolves — SSR is off, so that is the default state on
+  // a cold `/mail?message=…` load — and "no enabled project" read off an
+  // unfilled `icmStore.groups` would be a false, actionable-sounding
+  // accusation on a button that then silently no-ops when clicked.
+  // `icmStore.loaded` never flips on a failed `list_icms`, so `listError` is
+  // what ends the wait in that case (see `icm.svelte.ts`).
+  const projectsKnown = $derived(icmStore.loaded || icmStore.listError !== null);
+  const mailboxKnown = $derived(mailStore.statusLoaded);
+
+  /**
+   * The pane "Start a session about this message" would open (Spec D §B/§E) —
+   * built ONCE, so the button's refusal and the button's click are answering
+   * about the same thing. `null` whenever a precondition is missing.
+   *
+   * Spec 2026-08-02: no session is created here any more. The composer opens
+   * with the message attached and NOTHING sent; `ChatView.createAndPrompt`
+   * creates the session on send — with the same exact-file `input` grant and
+   * `includeMounts` this used to pass — so abandoning the composer leaves
+   * nothing behind. The mail contract the old canned prompt spelled out (ops
+   * vocabulary, never touch maildir/, you cannot send) is already injected as
+   * system prompt on every mail-mounted session by `SessionSettings`, and the
+   * message it is about now rides the origin premise, so the prompt was pure
+   * duplication.
+   */
+  const sessionDescriptor = $derived<ChatNewPaneDescriptor | null>(
+    message.path && mailMountKey && hostMountKey
+      ? {
+          kind: 'chat-new',
+          mountKey: hostMountKey,
+          from: {
+            kind: 'mail-message',
+            path: message.path,
+            mount: mailMountKey,
+            // Display only, and never a grant — `subject` is already the
+            // "(no subject)" fallback, so this is never empty.
+            label: subject
+          }
+        }
+      : null
+  );
+
+  // Every reason the button can refuse, in the order the user can act on
+  // them. The host-mount and account cases used to surface as an error
+  // AFTER the click, from the create call that no longer happens here;
+  // they are static preconditions, so they belong on the button.
+  //
+  // The last rung asks the host about `sessionDescriptor.kind` rather than
+  // about a kind spelled out here: what this opens changed from `chat` to
+  // `chat-new` once and the hosts' hardcoded `'chat'` did not follow, which
+  // made the button render live beside an open composer and then do nothing
+  // at all when clicked.
+  const sessionRefusal = $derived(
+    !message.path
+      ? 'This message has no file on disk to open a session about'
+      : !projectsKnown || !mailboxKnown
+        ? 'Still loading your projects and mailbox'
+        : icmStore.listError
+          ? 'Your projects could not be listed — see the sidebar'
+          : !mailMountKey
+            ? 'No mail account is selected'
+            : !hostMountKey
+              ? 'No enabled project can host the session. Enable one in the sidebar'
+              : sessionDescriptor
+                ? (besideRefusal?.(sessionDescriptor.kind) ?? null)
+                : null
+  );
+
+  /**
+   * The refusal is re-checked here and not merely rendered: the button is
+   * `aria-disabled`, which leaves it clickable on purpose, and a composer
+   * opened for a pane that cannot open is a composer left nowhere.
+   */
+  function startSession(): void {
+    if (sessionRefusal || !sessionDescriptor) return;
+    onStartSessionBeside(sessionDescriptor);
   }
 </script>
 
@@ -913,24 +954,22 @@
 <!-- `aria-disabled`, not `disabled`, whenever there is a REASON: a truly
            disabled button takes no pointer events, so its `title` never
            appears, and it leaves the tab order, so a keyboard user can never
-           reach the reason either. `disabled` is kept for `starting`, which is
-           transient and says so in the label. -->
+           reach the reason either. There is no busy state left to disable
+           for: the click only opens a composer, it creates nothing. -->
       <Button
         type="button"
         variant="outline"
         class="refusable ms-auto"
-        disabled={starting}
         aria-disabled={sessionRefusal ? 'true' : undefined}
         title={sessionRefusal ?? 'Start a session beside this message'}
         aria-label={sessionRefusal
           ? `Start a session beside this message — unavailable: ${sessionRefusal.toLowerCase()}`
           : 'Start a session beside this message'}
-        onclick={() => void startSession()}
+        onclick={() => startSession()}
       >
         <MessageSquarePlus class="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-        {starting ? 'Starting…' : 'Start a session'}
+        Start a session
       </Button>
     </div>
-    {#if sessionError}<p class="text-warn-ink text-[12.5px]" role="alert">{sessionError}</p>{/if}
   </div>
 </article>

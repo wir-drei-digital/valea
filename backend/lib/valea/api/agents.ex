@@ -81,6 +81,14 @@ defmodule Valea.Api.Agents do
       # stay wire-stable), fail-closed, before any session starts.
       argument :include_mounts, {:array, :string}, allow_nil?: true
 
+      # Spec 2026-08-02: which KIND of thing this session was opened from.
+      # Not inferable from the locator — `input` does imply a mail message
+      # today, but `context_doc` covers both `page` and `file`, so the
+      # locator alone cannot tell them apart. Validated against a closed
+      # allowlist below; NEVER String.to_atom'd (client-supplied strings
+      # creating atoms is unbounded atom growth).
+      argument :opened_from_kind, :string, allow_nil?: true
+
       # Spec G Task 7: the session's opening turn, seeded SERVER-side —
       # `SessionServer.init/1` enqueues it before the handshake even
       # completes, so it is sent the moment the adapter is ready. Optional:
@@ -126,6 +134,8 @@ defmodule Valea.Api.Agents do
 
         with :ok <- Manager.check_generation(generation),
              {:ok, %{path: workspace}} <- Manager.current(),
+             {:ok, origin_kind} <-
+               opened_from_kind(Map.get(input.arguments, :opened_from_kind)),
              {:ok, context_doc} <- resolve_context_doc(context_doc, workspace),
              {:ok, input_abs} <- resolve_session_input(input_locator, workspace),
              {:ok, scope} <-
@@ -135,7 +145,9 @@ defmodule Valea.Api.Agents do
                  generation: generation,
                  session_id: id,
                  read_paths: if(input_abs, do: [input_abs], else: []),
-                 include_mounts: include_mounts
+                 include_mounts: include_mounts,
+                 opened_from:
+                   opened_from(origin_kind, input_abs, context_doc_abs(context_doc, workspace))
                }),
              {:ok, %{id: id}} <-
                Valea.Agents.start_session(%{
@@ -148,14 +160,16 @@ defmodule Valea.Api.Agents do
                  on_turn_end: nil,
                  context_doc: context_doc,
                  input: input_locator,
-                 include_mounts: include_mounts
+                 include_mounts: include_mounts,
+                 opened_from_kind: Map.get(input.arguments, :opened_from_kind)
                }) do
           Valea.Audit.append("session_started", %{
             "session_id" => id,
             "mount_key" => mount_key,
             "context_doc" => context_doc,
             "input" => input_locator,
-            "include_mounts" => include_mounts
+            "include_mounts" => include_mounts,
+            "opened_from_kind" => Map.get(input.arguments, :opened_from_kind)
           })
 
           {:ok, %{id: id, input_path: input_abs}}
@@ -293,7 +307,8 @@ defmodule Valea.Api.Agents do
                  generation: generation,
                  session_id: session_id,
                  read_paths: resume_read_paths(meta["input"], workspace),
-                 include_mounts: meta["include_mounts"] || []
+                 include_mounts: meta["include_mounts"] || [],
+                 opened_from: resume_opened_from(meta["opened_from_kind"], meta, workspace)
                }),
              {:ok, %{id: id}} <-
                Valea.Agents.resume_session(%{id: session_id, scope: scope, meta: meta}) do
@@ -436,6 +451,81 @@ defmodule Valea.Api.Agents do
     case resolve_session_input(input_locator, workspace) do
       {:ok, path} when is_binary(path) -> [path]
       _ -> []
+    end
+  end
+
+  # Spec 2026-08-02 — closed allowlist, the ONLY place a client string
+  # becomes an origin atom. `String.to_atom/1` on this value would be
+  # unbounded atom growth from a wire field; matching literals instead means
+  # the only atoms that can ever exist here are the three written below.
+  # An unrecognized value is a caller error, not a default: a session that
+  # silently mislabels its own premise would put wrong words in the agent's
+  # system prompt. It is also load-bearing for LAUNCH itself —
+  # `SessionSettings.opened_from_noun/1` has exactly three clauses and no
+  # catch-all, so an unvetted atom reaching the scope would raise inside
+  # `SessionScope.resolve/1` and break session creation outright.
+  defp opened_from_kind("mail_message"), do: {:ok, :mail_message}
+  defp opened_from_kind("page"), do: {:ok, :page}
+  defp opened_from_kind("file"), do: {:ok, :file}
+  defp opened_from_kind(nil), do: {:ok, nil}
+  defp opened_from_kind(_other), do: {:error, :opened_from_kind_invalid}
+
+  # The origin, built from whichever locator the caller supplied. `input`
+  # wins when both are given (a mail message is the more specific claim);
+  # in practice no caller sends both. `kind` here is ALREADY an
+  # `opened_from_kind/1` verdict — never a raw wire value.
+  defp opened_from(_kind, nil, nil), do: nil
+  defp opened_from(nil, _input_abs, _context_doc_abs), do: nil
+
+  defp opened_from(kind, input_abs, context_doc_abs) do
+    case input_abs || context_doc_abs do
+      path when is_binary(path) -> %{path: path, kind: kind}
+      _ -> nil
+    end
+  end
+
+  # `resolve_context_doc/2` validates a context locator but hands back the
+  # LOCATOR, not a path (its callers persist it verbatim) — so the premise
+  # paragraph's absolute path is re-derived here, through the same
+  # containment chokepoint (`Valea.Icm.Locator.resolve/2`). Best-effort on
+  # purpose in BOTH directions: on create the locator was just validated a
+  # line earlier so this cannot realistically miss, and on resume a locator
+  # whose ICM is gone must narrow the session rather than block it.
+  defp context_doc_abs(nil, _workspace), do: nil
+
+  defp context_doc_abs(locator, workspace) when is_map(locator) do
+    case Valea.Icm.Locator.resolve(workspace, locator) do
+      {:ok, abs} -> if File.regular?(abs), do: abs, else: nil
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp context_doc_abs(_other, _workspace), do: nil
+
+  # Resume mirrors `resume_read_paths/2`'s BEST-EFFORT posture: a vanished
+  # locator narrows the resumed session (no origin) rather than blocking the
+  # resume, because the transcript already holds whatever was read from it.
+  # A resumed session must never name a path it can no longer read.
+  #
+  # `meta` came off disk, which makes it UNTRUSTED input, not trusted input:
+  # a hand-edited transcript's `opened_from_kind` goes through the very same
+  # `opened_from_kind/1` allowlist as the wire argument, and anything else
+  # (a bogus string, a number, a map) simply yields no origin.
+  defp resume_opened_from(nil, _meta, _workspace), do: nil
+
+  defp resume_opened_from(kind_string, meta, workspace) do
+    with {:ok, kind} when not is_nil(kind) <- opened_from_kind(kind_string),
+         path when is_binary(path) <- resume_origin_path(meta, workspace) do
+      %{path: path, kind: kind}
+    else
+      _unavailable -> nil
+    end
+  end
+
+  defp resume_origin_path(meta, workspace) do
+    case resume_read_paths(meta["input"], workspace) do
+      [path | _] -> path
+      [] -> context_doc_abs(meta["context_doc"], workspace)
     end
   end
 

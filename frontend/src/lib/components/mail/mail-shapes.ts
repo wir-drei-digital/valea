@@ -1928,28 +1928,3 @@ export function createFoldersErrorMessage(code: string): string {
       return 'Could not create the folders. Check the connection and try again.';
   }
 }
-
-// -- MessageView: "Start a session about this message" (Spec D §B/§E) --------
-//
-// Replaces the deleted "Run triage" workflow action. `api.createAgentSession`
-// grants the session read access to exactly ONE file via `opts.input`
-// (`{kind: 'workspace', path: message.path}`) and echoes the resolved
-// absolute path back as `inputPath` — same "opening prompt names the exact
-// path the session was granted" convention as `initial-prompt.ts`'s
-// `pageSessionPrompt` (Knowledge's "Start a session with this page").
-
-/**
- * Opening prompt for a mail-message session — `inputPath` is the resolved
- * absolute path `createAgentSession` echoed back (falls back to the
- * pre-resolve `message.path` if that's ever null); `mailMountKey` is the
- * account's `mail-<slug>` mount the session was opted into via
- * `includeMounts`.
- */
-export function messageSessionPrompt(inputPath: string, mailMountKey: string): string {
-  return [
-    `Read the mail message at \`${inputPath}\` — the whole account is also mounted read-only as \`${mailMountKey}\`.`,
-    `Summarize who it's from and what they need, then help me decide how to handle it.`,
-    `To act on the mailbox (archive, move, flag), write a YAML ops file into the mount's ops/pending/ (vocabulary: move, flag) — the engine validates and executes it; never modify maildir/ directly.`,
-    `If a reply is warranted, write a draft file under the mount's drafts/ — you cannot send anything; only I can send a draft or push it to the mailbox, after reading it.`
-  ].join(' ');
-}

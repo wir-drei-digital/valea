@@ -75,7 +75,14 @@ export type StartFreshDeps = {
   setPendingIcmError: (name: string, folder: string, message: string) => void;
   /** Navigates to Knowledge — the surface that renders the persisted error (the Knowledge page's dismissible banner). */
   goToKnowledge: () => void;
-  /** Navigates to the new ICM's first chat session (`/chat?icm=<mountKey>`) on success. */
+  /**
+   * Navigates into chat on success, where the new ICM's first session is
+   * started. `mountKey` is the ICM that was just created — the caller may use
+   * it for its own purposes (the skill offer), but it deliberately does NOT go
+   * into the URL: `/chat?icm=` means "open a new-session composer" now, and the
+   * first run wants the orientation empty state and its doctor escalation.
+   * Bare `/chat` resolves to this same mount anyway, since it is the only one.
+   */
   goToFirstSession: (mountKey: string) => void;
 };
 

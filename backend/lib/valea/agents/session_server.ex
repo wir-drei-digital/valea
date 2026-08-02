@@ -574,6 +574,12 @@ defmodule Valea.Agents.SessionServer do
       # keys, verbatim) — recorded like `context_doc`/`input`, so a later
       # reader sees exactly what the session was opted into.
       "include_mounts" => Map.get(opts, :include_mounts, []),
+      # Spec 2026-08-02: recorded verbatim like the two locators beside it, so
+      # `resume_agent_session` can rebuild `opened_from` without re-deriving
+      # which kind of thing the session was opened from. Re-validated against
+      # the allowlist on the way back OUT (`Valea.Api.Agents`), never trusted
+      # just because it came off disk.
+      "opened_from_kind" => Map.get(opts, :opened_from_kind),
       "title" => Map.get(opts, :title),
       "harness" => "claude_code",
       "generation" => scope.workspace.generation,
