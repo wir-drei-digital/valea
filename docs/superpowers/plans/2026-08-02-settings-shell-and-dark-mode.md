@@ -382,7 +382,13 @@ Run:
 ```bash
 grep -rn "text-paper-card\|text-white" src/lib src/routes --include="*.svelte"
 ```
-Expected: exactly one hit — `WindowControls.svelte:228`. Any other hit is a site you missed.
+Expected: exactly **three** hits, all of them known and correct at this point —
+`WindowControls.svelte:228` (the Windows close red, which stays), and
+`AccountSwitcher.svelte:62` and `:96`, whose avatar initials are rewritten in
+Task 4 along with the fills underneath them. Any *other* hit is a site you
+missed. Do not touch the AccountSwitcher lines here: Task 4 replaces those whole
+class attributes, and changing the foreground before the fill is fixed would
+make those avatars worse, not better.
 
 Run: `npx vitest run && npm run check`
 Expected: all tests pass (the avatar test still fails — that is Task 4); check reports 0 errors.
@@ -1606,16 +1612,39 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
 
 Every assertion inside already reads from `p = readPalette(palette)` and already
 branches on `palette` where the two themes legitimately differ, so nothing else
-changes. Add one guard at the top of the block so a missing `.dark` block fails
-loudly rather than as five confusing `undefined` errors:
+changes.
+
+**`readPalette` does not follow CSS inheritance** — it reads exactly one block.
+So `.dark` must redeclare *every* token these assertions touch, including any
+that are deliberately identical to light (`--primary-foreground` is exactly
+that case, which is why the `.dark` block above declares it). A token that is
+absent comes back `undefined`, and `relativeLuminance` throws on `undefined`
+before any comparison runs — so the test dies with
+`TypeError: Cannot read properties of undefined (reading 'trim')` pointing into
+`contrast.ts`, naming no token. Add a presence guard first, so a missing token
+is reported by name instead:
 
 ```ts
-  it('defines the full raw ramp', () => {
-    for (const t of ['paper-canvas', 'paper-surface', 'paper-card', 'ink-heading', 'ink-meta', 'act']) {
+  it('defines every token the invariants below read', () => {
+    const required = [
+      'paper-canvas', 'paper-track', 'paper-sidebar', 'paper-panel', 'paper-surface', 'paper-card',
+      'paper-pill', 'paper-nav-active', 'paper-tree-active',
+      'ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline',
+      'primary-foreground',
+      'avatar-fill-1', 'avatar-fill-2', 'avatar-fill-3', 'avatar-fill-4'
+    ];
+    // Non-emptiness first: an absent or differently-formatted block yields {},
+    // and every per-token loop below would then pass vacuously.
+    expect(Object.keys(p).length, `${palette} palette must not be empty`).toBeGreaterThan(15);
+    for (const t of required) {
       expect(p[t], `${palette} must define --${t}`).toBeDefined();
     }
   });
 ```
+
+Write every dark token as **6-digit** hex. `readPalette` lowercases but does not
+normalise length: `#fff` comes back 3-digit, and an 8-digit `#rrggbbaa` comes
+back 8-digit, which `relativeLuminance` rejects with a throw.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1689,6 +1718,15 @@ In `src/routes/layout.css`, immediately after the closing `}` of `:root` and **b
   --avatar-fill-2: #a85c3a;
   --avatar-fill-3: #8460a8;
   --avatar-fill-4: #3a6a8f;
+
+  /* Redeclared IDENTICALLY to `:root` on purpose. `readPalette` reads one
+     block and does not follow CSS inheritance, so a token that is absent here
+     comes back `undefined` and `relativeLuminance` throws on it — the
+     avatar-contrast invariant would blow up in the dark run instead of
+     asserting. Ink on a consequence fill stays near-white in BOTH themes;
+     that is the whole point of the role token, and stating it here is what
+     makes it checkable. */
+  --primary-foreground: #fffefa;
 
   /* shadcn semantic mapping — same seam, dark values */
   --background: var(--paper-surface);
