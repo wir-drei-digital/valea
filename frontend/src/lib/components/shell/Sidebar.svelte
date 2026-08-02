@@ -11,7 +11,7 @@
   import StatusPill from './StatusPill.svelte';
   import UpdateNotice from './UpdateNotice.svelte';
   import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
-  import HarnessSettingsModal from '$lib/components/agent/HarnessSettingsModal.svelte';
+  import SettingsModal from '$lib/components/settings/SettingsModal.svelte';
 
   let {
     activeMountKey = null,
@@ -98,8 +98,8 @@
       </div>
       <button
         type="button"
-        aria-label="Agent settings"
-        title="Agent settings"
+        aria-label="Settings"
+        title="Settings"
         onclick={() => (settingsOpen = true)}
         class="text-ink-meta hover:text-ink-heading hover:bg-paper-pill shrink-0 rounded-md p-1.5 transition-colors"
       >
@@ -110,4 +110,4 @@
   </footer>
 </div>
 
-<HarnessSettingsModal bind:open={settingsOpen} />
+<SettingsModal bind:open={settingsOpen} />
