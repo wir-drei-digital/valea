@@ -90,7 +90,21 @@
 </script>
 
 {#if icmName || onArchive || onDelete || onToggleFiles}
-  <div class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2">
+  <!-- Clears the app-drawn window controls (frameless Windows, and Linux once
+       `tauri.linux.conf.json` lands). This is the topmost row of a chat
+       PRIMARY, so it is what sits under them whenever no side pane is open.
+       Reserved unconditionally: nothing here can see whether a pane sits to
+       its right, and the alternative is a gutter prop threaded down from every
+       host — the approach `NavToggle`'s comment records as tried and reverted.
+       `--window-controls-inset` is 0px on macOS and in the browser, so no
+       other platform pays.
+       The `, 0px` fallback is required, not defensive: a `calc()` against an
+       undefined custom property is invalid at computed-value time and the
+       browser drops the whole `padding-right`, base px-4 included. -->
+  <div
+    class="border-paper-hairline flex items-center gap-1.5 border-b px-4 pb-2"
+    style="padding-right: calc(1rem + var(--window-controls-inset, 0px))"
+  >
     {#if icmName}
       <Folder class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
       <span class="text-ink-meta text-[12px]">

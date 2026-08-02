@@ -11,6 +11,8 @@
   import { updatesStore } from '$lib/stores/updates.svelte';
   import { refreshSidebarProjectStores, wireIcmEvents } from '$lib/stores/icm.svelte';
   import SearchPalette from '$lib/components/palette/SearchPalette.svelte';
+  import WindowControls from '$lib/components/shell/WindowControls.svelte';
+  import { controlsInset } from '$lib/components/shell/window-controls';
   import { windowChrome } from '$lib/shell/platform';
 
   let { children } = $props();
@@ -25,6 +27,21 @@
   // anything interactive. Keyed on `windowChrome()` rather than
   // `inDesktop()` because the strip answers to the chrome, not the runtime.
   const chrome = windowChrome();
+
+  // The controls are `fixed`, so nothing reserves their space automatically.
+  // ONE variable on the document root, set here because this is the only
+  // component that knows whether the controls render at all. Cleared on
+  // destroy so a hot reload cannot leave a stale inset behind.
+  //
+  // The width comes from `controlsInset`, which derives it from the same
+  // metrics the component lays the buttons out from — a hand-copied total here
+  // would drift the moment a button width changed, and nothing would complain.
+  $effect(() => {
+    const inset = controlsInset(chrome);
+    if (inset === '0px') return;
+    document.documentElement.style.setProperty('--window-controls-inset', inset);
+    return () => document.documentElement.style.removeProperty('--window-controls-inset');
+  });
 
   // Joins `workspace:events` once, through the single `wireIcmEvents` call:
   // `icm_changed` keeps the sidebar tree live (Task 18 acceptance
@@ -65,6 +82,13 @@
 
 {#if chrome !== 'browser'}
   <div data-tauri-drag-region class="fixed inset-x-0 top-0 z-50 h-3" aria-hidden="true"></div>
+{/if}
+
+<!-- ABOVE the three branches on purpose: `AppShell` only exists in the third
+     one, so controls rendered there would leave anyone on the loading surface
+     or in onboarding with no way to close the window. -->
+{#if chrome === 'windows' || chrome === 'linux'}
+  <WindowControls {chrome} />
 {/if}
 
 {#if workspaceStore.state === 'loading'}

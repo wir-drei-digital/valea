@@ -12,3 +12,4 @@ export { default as StatusPill } from './StatusPill.svelte';
 export { default as WorkspaceSwitcher } from './WorkspaceSwitcher.svelte';
 export { default as SectionOverline } from './SectionOverline.svelte';
 export { default as EmptyState } from './EmptyState.svelte';
+export { default as WindowControls } from './WindowControls.svelte';

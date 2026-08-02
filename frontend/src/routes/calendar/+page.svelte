@@ -139,7 +139,16 @@
 <AppFrame>
   {#snippet main()}
     <div class="relative flex min-h-0 flex-1 flex-col">
-      <header class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4">
+      <!-- Calendar hosts no `PaneHost`, so this header is ALWAYS the surface
+           under the app-drawn window controls (frameless Windows, and Linux
+           once `tauri.linux.conf.json` lands) — no condition to check. The
+           `, 0px` fallback is required, not defensive: a `calc()` against an
+           undefined custom property is invalid at computed-value time and the
+           browser drops the whole `padding-right`, base px-7 included. -->
+      <header
+        class="flex flex-wrap items-center gap-x-4 gap-y-2 px-7 pt-6 pb-4"
+        style="padding-right: calc(1.75rem + var(--window-controls-inset, 0px))"
+      >
         <h1 class="font-display text-ink-heading text-[22px] leading-tight font-medium">
           {title}
         </h1>

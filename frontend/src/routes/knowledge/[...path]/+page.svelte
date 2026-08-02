@@ -314,9 +314,18 @@
                the row reads as one line — and no title, for the same reason
                `ownsTitle` suppresses it in the host: the strip names the file.
                The controls carry the "Files" label themselves when nothing is
-               open, so the pane is never nameless. -->
+               open, so the pane is never nameless.
+
+               It also clears the app-drawn window controls (frameless Windows,
+               and Linux once `tauri.linux.conf.json` lands), because with no
+               side pane open this band runs to the window's right edge. The
+               `, 0px` fallback is required, not defensive: a `calc()` against
+               an undefined custom property is invalid at computed-value time
+               and the browser drops the whole `padding-right`, base px-3
+               included. -->
           <div
             class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
+            style="padding-right: calc(0.75rem + var(--window-controls-inset, 0px))"
           >
             {#if primaryDescriptor?.kind === 'files'}
               <FilesPaneControls descriptor={primaryDescriptor} state={primaryFilesState} />

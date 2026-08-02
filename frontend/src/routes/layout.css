@@ -72,6 +72,13 @@
   --input: var(--paper-button-border);
   --ring: var(--act);
   --radius: 0.75rem; /* 12px cards */
+
+  /* How much room the app-drawn window controls need at the top right. 0 where
+     the OS draws them (macOS, browser); the root layout sets the real value
+     when it renders `WindowControls`. One variable, one owner — the
+     alternative was a `gutter` prop threaded through every route, which
+     `NavToggle`'s comment records as having been tried and reverted. */
+  --window-controls-inset: 0px;
 }
 
 @theme inline {

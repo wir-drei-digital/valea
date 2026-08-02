@@ -164,7 +164,20 @@
            pb-2), so every header rule across the row reads as one continuous
            line. size-8/-my-1.5 buttons keep >=32px hit targets without
            growing the band. -->
-      <div class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2">
+      <!-- Only the LAST pane in the row clears the app-drawn window controls
+           (frameless Windows, and Linux once `tauri.linux.conf.json` lands):
+           they are `fixed` to the window's top right, so the rightmost header
+           is the one underneath them. `--window-controls-inset` is 0px
+           everywhere else, and the `, 0px` fallback is required rather than
+           defensive — a `calc()` against an undefined custom property is
+           invalid at computed-value time and drops the whole declaration,
+           taking the base px-3 with it. -->
+      <div
+        class="border-paper-hairline flex shrink-0 items-center gap-1 border-b px-3 pt-3 pb-2"
+        style={i === keyed.length - 1
+          ? 'padding-right: calc(0.75rem + var(--window-controls-inset, 0px))'
+          : undefined}
+      >
         <!-- A kind whose controls name the pane themselves renders no title:
              the Files tab strip IS the title, and the band has room for one or
              the other, not both. Everything else keeps the plain label. -->
