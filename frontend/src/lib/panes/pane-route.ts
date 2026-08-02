@@ -60,8 +60,9 @@ export type ChatPaneDescriptor = { kind: 'chat'; sessionId: string };
  *
  * `label` arrives from the URL and is therefore untrusted — a shared or
  * hand-written link can carry anything. It renders as plain text, never
- * `{@html}`, and is capped at parse so a long label cannot push the composer
- * out of its pane. Nothing is ever granted from it.
+ * `{@html}`, and is capped by code point on BOTH parse and serialize (see
+ * `capLabel`) so a long label cannot push the composer out of its pane and a
+ * capped one still round-trips. Nothing is ever granted from it.
  */
 export type PaneOrigin = {
   kind: 'mail-message' | 'page' | 'file';
@@ -113,8 +114,29 @@ function parseCursor(raw: string): { active: number; compare: number | null } | 
 
 const ORIGIN_KINDS = ['mail-message', 'page', 'file'] as const;
 
+/**
+ * The display cap, applied by CODE POINT rather than by UTF-16 code unit.
+ *
+ * `String.slice` cuts code units, so a label whose cap boundary falls inside a
+ * surrogate pair — any non-BMP character, which for a mail subject means a
+ * perfectly ordinary emoji — is left ending in a LONE HIGH SURROGATE.
+ * `encodeURIComponent` THROWS `URIError` on one of those, and it throws during
+ * template evaluation: `/mail` builds every row's href through
+ * `hrefWithPanes` → `serializePaneParam`, so one such label takes the whole
+ * message list down rather than merely spoiling a button.
+ *
+ * `Array.from` iterates code points, so it can never split a pair. Applied on
+ * SERIALIZE as well as on parse: capping in only one direction made
+ * `parse(serialize(d))` differ from `d` for any over-long label.
+ */
+const capLabel = (s: string): string => Array.from(s).slice(0, ORIGIN_LABEL_CAP).join('');
+
 /** `[kind, path, mount?, label?]`, each whole-string encoded. Null if unusable. */
 function parseOrigin(fields: string[]): PaneOrigin | null {
+  // Its own boundary, not the caller's: `tryDecode(undefined)` returns the
+  // STRING `"undefined"`, which is truthy, so a one-field origin would emit
+  // `{kind: 'page', path: 'undefined'}` instead of the null this promises.
+  if (fields.length < 2) return null;
   const kind = tryDecode(fields[0]);
   const path = tryDecode(fields[1]);
   if (!kind || !path) return null;
@@ -127,7 +149,7 @@ function parseOrigin(fields: string[]): PaneOrigin | null {
     kind: kind as PaneOrigin['kind'],
     path,
     ...(mount ? { mount } : {}),
-    ...(label ? { label: label.slice(0, ORIGIN_LABEL_CAP) } : {})
+    ...(label ? { label: capLabel(label) } : {})
   };
 }
 
@@ -225,9 +247,12 @@ export function serializePaneParam(d: PaneDescriptor): string {
       if (!d.from) return `chat:new:${mount}`;
       // Trailing empties are dropped; an absent mount with a present label
       // still needs its slot, so it serializes as an empty segment.
-      const fields = [d.from.kind, d.from.path, d.from.mount ?? '', d.from.label ?? ''].map(
-        encodeURIComponent
-      );
+      const fields = [
+        d.from.kind,
+        d.from.path,
+        d.from.mount ?? '',
+        capLabel(d.from.label ?? '')
+      ].map(encodeURIComponent);
       while (fields.length > 2 && fields[fields.length - 1] === '') fields.pop();
       return `chat:new:${mount}/${fields.join('/')}`;
     }

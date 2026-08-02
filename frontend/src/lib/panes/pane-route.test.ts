@@ -253,6 +253,40 @@ describe('chat-new origin', () => {
     expect((parsed as ChatNewPaneDescriptor).from?.label).toHaveLength(ORIGIN_LABEL_CAP);
   });
 
+  // An ordinary marketing subject: long enough to hit the cap, with an emoji
+  // straddling the boundary. Cutting UTF-16 code units there leaves a lone
+  // high surrogate, `encodeURIComponent` throws `URIError` on one, and it
+  // throws while `/mail` is evaluating every row's href — the message list,
+  // not just the button. Cap by code point and cap on serialize too, and the
+  // whole cycle is stable.
+  it('survives an emoji sitting exactly on the cap boundary', () => {
+    const label = `${'x'.repeat(ORIGIN_LABEL_CAP - 1)}📧 and more`;
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'mail-message', path: 'views/INBOX/42.md', mount: 'mail-mara', label }
+    };
+    const once = parsePaneParam(serializePaneParam(d)) as ChatNewPaneDescriptor;
+    expect(once.from?.label).toBe(`${'x'.repeat(ORIGIN_LABEL_CAP - 1)}📧`);
+    // The re-serialize is the throw site the reviewer reproduced.
+    expect(() => serializePaneParam(once)).not.toThrow();
+    expect(parsePaneParam(serializePaneParam(once))).toEqual(once);
+  });
+
+  // `parse(serialize(d)) === parse(serialize(parse(serialize(d))))` for a
+  // label past the cap: without capping on serialize the second pass differed
+  // from the first.
+  it('reaches a fixed point on an over-long label', () => {
+    const d: PaneDescriptor = {
+      kind: 'chat-new',
+      mountKey: 'life',
+      from: { kind: 'page', path: 'n.md', label: 'y'.repeat(500) }
+    };
+    const once = parsePaneParam(serializePaneParam(d)) as PaneDescriptor;
+    expect(serializePaneParam(once)).toBe(serializePaneParam(d));
+    expect(parsePaneParam(serializePaneParam(once))).toEqual(once);
+  });
+
   // "A different subject still is a different pane" — without this, opening a
   // composer for message A then B recycles the pane and keeps A attached.
   it('gives two origins under one mount distinct identities', () => {
