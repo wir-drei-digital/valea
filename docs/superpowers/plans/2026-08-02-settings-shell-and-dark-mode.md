@@ -1661,7 +1661,7 @@ In `src/routes/layout.css`, immediately after the closing `}` of `:root` and **b
    grey dark mode would be a different product at night.
 
    Direction of lift is PRESERVED, not inverted. The elevation chain
-   canvas -> sidebar -> track -> surface -> panel -> card gets lighter, so
+   canvas -> track -> sidebar -> panel -> surface -> card gets lighter, so
    "lifted onto card paper" means the same thing in both themes and no
    component has to know which one it is in. `pill`, `nav-active` and
    `tree-active` sit above `card`: they are interaction-state fills, not
