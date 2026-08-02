@@ -26,5 +26,35 @@ export default defineConfig({
       '/socket': { target: backend.replace(/^http/, 'ws'), ws: true }
     }
   },
-  test: { include: ['src/**/*.test.ts'] }
+  // Two suites, split by what they need from the compiler.
+  //
+  // `unit` is every plain `*.test.ts` — pure logic, node environment, exactly
+  // what this project has always run.
+  //
+  // `runes` is `*.test.svelte.ts`, for tests that use `$state`/`$effect`
+  // THEMSELVES to pin reactivity behaviour (issue #4: an effect that re-armed
+  // on its own writes). Two things have to be true for such a test to mean
+  // anything, and both are silent failures rather than errors when missing:
+  // the file needs the `.svelte.ts` suffix, or the Svelte plugin never
+  // rune-compiles it (`$effect is not defined`); and it needs a CLIENT
+  // transform, or `$effect` compiles to nothing at all and the test passes
+  // vacuously. `vitest-env-svelte-client.ts` buys the second one without a
+  // jsdom dependency.
+  // Under vitest ONLY: resolve `svelte` to its client build. Plain node
+  // resolution picks the SERVER runtime, whose `flushSync` flushes nothing.
+  // Guarded by `VITEST` so dev and build resolution are untouched.
+  resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
+  test: {
+    projects: [
+      { extends: true, test: { name: 'unit', include: ['src/**/*.test.ts'] } },
+      {
+        extends: true,
+        test: {
+          name: 'runes',
+          include: ['src/**/*.test.svelte.ts'],
+          environment: './vitest-env-svelte-client.ts'
+        }
+      }
+    ]
+  }
 });

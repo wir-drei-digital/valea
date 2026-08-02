@@ -15,7 +15,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { findIcmNode, knowledgeHref } from '$lib/shell/nav';
-  import { ancestorHrefs } from '$lib/shell/reveal-path';
+  import { ancestorHrefs, RevealOnce } from '$lib/shell/reveal-path';
   import { parentPath } from './parent-path';
   import { treeFallback } from './tree-fallback';
   import FilesPane from '$lib/components/panes/FilesPane.svelte';
@@ -135,12 +135,22 @@
     parseFilesPrimary(isFolder ? '' : decodedPath, page.url.searchParams)
   );
 
-  // Keep the open path's ancestors expanded — a deep link should land with
+  // Reveal the open path's ancestors ON ARRIVAL — a deep link should land with
   // its location visible, not hidden behind closed folders. `FilesPane` does
   // this for the file it opens; the FOLDER route has no file, so the route
   // still owns that one case. The loop this replaces is now `ancestorHrefs`.
+  //
+  // Gated by `RevealOnce` because this effect reads more than the path:
+  // `isFolder` comes from the lazy tree, so every `icm_changed` refetch re-runs
+  // it, and an ungated re-run re-opens folders the user collapsed (issue #4).
+  // `isFolder` is part of the key rather than merely read: it can FLIP after
+  // the tree loads (a folder whose name contains a dot reads as a file until
+  // its node arrives), and the flip is what tells us to open the folder's own
+  // row — bailing on it would leave such a folder collapsed on arrival.
+  const revealGate = new RevealOnce();
   $effect(() => {
     if (!mountKey || !decodedPath) return;
+    if (!revealGate.changed(`${mountKey}\0${decodedPath}\0${isFolder}`)) return;
     for (const href of ancestorHrefs(mountKey, decodedPath)) treeOpenState.open(href);
     if (isFolder) treeOpenState.open(knowledgeHref(mountKey, decodedPath));
   });

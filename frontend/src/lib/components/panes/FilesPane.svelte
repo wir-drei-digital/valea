@@ -36,7 +36,7 @@
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
   import { icmToNav, knowledgeHref } from '$lib/shell/nav';
-  import { ancestorHrefs } from '$lib/shell/reveal-path';
+  import { ancestorHrefs, RevealOnce } from '$lib/shell/reveal-path';
   import {
     TREE_MAX,
     TREE_MIN,
@@ -223,11 +223,18 @@
 
   // Reveal the ACTIVE tab's ancestors and scroll it into view. Only the active
   // one: revealing for every open tab would fight itself.
-  let revealed: string | null = null;
+  //
+  // Gated per (mount, path) rather than per path: the same relative path in a
+  // DIFFERENT ICM is a different file in a different tree, and keying on the
+  // path alone silently skipped both the reveal and the scroll when a pane
+  // switched mounts. `RevealOnce` is the same gate the Knowledge route uses;
+  // without one, the effect re-reveals on every unrelated re-run and re-opens
+  // folders the user collapsed (issue #4).
+  const revealGate = new RevealOnce();
   $effect(() => {
     const showing = descriptor.paths[descriptor.active];
-    if (!showing || showing === revealed) return;
-    revealed = showing;
+    if (!showing) return;
+    if (!revealGate.changed(`${descriptor.mountKey}\0${showing}`)) return;
     for (const href of ancestorHrefs(descriptor.mountKey, showing)) treeOpenState.open(href);
     const target = knowledgeHref(descriptor.mountKey, showing);
     queueMicrotask(() =>
