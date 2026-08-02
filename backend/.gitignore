@@ -40,4 +40,5 @@ burrito_out/
 /priv/static/index.html
 /priv/static/robots.txt
 /priv/static/favicon.png
+/priv/static/theme-init.js
 

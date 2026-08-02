@@ -52,7 +52,7 @@ function installEnvironment(): void {
           remove: (c: string) => classes.delete(c),
           contains: (c: string) => classes.has(c)
         },
-        style: { colorScheme: '' }
+        style: { colorScheme: '', background: '' }
       }
     },
     configurable: true,
@@ -127,6 +127,35 @@ describe('ThemeStore', () => {
     flushSync();
     expect(document.documentElement.classList.contains('dark')).toBe(false);
     expect(document.documentElement.style.colorScheme).toBe('light');
+    stop();
+  });
+
+  /**
+   * `static/theme-init.js` writes an inline background on `<html>` to cover
+   * the pre-hydration paint. An inline style outranks the stylesheet, so if
+   * the store left it there, `@layer base html { background: var(--paper-
+   * surface) }` (layout.css) could never repaint the canvas: a light -> dark
+   * switch would keep a cream canvas and overscroll region for the life of
+   * the page, and Task 10 could not fix that drift by editing the token.
+   *
+   * Set the inline background back before each assertion — starting from the
+   * stub's empty string would let this pass with the clearing line removed.
+   */
+  it('clears the pre-paint inline background so the stylesheet owns it', () => {
+    const root = document.documentElement;
+    root.style.background = '#fbf8f1';
+
+    const store = new ThemeStore();
+    const stop = store.start();
+    flushSync();
+    expect(root.style.background, 'start() must hand the background back to CSS').toBe('');
+
+    root.style.background = '#fbf8f1';
+    store.setPreference('dark');
+    flushSync();
+    expect(root.style.background, 'a theme change must not leave the launch colour pinned').toBe(
+      ''
+    );
     stop();
   });
 

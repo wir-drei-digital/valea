@@ -137,6 +137,13 @@ export class ThemeStore {
     if (resolved === 'dark') root.classList.add(DARK_CLASS);
     else root.classList.remove(DARK_CLASS);
     root.style.colorScheme = resolved;
+    // Hand the background back to the stylesheet. `static/theme-init.js` sets
+    // an inline one on <html> to cover the pre-hydration paint, and an inline
+    // style outranks `@layer base html { background: var(--paper-surface) }`
+    // in layout.css — left in place it would pin the canvas and the overscroll
+    // region to the launch theme for the life of the page, and no CSS edit
+    // could override it. The render-blocking stylesheet has landed by now.
+    root.style.background = '';
   }
 
   #persist(): void {
