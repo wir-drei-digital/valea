@@ -69,54 +69,126 @@
   const shape = $derived(m.round ? 'bg-paper-pill rounded-full' : '');
   const hover = $derived(m.round ? 'hover:bg-paper-chip-border' : 'hover:bg-paper-pill');
 
+  /**
+   * The three window operations. Best-effort, and none of them has anything to
+   * report on failure — a refused `close` leaves the window open, which the
+   * user can already see. Wrapped here rather than called inline so the
+   * `catch` cannot be forgotten on one of the three: an IPC error (a revoked
+   * capability, a call landing while the webview tears down) would otherwise
+   * surface only as an unhandled rejection. Same quiet posture as
+   * `keychain.ts`, whose import pattern this component follows.
+   */
+  const minimize = (): void => void win.minimize().catch(() => {});
+  const toggleMaximize = (): void => void win.toggleMaximize().catch(() => {});
+  const close = (): void => void win.close().catch(() => {});
+
   // Seeded once, then driven by the WINDOW, never by our own click: Win+Up, a
   // window manager, and a double-click on the drag region all maximise without
   // going through these buttons, and a flag toggled in the handler would be
   // wrong from the first one of those.
+  //
+  // COALESCED, because `onResized` is not an occasional event: it fires on
+  // every `WM_SIZE`, which on Windows is continuous for the whole of an edge
+  // drag — and a frameless window is precisely the one whose edges get
+  // dragged. Left alone, every frame of that drag starts its own IPC
+  // round-trip to answer a question whose answer changes only on
+  // maximise/restore. `syncing` drops the fires that land while one is already
+  // in flight, and `again` guarantees exactly one more read after the last of
+  // them, so the settled state is never the one that gets skipped. (Re-reading
+  // the same value is otherwise free: assigning an unchanged primitive to
+  // `$state` notifies nothing.)
   $effect(() => {
     let alive = true;
-    void win.isMaximized().then((v) => {
-      if (alive) maximized = v;
-    });
-    const off = win.onResized(() => {
-      void win.isMaximized().then((v) => {
-        if (alive) maximized = v;
-      });
-    });
+    let syncing = false;
+    let again = false;
+
+    const sync = (): void => {
+      if (syncing) {
+        again = true;
+        return;
+      }
+      syncing = true;
+      void win
+        .isMaximized()
+        // A rejection leaves the last known state, which is a better answer
+        // than any value this could invent.
+        .catch(() => maximized)
+        .then((v) => {
+          if (alive) maximized = v;
+          syncing = false;
+          if (alive && again) {
+            again = false;
+            sync();
+          }
+        });
+    };
+
+    sync();
+    const off = win.onResized(sync);
+
     return () => {
       alive = false;
       // `onResized` resolves to the unlisten function; dropping it leaks a
-      // listener per remount. Awaiting the promise in the teardown is what
-      // covers a destroy that happens before the listener is even installed.
-      void off.then((unlisten) => unlisten());
+      // listener per remount, and awaiting it here is what covers a destroy
+      // that lands before the listener is even installed. The `catch` matters
+      // as much: without it a rejected registration becomes an unhandled
+      // rejection on every unmount.
+      off.then((unlisten) => unlisten()).catch(() => {});
     };
   });
 </script>
 
-<!-- `fixed`, above everything, and OUTSIDE the drag strip rather than under it:
-     the strip is a sheet on top, so anything beneath it never receives the
-     click. `z-[60]` beats the strip's `z-50`, which is what puts these buttons
-     back on top of it in the 12px they overlap.
+<!-- GEOMETRY. `z-[60]` sits above the drag strip's `z-50`. The strip now ends
+     at `--window-controls-inset` rather than spanning the width, so the two
+     meet only in the 1px this cluster is nudged in from the right edge — but
+     the z-order stays, because the strip is a sheet ON TOP and a button
+     beneath it would never be in the click's composed path at all. Whoever
+     changes either number should not have to rediscover that.
 
      `top-[1px] right-[1px]` NUDGES the cluster off the exact corner; it does
      not clear the resize border, and nothing in CSS can. Read from
-     `tauri-runtime-wry/src/undecorated_resizing.rs`: on Windows the child HWND
-     covers the whole window with a cut-out that starts at `SM_CYFRAME` (~4px,
-     DPI-scaled), so the top few pixels are the resize strip whatever we do
-     here — exactly as they are above the OS's own caption buttons in a real
-     title bar. On GTK the webview's own button-press handler claims
-     `scale_factor × 5` px from each edge, and skips that entirely while the
-     window is maximised. A bigger offset would buy the top edge back at the
-     cost of the flush corner Windows users aim at, which is the worse trade. -->
-<div class="fixed top-[1px] right-[1px] z-[60] flex" style={cluster}>
+     `tauri-runtime-wry/src/undecorated_resizing.rs`: on Windows a child HWND
+     covers the whole window with a cut-out starting at `SM_CYFRAME` (~4px,
+     DPI-scaled) — but only while the window is RESTORED, because the parent's
+     `WM_SIZE` handler collapses that child to 0×0 once it is maximised. GTK
+     skips its own hit-test (`scale_factor × 5` px from each edge) on exactly
+     the same condition. So the top few pixels are resize territory when
+     restored on both platforms and neither when maximised: restored is the
+     state to check for it. A bigger offset would buy that edge back at the
+     cost of the flush corner Windows users aim at, which is the worse trade.
+
+     POINTER EVENTS, and both halves are load-bearing.
+
+     `pointer-events-auto` on the BUTTONS is what keeps them alive during a
+     modal. bits-ui's scroll lock sets `document.body.style.pointerEvents =
+     "none"` for as long as any dialog is open
+     (`internal/body-scroll-lock.svelte.js`), and `app.html` puts the SvelteKit
+     root inside `<body>`, so this cluster inherits it and nothing ever
+     restores it. On a frameless window that leaves minimise, maximise and
+     close all dead — including behind onboarding's `CreateWorkspaceDialog`,
+     where a first-run user's only remaining exits are Esc, Alt+F4 or the
+     taskbar. Invisible on macOS, where the OS draws the traffic lights.
+
+     `pointer-events-none` on the CONTAINER stops it swallowing clicks in the
+     space between the buttons. On Linux the box is 104×40 and only 72×24 of it
+     is button — the 8px padding ring and the two 8px gaps are inert — so
+     without this the cluster is a click target over a third of its own area.
+     What that currently costs is small and worth stating honestly: the strip
+     ends at `--window-controls-inset`, so the dead space sits over the route
+     header's reserved padding rather than over the strip, and only the 1px the
+     cluster is nudged in from the right edge is drag surface. It is here as
+     hygiene and as insurance for whoever next changes the strip's width or the
+     cluster's padding, not because it reclaims much today. Windows sets padding
+     and gap to 0, so there is no dead space there at all. -->
+<div class="pointer-events-none fixed top-[1px] right-[1px] z-[60] flex" style={cluster}>
   <button
     type="button"
-    onclick={() => void win.minimize()}
+    onclick={minimize}
     aria-label="Minimise"
     title="Minimise"
     style={box}
     class={[
-      'text-ink-secondary focus-visible:ring-ring/50 flex items-center justify-center transition-colors outline-none focus-visible:ring-2',
+      'text-ink-secondary focus-visible:ring-ring/50 pointer-events-auto flex items-center justify-center transition-colors outline-none focus-visible:ring-2',
       shape,
       hover
     ]}
@@ -126,12 +198,12 @@
 
   <button
     type="button"
-    onclick={() => void win.toggleMaximize()}
+    onclick={toggleMaximize}
     aria-label={controlsLabel(maximized)}
     title={controlsLabel(maximized)}
     style={box}
     class={[
-      'text-ink-secondary focus-visible:ring-ring/50 flex items-center justify-center transition-colors outline-none focus-visible:ring-2',
+      'text-ink-secondary focus-visible:ring-ring/50 pointer-events-auto flex items-center justify-center transition-colors outline-none focus-visible:ring-2',
       shape,
       hover
     ]}
@@ -148,12 +220,12 @@
        users look for. -->
   <button
     type="button"
-    onclick={() => void win.close()}
+    onclick={close}
     aria-label="Close"
     title="Close"
     style={box}
     class={[
-      'text-ink-secondary focus-visible:ring-ring/50 flex items-center justify-center transition-colors outline-none hover:bg-[#c42b1c] hover:text-white focus-visible:ring-2',
+      'text-ink-secondary focus-visible:ring-ring/50 pointer-events-auto flex items-center justify-center transition-colors outline-none hover:bg-[#c42b1c] hover:text-white focus-visible:ring-2',
       shape
     ]}
   >

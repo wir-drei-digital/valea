@@ -98,10 +98,17 @@
        disable the drag along with the problem.
 
        On macOS nothing sets `--window-controls-inset` (the OS draws the
-       traffic lights), so the `0px` fallback spans the full width as before. -->
+       traffic lights), so the `0px` fallback spans the full width as before.
+
+       `pointer-events-auto` for the same reason `WindowControls` carries it:
+       bits-ui's scroll lock sets `document.body.style.pointerEvents = "none"`
+       while any modal is open, and `app.html` nests the whole app inside
+       `<body>`, so this strip inherits it. Without this the window cannot be
+       DRAGGED while a dialog is open — Tauri hit-tests the event target, and
+       an element with `pointer-events: none` is never one. -->
   <div
     data-tauri-drag-region
-    class="fixed top-0 left-0 z-50 h-3"
+    class="pointer-events-auto fixed top-0 left-0 z-50 h-3"
     style="right: var(--window-controls-inset, 0px)"
     aria-hidden="true"
   ></div>

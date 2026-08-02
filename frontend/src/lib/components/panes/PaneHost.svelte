@@ -147,11 +147,11 @@
 
   The root layout sets one value on `:root`: the width of the app-drawn window
   controls (frameless Windows and Linux), or 0px everywhere the OS draws its
-  own. Those controls are `fixed` to the
-  window's TOP RIGHT, so exactly ONE band in the app is underneath them — the
-  topmost row of whichever column is rightmost — and only that band may reserve
-  room. Every other header must read 0px, or it pays 138px of padding for
-  furniture that is nowhere near it.
+  own. Those controls are `fixed` to the window's TOP RIGHT, so exactly ONE
+  band in the app is underneath them — the topmost row of whichever column is
+  rightmost — and only that band may reserve room. Every other header must read
+  0px, or it pays a whole cluster width of padding (138px on Windows, 104px on
+  Linux) for furniture that is nowhere near it.
 
   Custom properties inherit, so this component — the only one that knows which
   column is rightmost — zeroes the variable for the subtrees that are NOT, and
