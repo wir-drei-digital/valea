@@ -15,7 +15,7 @@
  *   --ttp-text-muted      -> var(--ink-secondary)   secondary text (blockquote, inactive icons)
  *   --ttp-text-faint      -> var(--ink-meta)         placeholder / faint icon opacity replacement
  *   --ttp-primary         -> var(--act)              accent (links, active marks, selection)
- *   --ttp-primary-text    -> var(--paper-card)       text-on-accent (matches --primary-foreground)
+ *   --ttp-primary-text    -> var(--primary-foreground) text-on-accent (the ink on a filled control)
  *   --ttp-border          -> var(--paper-border)     standard borders
  *   --ttp-border-light    -> var(--paper-hairline)   subtle dividers
  *   --ttp-shadow          -> rgba(42, 38, 32, 0.16)  popover shadow color (ink-heading family,
@@ -36,7 +36,7 @@
     --ttp-text-muted: var(--ink-secondary);
     --ttp-text-faint: var(--ink-meta);
     --ttp-primary: var(--act);
-    --ttp-primary-text: var(--paper-card);
+    --ttp-primary-text: var(--primary-foreground);
     --ttp-border: var(--paper-border);
     --ttp-border-light: var(--paper-hairline);
     --ttp-shadow: rgba(42, 38, 32, 0.16);

@@ -102,7 +102,7 @@
       <span
         class={[
           'border-paper-button-border peer-focus-visible:ring-ring/50 flex size-[15px] items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:ring-3',
-          today ? 'bg-act text-paper-card border-transparent' : 'bg-paper-card'
+          today ? 'bg-act text-primary-foreground border-transparent' : 'bg-paper-card'
         ]}
       >
         {#if today}

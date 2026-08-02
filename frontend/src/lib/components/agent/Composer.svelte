@@ -288,7 +288,7 @@
           disabled={!draft.trim()}
           aria-label={busy ? 'Queue message' : 'Send message'}
           title={busy ? 'Queue message' : 'Send'}
-          class="bg-act hover:bg-act-hover flex size-[30px] items-center justify-center rounded-full text-white transition-colors disabled:opacity-40"
+          class="bg-act hover:bg-act-hover flex size-[30px] items-center justify-center rounded-full text-primary-foreground transition-colors disabled:opacity-40"
         >
           <ArrowUp class="size-4" strokeWidth={2} />
         </button>

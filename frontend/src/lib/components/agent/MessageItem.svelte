@@ -31,7 +31,7 @@
 {#if text}
   {#if role === 'user'}
     <div
-      class="max-w-[78%] self-end rounded-tl-[14px] rounded-tr-[14px] rounded-br-[4px] rounded-bl-[14px] bg-act px-4 py-3 text-[13.5px] leading-[1.55] whitespace-pre-wrap break-words text-white"
+      class="max-w-[78%] self-end rounded-tl-[14px] rounded-tr-[14px] rounded-br-[4px] rounded-bl-[14px] bg-act px-4 py-3 text-[13.5px] leading-[1.55] whitespace-pre-wrap break-words text-primary-foreground"
     >
       {text}
     </div>

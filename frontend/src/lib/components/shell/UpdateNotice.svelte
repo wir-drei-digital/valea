@@ -35,7 +35,7 @@
       <p class="text-ink-secondary">Valea v{phase.version} is ready to install.</p>
       <button
         type="button"
-        class="mt-1.5 w-full rounded-md bg-act px-2 py-1 font-medium text-paper-card transition-colors hover:bg-act-hover disabled:opacity-60"
+        class="mt-1.5 w-full rounded-md bg-act px-2 py-1 font-medium text-primary-foreground transition-colors hover:bg-act-hover disabled:opacity-60"
         disabled={phase.kind === 'installing'}
         onclick={() => void updatesStore.installAndRelaunch()}
       >

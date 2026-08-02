@@ -80,7 +80,7 @@
     <span
       class={[
         'border-paper-button-border flex size-[15px] items-center justify-center rounded-[4px] border transition-colors',
-        done ? 'bg-act text-paper-card border-transparent' : 'bg-paper-card group-hover/check:border-ink-meta',
+        done ? 'bg-act text-primary-foreground border-transparent' : 'bg-paper-card group-hover/check:border-ink-meta',
         busy || !addressable ? 'cursor-not-allowed opacity-50' : ''
       ]}
     >
