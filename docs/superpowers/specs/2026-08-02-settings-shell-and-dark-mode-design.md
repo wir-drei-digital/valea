@@ -43,22 +43,63 @@ as a Tailwind colour. Measured across the codebase:
 
 | Surface | Hardcoded colours |
 |---|---|
-| 152 `.svelte` components | 8 matches, of which 5 are inside comments |
-| `src/lib/editor/tiptap.css` | 0 |
-| all components, `rgba(` | 1 |
+| 152 `.svelte` components, hex literals | 8 total — 5 in code, 3 inside comments |
+| the 5 live hex literals | 4 in the mail iframe's `srcdoc`, 1 the Windows close red |
+| `src/lib/editor/tiptap.css` | no hex; one `rgba()` (`--ttp-shadow`, `tiptap.css:42`) |
+| all components, `rgba(` | 1 (`Onboarding.svelte:30`) |
+| SVG (`Logo`, `PlantGrowth`) | 0 literals — every `fill`/`stroke` is `var(--…)` |
 
-So redefining the variables under `.dark` moves nearly the whole app. The real
-three exceptions are enumerated under [Special cases](#special-cases).
+So redefining the variables under `.dark` moves most of the app. It does **not**
+move everything, and the gap is not only literal colours — a correctly
+tokenized reference can still be the *wrong token* once the palette has two
+modes. That failure mode is the subject of
+[Role tokens vs surface tokens](#role-tokens-vs-surface-tokens), and it is the
+single largest piece of work here. Remaining exceptions are enumerated under
+[Special cases](#special-cases).
 
 ## Part 1 — The settings shell
 
 ### Structure
 
 `agent/HarnessSettingsModal.svelte` becomes `settings/SettingsModal.svelte`.
-Its current body moves **verbatim** into `settings/sections/AgentSection.svelte`
-minus the `Dialog.*` chrome; its load/save/reset logic and trust-model comment
-travel with it unchanged. This is a move, not a rewrite — the harness consent
-step is security-relevant and must not be quietly re-implemented.
+Its current body moves into `settings/sections/AgentSection.svelte` minus the
+`Dialog.*` chrome; its load/save/reset logic and trust-model comment travel with
+it unchanged. This is a move, not a rewrite — the harness consent step is
+security-relevant and must not be quietly re-implemented.
+
+"Verbatim move" is the intent but is **not achievable mechanically**, and
+pretending otherwise is how the consent step gets damaged. Two things must be
+designed rather than copied:
+
+**Activation.** `HarnessSettingsModal.svelte:53` loads config from an effect
+gated on the dialog's `open` prop. `AgentSection` has no `open` prop, so it
+needs an explicit contract: it loads on mount, and the modal mounts sections
+lazily on first selection. Sections stay mounted once shown, which is also what
+makes the next point work.
+
+**Unsaved command text survives section switches.** If sections are destroyed on
+switch, typing a harness command, clicking Appearance and returning silently
+discards it. Since `commandText` is the input to a security decision, losing it
+quietly is worse than an ordinary form-state bug. Keeping the section mounted
+preserves it; a dirty section additionally shows its unsaved state in the nav so
+the user is not left believing a command was saved.
+
+**The consent framing is not decoration.** The dialog header at
+`HarnessSettingsModal.svelte:98-102` explains that Valea runs the agent as a
+separate program. That copy moves *into the Agent section*, not into the generic
+Settings header, because it explains this section specifically. Saving still
+happens only via the explicit button — no autosave on blur, no save-on-close —
+since `set_harness_command` persists **and approves** in one call
+(`backend/lib/valea/api/agents.ex:392-400`), and a generic Settings surface makes
+it more important, not less, that approving an executable stays a deliberate act.
+
+**Out of scope, stated so it is not lost:** `2026-07-10-agent-slice-design.md:229-233`
+requires the UI to show the *resolved absolute path* before first use. It does
+not today — `harness_config` returns the configured command, not a resolved
+executable path. That is a **pre-existing** consent gap, it is not created or
+worsened by this restructure, and closing it needs a backend change. It is
+recorded here and left for its own change rather than smuggled into a settings
+reshuffle.
 
 ```
 src/lib/components/settings/
@@ -118,17 +159,24 @@ a screen reader announces the new pane.
 
 ### Copy that goes stale
 
-Four places tell the user to "open Agent settings (the gear in the sidebar)".
+**Six** places tell the user to "open Agent settings (the gear in the sidebar)".
 That surface no longer exists under that name:
 
 - `lib/components/mail/mail-shapes.ts:701`
 - `lib/components/views/ChatView.svelte:309`
+- `lib/components/views/ChatView.svelte:441`
+- `routes/+page.svelte:179`
 - `lib/components/agent/Transcript.svelte:74`
 - `lib/components/agent/DoctorPanel.svelte:74`
 
 All become "open Settings → Agent (the gear in the sidebar)".
 `mail-components.test.ts:1234` asserts one of these strings verbatim and is
-updated with it.
+updated with it. Note `+page.svelte:179` says "(gear in the sidebar)" while the
+others say "(the gear…)" — the copy is unified while it is being touched.
+
+Implementation starts by re-running `grep -rn "Agent settings" src/` rather than
+trusting this list: two of the six were missed on a first pass, and the count is
+the kind of thing that drifts between spec and merge.
 
 ## Part 2 — The theme system
 
@@ -171,26 +219,63 @@ subscribers.
 
 ### Applying it before first paint
 
-`app.html` currently hardcodes the light theme in two places:
+The light theme is currently hardcoded in **three** places, not two:
 
-```html
-<html lang="en" style="background:#fbf8f1">
-<meta name="color-scheme" content="light" />
+| Location | Declaration |
+|---|---|
+| `app.html:5` | `<html lang="en" style="background:#fbf8f1">` |
+| `app.html:10` | `<meta name="color-scheme" content="light" />` |
+| `layout.css:149` | `color-scheme: light;` inside `@layer base html` |
+
+All three change. `layout.css:149` is easy to miss and is the one that actually
+governs UA scrollbars and form controls once stylesheets load, so updating only
+the meta tag would leave native chrome light in dark mode. The inline `style` on
+`<html>` outranks the stylesheet, so the pre-paint step must overwrite it rather
+than rely on CSS.
+
+**The pre-paint code ships as `static/theme-init.js`, loaded with
+`<script src>` — not as an inline script.** This is not a style preference; an
+inline script does not run:
+
+`svelte.config.js:17` configures a hash-mode CSP with `script-src: ['self']` and
+no `'unsafe-inline'`. SvelteKit hashes the scripts *it* generates, not
+hand-written ones in the `app.html` template. Verified empirically by adding a
+probe inline script, running `vite build`, and hashing every inline script in
+`build/index.html`:
+
+```
+inline scripts found: 2
+[0] window.__valeaThemeProbe=1;   sha256-O1jL7yb/Ww1YYEY5Ki6n75jTRSNwOxnUjkdKnS2F5yQ=
+[1] SvelteKit bootstrap            sha256-eYZ5xcnm13raKgZJy1HyWHtVtY1O4rFHwfps6w8a9jA=
+
+emitted CSP: script-src 'self' 'sha256-eYZ5xcnm13raKgZJy1HyWHtVtY1O4rFHwfps6w8a9jA='
 ```
 
-Without a pre-paint step, every launch on a dark preference flashes cream before
-the app boots. A small inline script in `<head>` reads the same key and sets the
-class, `color-scheme` and background before first paint. It must not throw when
-storage is unavailable (private mode, or a WebView with storage disabled) —
+Only the bootstrap hash is present. The probe's hash is absent, so an inline
+theme script would be **blocked** — producing exactly the cream flash it exists
+to prevent, and only in a production build, where it is least likely to be
+caught. (The Phoenix response header at `spa_controller.ex:35` does permit
+`'unsafe-inline'`, but the browser enforces the *intersection* of header and
+meta, and the meta is the stricter one. `svelte.config.js` documents this.)
+
+A same-origin `<script src="%sveltekit.assets%/theme-init.js">` satisfies
+`script-src 'self'` with no hash to maintain — the same mechanism `app.html:12`
+already uses for the favicon. It also makes the code a real `.js` file that can
+be unit-tested directly, instead of a string embedded in HTML that can only be
+regex-asserted.
+
+The script stays tiny and dependency-free: read `valea.theme`, resolve against
+`matchMedia`, set the class, `color-scheme` and background. It must not throw
+when storage is unavailable (private mode, or a WebView with storage disabled);
 failure falls back to light.
 
-This duplicates the storage key, the class name and the resolution branch. The
-duplication is deliberate: the script cannot import from the bundle without
-becoming render-blocking, which defeats its purpose. It is guarded by
-`app-html-theme.test.ts`, which reads `src/app.html` and asserts it still
-references the storage key and class name the store exports. A drift here shows
-up as a launch flash — the kind of defect that survives review because nobody
-relaunches cold while reviewing.
+It necessarily duplicates the storage key, class name and resolution branch,
+because it cannot import from the bundle without becoming render-blocking on the
+app chunk. `theme-init.test.ts` guards the duplication by evaluating the real
+file against a stubbed `document`/`localStorage`/`matchMedia` and asserting it
+produces the same result as `resolveTheme` for all six preference × OS
+combinations. A second assertion checks the built `index.html` actually
+references the file, so a rename cannot silently drop it.
 
 ### The palette
 
@@ -266,6 +351,43 @@ meaningful text and **must measure at least as well as the light pairing does**;
 `--ink-overline` stays restricted to ≥700-weight overlines and counts. Any
 pairing below the floor is fixed, not documented as a known issue.
 
+### Role tokens vs surface tokens
+
+This is the largest and least obvious piece of work, and swapping the palette
+without it produces unreadable UI.
+
+`--paper-card` is a **surface** token meaning "the lightest paper". In several
+places it is used as a **role**: the ink that sits *on top of* a consequence
+fill. In light mode the two coincide — the lightest paper is near-white, and
+near-white is what you want on a dark green button, so nobody noticed. In dark
+mode they diverge completely: `--paper-card` becomes `#27221a`, and dark ink on
+a dark green fill measures roughly **3.0:1**, under the 4.5:1 normal text needs.
+
+Confirmed sites:
+
+| Site | Usage |
+|---|---|
+| `UpdateNotice.svelte:38` | `bg-act … text-paper-card` |
+| `TaskEditor.svelte:105` | `bg-act text-paper-card` |
+| `TaskRow.svelte:83` | `bg-act text-paper-card` |
+| `AccountSwitcher.svelte:62` and `:96` | avatar ink over four consequence fills |
+| `tiptap.css:39` | `--ttp-primary-text: var(--paper-card)` (active bubble-menu controls, used at `:535`) |
+
+The codebase already has the right token for this role — `layout.css:62` defines
+`--primary-foreground: #fffefa` and `tiptap.css:18` even documents
+`--ttp-primary-text` as "matches `--primary-foreground`". The work is to make
+those uses say what they mean:
+
+- Every on-accent foreground moves to `--primary-foreground` (exposed as
+  `text-primary-foreground`), which stays near-white in **both** themes because
+  all four consequence fills stay dark enough to carry light ink.
+- `--ttp-primary-text` points at `--primary-foreground` rather than
+  `--paper-card`.
+
+This migration ships **before** the `.dark` block, as a no-op refactor in light
+mode: `--primary-foreground` is `#fffefa` and `--paper-card` is `#fffefa`, so
+light rendering is byte-identical and the change is safe to verify on its own.
+
 ### Shadows
 
 `--shadow-card` and `--shadow-window` are warm-black alpha, which is close to
@@ -273,35 +395,103 @@ invisible on dark paper — an elevation system that silently stops working.
 Dark raises opacity and leans on `--paper-border` for card separation, since
 borders do the work shadows cannot at low luminance.
 
+Redefining those two tokens is **not sufficient**, because four surfaces use
+Tailwind's built-in shadow scale instead and never touch them:
+`dropdown-menu-content.svelte:26` (`shadow-md`), `dropdown-menu-sub-content.svelte:15`
+(`shadow-lg`), `popover-content.svelte:26` (`shadow-md`) and
+`EventPopover.svelte:73` (`shadow-lg`). These are floating surfaces — exactly
+where elevation matters most. They keep their `ring-1 ring-foreground/10`,
+which is token-based and does survive the theme switch; the dark pass verifies
+that ring alone separates them adequately and adds a border if it does not.
+
+`Onboarding.svelte:30` hardcodes `drop-shadow-[0_10px_24px_rgba(47,93,72,0.28)]`
+— a green-tinted glow that must be tokenized or given a dark value.
+
+### Dead `dark:` utilities wake up
+
+22 `dark:` utilities exist across `badge`, `button`, `dropdown-menu-item` and
+`input` in `components/ui`. **None has ever applied**, because `.dark` has never
+been set. Setting it activates them all at once, and they were authored for
+shadcn's neutral-slate defaults rather than for warm night paper — for example
+`dark:bg-input/30` on every input.
+
+These are reviewed deliberately rather than discovered in passing: each of the
+four components is checked in dark mode, and any `dark:` utility that fights
+the paper palette is removed or retuned. This is dead code becoming live code,
+which no test currently covers.
+
 ## Special cases
 
-Three things do not follow from tokens.
+### Original-document surfaces stay light
 
-### Mail keeps its white sheet
+Three surfaces render content Valea did not author, where "correct" means
+faithful to the source rather than consistent with the app. They are treated as
+one policy, not three ad-hoc decisions: **an original document keeps its own
+colours, and the app frames it rather than recolouring it.**
 
-`HtmlMailView.svelte:49` forces `html{background:#fff}` inside the sandboxed
-iframe, and it stays. Real email HTML assumes a white background: dark inline
-text on a dark canvas is invisible, and rewriting sender HTML to fix it breaks
-inline styles, background images and logos unpredictably. Dark-mode email is
-unsolved industry-wide, and a mail client that mangles messages is worse than
-one that renders them brightly.
+**HTML mail.** `HtmlMailView.svelte:49` forces `html{background:#fff}` inside
+the sandboxed iframe, and `:50` fixes body ink to `#1c1c1c`. Both stay. Real
+email HTML assumes a white background: dark inline text on a dark canvas is
+invisible, and rewriting sender HTML breaks inline styles, background images and
+logos unpredictably. Dark-mode email is unsolved industry-wide, and a mail client
+that mangles messages is worse than one that renders them brightly. The
+`.valea-img-unavailable` chip at `:53` keeps its literal light values, since it
+sits on that white sheet. The framing border already exists —
+`HtmlMailView.svelte:94` is `border-paper-border … bg-white` — so nothing is
+added here.
 
-The message therefore reads as a white sheet of paper inside a dark app, which
-is coherent in a Paper & ink system rather than accidental. A hairline border
-around the iframe makes it read as a sheet rather than a rendering bug. The
-`.valea-img-unavailable` chip inside the iframe keeps its literal light values,
-since it sits on that white sheet.
+**Plain-text mail must be brought in line.** `MessageView.svelte:857` renders the
+non-HTML branch with `bg-paper-card` and `text-ink-body`, and its own comment at
+`:852` calls it "the same white reading card the HTML view's iframe provides, so
+the two views of one message share a surface". Under the palette swap that
+stops being true: the HTML view stays a white sheet while the plain-text view
+turns dark, so two views of *the same message* diverge — and the comment becomes
+a lie. Plain text is Valea-rendered, not sender-styled, so either it keeps the
+white sheet to preserve the stated invariant, or the invariant is retired.
+**Decision: plain text keeps the white sheet**, using the same literal white and
+dark ink as the iframe, because the promise the comment makes is the right one
+and a message should not change character based on its MIME type.
 
-### The Windows close button stays red
+**PDFs.** `PdfView.svelte` renders pages onto canvases via pdf.js. A typical PDF
+is a white page and stays one; nothing recolours it. The dark work is the
+*framing* — page gaps, borders and the surrounding scroll surface — which is
+tokenized and follows automatically. Verified visually, not assumed.
 
-`WindowControls.svelte:228` hardcodes `hover:bg-[#c42b1c]`. That is the Windows
-close-affordance red and it is correct on any background; it is a platform
-convention, not a Valea token.
+**Images.** `ImageView.svelte:29` renders a bare `<img>` with a tokenized border.
+Source pixels are preserved, which is correct. The known hazard is transparent
+PNGs and SVGs authored for a light backing, which can become illegible on dark
+paper. Policy: image content is never altered; the image sits on a
+`--paper-card` backing so transparency composites against a predictable surface
+rather than the canvas.
+
+### Chrome that does not follow the palette
+
+**The Windows close button stays red.** `WindowControls.svelte:228` hardcodes
+`hover:bg-[#c42b1c]`. That is the Windows close-affordance red and it is correct
+on any background; a platform convention, not a Valea token.
+
+**The dialog overlay needs a dark value.** `dialog-overlay.svelte:15` is
+`bg-black/10`. Ten percent black over cream reads as a dim; over an already-dark
+canvas it is nearly invisible, so modals lose their separation from the page
+exactly where the settings dialog now lives. Dark raises the overlay opacity.
+
+**The favicon and native app icons do not theme.** `app.html:12` always loads
+`favicon.png` and `desktop/src-tauri/icons/icon.svg` hardcodes the light
+palette. This is deliberate: application identity is stable across themes, the
+way it is for every other desktop app. Stated so it is not later filed as a bug.
+
+**The Logo does change, and that is a decision.** `Logo.svelte:9` fills the disc
+with `--act`, but the sprig at `:21` and `:26` uses `--paper-card`. Under the
+palette swap the currently cream sprig becomes dark brown against the green
+disc. That is a brand mark changing appearance, not a layout bug. **Decision:
+the sprig moves to `--primary-foreground`** — the same role-token migration as
+[Role tokens vs surface tokens](#role-tokens-vs-surface-tokens) — so the mark
+renders identically in both themes.
 
 ### The native window background
 
 Tauri paints the native window before the webview has anything to show. The
-`app.html` inline script cannot help there — it runs too late. Whether this
+`theme-init.js` script cannot help there — it runs too late. Whether this
 produces a visible light flash on launch in dark mode is **unverified**, and
 verifying it is part of the work: launch the desktop app cold in dark mode and
 look. If it flashes, the fix is the window background in `tauri.conf.json`; if
@@ -314,32 +504,65 @@ dark window background, which is unobtrusive under both themes.
 
 | File | Covers |
 |---|---|
-| `stores/theme.test.ts` | `resolveTheme` across all three preferences; persistence round trip; unrecognised and corrupt stored values; no-`localStorage` guard |
-| `stores/theme.test.svelte.ts` | Following an OS change while on `'system'`; not following it while pinned to `'light'`/`'dark'`; class and `color-scheme` applied on change |
-| `settings/settings-sections.test.ts` | Registry non-empty, ids unique, `DEFAULT_SECTION` is a real id |
-| `app-html-theme.test.ts` | `app.html` still references the store's storage key and class name |
+| `stores/theme.test.ts` | `resolveTheme` across all three preferences; persistence round trip; unrecognised values (`"DARK"`, `" dark "`, `null`, a JSON object); no-`localStorage` guard; `getItem` throwing on access; `setItem` throwing after a successful read |
+| `stores/theme.test.svelte.ts` | Following an OS change while on `'system'`; **not** following it while pinned to `'light'`/`'dark'`; class and `color-scheme` applied on change; the `matchMedia` listener is removed on teardown and not double-registered across HMR |
+| `theme-init.test.ts` | Evaluates the real `static/theme-init.js` against stubbed globals; agrees with `resolveTheme` on all six preference × OS combinations; survives storage that throws; the built `index.html` references the file |
+| `settings/settings-sections.test.ts` | Pins that `agent` and `appearance` are both present and in that order, ids unique, `DEFAULT_SECTION` is a real id |
+| `contrast.test.ts` | Every on-accent pairing (`--primary-foreground` over each of the four consequence fills) and `--ink-meta`/`--ink-overline` over each paper surface, in **both** palettes, against the floors in `DESIGN_SYSTEM.md:56` |
 
 The runes test uses the `runes` vitest project added in the issue #4 fix
 (`*.test.svelte.ts` + `vitest-env-svelte-client.ts`). `matchMedia` does not
 exist in that environment and is stubbed per test.
 
-**Browser** — every main surface at both themes: Today, Chat, Mail, Calendar,
-Files/Knowledge, Tasks, Sources, Audit, and the Settings dialog itself. Checking
-default views alone is not sufficient: contrast failures hide in *states* —
-hover, selected, active nav, the `refusable` hatch, disabled buttons, empty
-states — so those are exercised deliberately.
+`contrast.test.ts` is the one that would have caught the `text-paper-card`
+defect described in [Role tokens vs surface tokens](#role-tokens-vs-surface-tokens),
+which every other test listed here would have passed. It parses the token values
+out of `layout.css` so it fails when the palette changes, not when a snapshot
+does.
 
-Also verified: no cream flash on a cold launch with a dark preference; switching
-themes with the Settings dialog open repaints the dialog itself.
+**Not covered by unit tests, deliberately.** There is no DOM component-test
+project in this repo (`vite.config.ts` runs Node-based Vitest). Settings nav
+selection, `aria-current`, focus movement, Escape-to-close and dirty-state
+retention are therefore verified in the browser rather than promised as unit
+tests that would need a new test infrastructure to exist first.
+
+**Browser** — every main surface at both themes: Today, Chat, Mail, Calendar,
+Files/Knowledge, Tasks, Sources, Audit, Onboarding, and the Settings dialog
+itself. Checking default views alone is not sufficient: contrast failures hide
+in *states* — hover, selected, active nav, the `refusable` hatch, disabled
+buttons, empty states — so those are exercised deliberately.
+
+Surfaces that need looking at specifically, because they are the ones this spec
+identified as not following the palette automatically: HTML mail beside
+plain-text mail (the same message, both ways), a PDF, a transparent PNG, the
+Tiptap bubble menu in its active state, dropdown and popover elevation, the
+dialog overlay, the Logo, and the four `components/ui` files whose `dark:`
+utilities are newly live.
+
+Also verified: no cream flash on a cold launch with a dark preference (the
+production build, not the dev server — the CSP that made this a risk only
+applies to the built artifact); theme switching with the Settings dialog open
+repaints the dialog itself; and the preference survives a full desktop app quit
+and relaunch, not merely a page reload.
+
+**Manual, on hardware I do not have.** Windows and Linux cold launch and native
+window paint. Recorded as pending checks in the same style as previous passes
+rather than claimed as verified.
 
 ## Documentation
 
 - `DESIGN_SYSTEM.md:289` — "Light only; dark mode deferred (unchanged decision)"
   is replaced by the dark palette tables and the dark contrast floor. §2 gains
-  the rule that made this affordable: colour reaches components through tokens,
-  never as literals.
-- `app.html` and `layout.css:4-8` — comments asserting the app is light-only are
-  corrected.
+  the two rules that made this affordable and the one that nearly broke it:
+  colour reaches components through tokens rather than literals, *and* a token
+  must be chosen for its role rather than its appearance — `--primary-foreground`
+  for ink on a consequence fill, never `--paper-card` because it happens to look
+  right in light mode.
+- `app.html:2-4` and `layout.css:4-8` — comments asserting the app is light-only
+  are corrected.
+- `MessageView.svelte:852` — the "same white reading card" comment stays true
+  only because plain text keeps the white sheet; it gains a note saying so, since
+  it is now a cross-theme invariant rather than an incidental match.
 - `docs/testing/browser-test-plan.md:61` — B4 is "Dark mode / theme toggle (if
   present)". The parenthetical goes; it is present.
 
@@ -351,6 +574,15 @@ an RPC round trip on boot, which forces a choice between a light flash and
 holding the app blank until it resolves. Theme is a per-machine display
 preference — a second monitor at a different desk can reasonably differ — and
 `localStorage` is the only store readable early enough to prevent the flash.
+
+**An inline `<script>` in `app.html` for the pre-paint step.** The obvious
+approach, and it does not work: the hash-mode CSP in `svelte.config.js` hashes
+only SvelteKit-generated scripts, so a hand-written inline script is blocked in
+production builds. Measured, not assumed — see
+[Applying it before first paint](#applying-it-before-first-paint). Adding the
+script's hash to the CSP directives by hand was the alternative fix, and was
+rejected because the hash would need regenerating on every edit to the script,
+with a launch flash as the only symptom of forgetting.
 
 **Inverting the light palette programmatically.** Rejected: a mechanical
 inversion of a warm cream palette gives muddy brown-grey, and it inverts the
