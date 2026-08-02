@@ -73,7 +73,7 @@
     {:else if selection.activeId === descriptor.msgId && selection.detail}
       <MessageView
         message={selection.detail}
-        onSessionBeside={(id) => context.openBeside?.({ kind: 'chat', sessionId: id })}
+        onStartSessionBeside={(d) => context.openBeside?.(d)}
         sessionBesideRefusal={sessionRefusal}
       />
     {:else if selection.failed}

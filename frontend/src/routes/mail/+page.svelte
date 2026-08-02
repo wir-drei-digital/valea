@@ -532,7 +532,7 @@
             {:else if selection.activeId === selectedId && selection.detail}
               <MessageView
                 message={selection.detail}
-                onSessionBeside={(id) => wiring.openBeside({ kind: 'chat', sessionId: id })}
+                onStartSessionBeside={(d) => wiring.openBeside(d)}
                 sessionBesideRefusal={sessionBesideRefusal}
               />
             {:else if selection.failed}

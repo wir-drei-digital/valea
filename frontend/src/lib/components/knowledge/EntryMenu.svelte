@@ -24,11 +24,7 @@
   import RenameDialog from './RenameDialog.svelte';
   import DeleteDialog from './DeleteDialog.svelte';
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api/client';
-  import { mountsStore } from '$lib/stores/mounts.svelte';
-  import { workspaceStore } from '$lib/stores/workspace.svelte';
-  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
-  import { setInitialPrompt, pageSessionPrompt, fileSessionPrompt } from '$lib/stores/initial-prompt';
+  import { chatNewHref } from '$lib/panes/pane-route';
   import { startSessionLabel, type EntryKind } from './entry-kind';
 
   let {
@@ -64,43 +60,36 @@
   let menuOpen = $state(false);
   let renameOpen = $state(false);
   let deleteOpen = $state(false);
-  let sessionError = $state<string | null>(null);
 
   /**
    * "Start a session with this page/file" (Spec D §B) — leaf rows of either
-   * kind, never folders. Mints a session pre-loaded with this entry as a
-   * `context_doc` grant (Task 9's `api.createAgentSession`
-   * `opts.contextDoc`), stashes the opening prompt under the new session id
-   * (`initial-prompt.ts`'s one-shot handoff — the chat route takes it and
-   * `AgentSessionStore` fires it as the first user turn on join), and
-   * navigates there. Same refresh-then-navigate order as
-   * `IcmProjects.svelte`'s `startSession`, so the sidebar's recent-sessions
-   * list is current by the time the chat route's own list renders.
+   * kind, never folders.
    *
-   * Non-.md files ride the identical path (Task 10 audit): the backend
-   * resolves a `context_doc` locator through `Valea.Icm.Locator.resolve/2`
-   * and accepts any `File.regular?/1` result — no `.md` gate anywhere — and
-   * the read grant is the mount root, not a `*.md` glob. Only the prompt's
-   * wording forks.
+   * Spec 2026-08-02: no session is created here any more, and no canned
+   * opening prompt is sent. It navigates to `/chat`'s new-session composer
+   * with this entry ATTACHED and nothing sent, so the user's first turn is
+   * their own instruction ("this is a new invoice, document it in my ICM")
+   * rather than an answer to a question nobody asked. `ChatView` creates the
+   * session on send — including resolving the ICM id for the `context_doc`
+   * grant — so abandoning the composer leaves nothing behind.
+   *
+   * `goto` rather than a pane, because this menu is rendered from `IcmTree`
+   * — the sidebar — which appears on routes with no pane wiring at all.
+   *
+   * `chatNewHref` writes the URL: the origin needs a second encode layer on
+   * the way into a query value, and a single codec shared with the pane
+   * param is what keeps the route and a pane from reading an origin
+   * differently. Non-.md files ride the identical path — only the origin's
+   * `kind` forks, and it is display/premise wording, never a grant.
    */
-  async function startSessionWithEntry() {
-    sessionError = null;
-    const icmId = mountsStore.mounts.find((m) => m.mountKey === mountKey)?.id;
-    if (!icmId) {
-      sessionError = 'This project has no loadable identity. Run Diagnose from the sidebar.';
-      return;
-    }
-    const result = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0, {
-      contextDoc: { kind: 'icm', icm_id: icmId, path }
-    });
-    if (!result.ok) {
-      sessionError = `Couldn't start the session (${result.error}).`;
-      return;
-    }
-    const data = result.data as { id: string };
-    setInitialPrompt(data.id, kind === 'file' ? fileSessionPrompt(path) : pageSessionPrompt(path));
-    await recentSessionsStore.refresh();
-    void goto(`/chat?session=${data.id}`);
+  function startSessionWithEntry(): void {
+    void goto(
+      chatNewHref({
+        kind: 'chat-new',
+        mountKey,
+        from: { kind: kind === 'file' ? 'file' : 'page', path, label: name }
+      })
+    );
   }
 </script>
 
@@ -123,7 +112,7 @@
   </DropdownMenu.Trigger>
   <DropdownMenu.Content align="end">
     {#if kind !== 'folder'}
-      <DropdownMenu.Item onSelect={() => void startSessionWithEntry()}>
+      <DropdownMenu.Item onSelect={() => startSessionWithEntry()}>
         <MessageSquarePlus class="size-3.5" strokeWidth={1.5} />
         {startSessionLabel(kind)}
       </DropdownMenu.Item>
@@ -138,10 +127,6 @@
     </DropdownMenu.Item>
   </DropdownMenu.Content>
 </DropdownMenu.Root>
-
-{#if sessionError}
-  <p role="alert" class="text-warn-ink text-[12.5px]">{sessionError}</p>
-{/if}
 
 <RenameDialog {mountKey} {path} currentName={name} {kind} bind:open={renameOpen} {onBeforeMutate} />
 <DeleteDialog {mountKey} {path} {name} {kind} bind:open={deleteOpen} {onBeforeMutate} {onDeleted} />
