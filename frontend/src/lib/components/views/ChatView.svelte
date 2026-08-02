@@ -38,12 +38,9 @@
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
   import { turnCount, latestTurnAutoOpenPath } from '$lib/components/agent/auto-open';
   import { checkExistence, deriveFileActivity } from '$lib/components/agent/file-activity';
-  import type {
-    ChatPaneDescriptor,
-    ChatNewPaneDescriptor,
-    PaneOrigin
-  } from '$lib/panes/pane-route';
+  import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
   import type { PaneContext } from '$lib/panes/context';
+  import { sessionCreateOpts } from './session-create-opts';
 
   let {
     descriptor,
@@ -415,19 +412,6 @@
     return from.label?.trim() || segments[segments.length - 1] || from.path.trim() || null;
   });
 
-  // The descriptor's origin kind is HYPHENATED (`PaneOrigin['kind']`); the
-  // create action's wire spelling is UNDERSCORED and allowlisted server-side
-  // to exactly these three values — anything else fails the action closed.
-  // This table is the one place the two spellings meet. It is deliberately a
-  // TOTAL `Record` over `PaneOrigin['kind']`: a fourth origin kind breaks
-  // this file's build instead of silently shipping a value the backend
-  // rejects at runtime.
-  const WIRE_ORIGIN_KIND: Record<PaneOrigin['kind'], 'mail_message' | 'page' | 'file'> = {
-    'mail-message': 'mail_message',
-    page: 'page',
-    file: 'file'
-  };
-
   /**
    * The unsent text of the new-session composer, held HERE rather than
    * inside `Composer`, because this is the one `onSend` that can be refused:
@@ -450,48 +434,25 @@
     creating = true;
     createError = null;
 
-    // PARSED IS NOT RESOLVABLE. The pane codec validates the origin's SHAPE
-    // only — a well-formed URL can still name a mount whose manifest has no
-    // loadable id (degraded, unmounted since, hand-written link). A `page`/
-    // `file` origin needs that id to build its ICM locator, so when it is
-    // missing we REFUSE to create and say so. Silently dropping `from` and
-    // creating a blank session would produce a session that looks normal
-    // while being detached from what it was opened from — the exact bug this
-    // feature exists to prevent. A `mail-message` origin needs no ICM id (it
-    // carries a workspace-relative locator plus its own mail mount), so it is
-    // exempt from both the lookup and the refusal.
-    const from = descriptor.from;
-    const icmId =
-      from && from.kind !== 'mail-message'
-        ? mountsStore.mounts.find((m) => m.mountKey === descriptor.mountKey)?.id
-        : undefined;
+    // PARSED IS NOT RESOLVABLE — see `sessionCreateOpts`, which owns the whole
+    // derivation (wire spelling, mail exemption, and the refusal for a
+    // `page`/`file` origin whose ICM has no loadable id). The lookup stays
+    // here because it reads a store; only the copy for its refusal does.
+    const outcome = sessionCreateOpts({
+      from: descriptor.from,
+      icmId: mountsStore.mounts.find((m) => m.mountKey === descriptor.mountKey)?.id
+    });
 
-    if (from && from.kind !== 'mail-message' && !icmId) {
+    if (!outcome.ok) {
       creating = false;
       createError = 'This project has no loadable identity. Run Diagnose from the sidebar.';
       return false;
     }
 
-    // The grant is derived from `from.path` — never from `from.label`, which
-    // is untrusted URL text and display-only.
-    const opts =
-      from === null
-        ? undefined
-        : from.kind === 'mail-message'
-          ? {
-              input: { kind: 'workspace' as const, path: from.path },
-              includeMounts: from.mount ? [from.mount] : [],
-              openedFromKind: WIRE_ORIGIN_KIND[from.kind]
-            }
-          : {
-              contextDoc: { kind: 'icm' as const, icm_id: icmId as string, path: from.path },
-              openedFromKind: WIRE_ORIGIN_KIND[from.kind]
-            };
-
     const result = await api.createAgentSession(
       descriptor.mountKey,
       workspaceStore.generation ?? 0,
-      opts
+      outcome.opts
     );
     creating = false;
     if (!result.ok) {
