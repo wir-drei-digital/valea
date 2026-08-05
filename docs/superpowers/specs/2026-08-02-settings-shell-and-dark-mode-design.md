@@ -1,7 +1,7 @@
 # Settings Shell and Dark Mode — A Place for Preferences, and a Night Paper
 
 **Date:** 2026-08-02
-**Status:** Approved (design), pending implementation plan
+**Status:** Implemented
 
 ## Goal
 

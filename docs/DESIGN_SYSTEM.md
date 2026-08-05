@@ -55,7 +55,12 @@ value here disagrees with the PDF, the PDF wins.
 
 **Contrast floor:** `#948A75` is the lightest ink allowed on `#FBF8F1` for
 meaningful text; `#A89085` only for overlines ≥ 700 weight and decorative
-counts.
+counts. Dark mirrors the rule: `--ink-meta` on `--paper-surface` is the floor
+for meaningful text there and measures 4.46:1 — better than light's 3.22:1 —
+and `--ink-overline` stays restricted to ≥ 700-weight overlines and counts.
+In both themes overline is QUIETER than meta; that ordering is what justifies
+the weight restriction, and `frontend/src/lib/design/contrast.test.ts`
+enforces the floor and the ordering against both palettes.
 
 ### Green — acts (safe, reversible)
 
@@ -95,6 +100,80 @@ suggested" badges, highlight marks in text.
 Use for: "sends an email" badges, overdue counts, the "now" line on the
 calendar, notification badge. **Outline buttons only — terracotta is never a
 filled button.**
+
+### Night paper — the dark palette
+
+Dark is warm, not neutral slate, and lives in the `.dark` block in
+`frontend/src/routes/layout.css` (canonical for these values). The elevation
+chain keeps its direction — sorted by luminance, `canvas` → `track` →
+`sidebar` → `panel` → `surface` → `card` ascends in both themes, so "lifted
+onto card paper" means the same thing at night. The interaction fills (`pill`,
+`nav-active`, `tree-active`) legitimately run the other way: you darken cream
+paper and lighten dark paper to pick a row out.
+
+Paper:
+
+| Token | Light | Dark |
+|---|---|---|
+| `--paper-canvas` | `#e9e3d6` | `#14120c` |
+| `--paper-track` | `#eee8d9` | `#17140e` |
+| `--paper-sidebar` | `#f3eee2` | `#1a160f` |
+| `--paper-panel` | `#f7f2e7` | `#1c1811` |
+| `--paper-surface` | `#fbf8f1` | `#1e1a13` |
+| `--paper-card` | `#fffefa` | `#27221a` |
+| `--paper-pill` | `#ece5d2` | `#2c271e` |
+| `--paper-nav-active` | `#e7dfca` | `#322c22` |
+| `--paper-tree-active` | `#eee5cf` | `#37301f` |
+| `--paper-hairline` | `#efe9da` | `#262119` |
+| `--paper-border` | `#e6decb` | `#332e24` |
+| `--paper-chip-border` | `#e0d7c1` | `#3d362a` |
+| `--paper-button-border` | `#d8cfb9` | `#4a4234` |
+
+Ink:
+
+| Token | Light | Dark |
+|---|---|---|
+| `--ink-heading` | `#29251e` | `#efe8d8` |
+| `--ink-body` | `#3d3b30` | `#d8d0be` |
+| `--ink-secondary` | `#57503f` | `#bdb4a0` |
+| `--ink-subtitle` | `#6e6656` | `#a79d88` |
+| `--ink-meta` | `#948a75` | `#8a8071` |
+| `--ink-overline` | `#a89085` | `#8d7a6b` |
+
+Consequence colours keep their meanings. `--act-hover` goes **lighter** than
+`--act` in dark where light darkens it — hover means "more", and on dark paper
+more is lighter (its exact value is capped so `--primary-foreground` on the
+hover fill still clears 4.5:1; the derivation lives with the token):
+
+| Token | Light | Dark |
+|---|---|---|
+| `--act` | `#2f5d48` | `#2f7a57` |
+| `--act-hover` | `#244938` | `#2a8354` |
+| `--act-tint` | `#e6ede2` | `#1c2a22` |
+| `--act-dot` | `#2f8a5b` | `#4fa97a` |
+| `--suggest-ink` | `#8f6e1f` | `#d3ac5f` |
+| `--suggest-dash` | `#c9a24b` | `#a8873f` |
+| `--suggest-tint` | `#f4e8d2` | `#2e2616` |
+| `--suggest-bg` | `#f9f2e3` | `#26200f` |
+| `--suggest-border` | `#e8d9b5` | `#3d3320` |
+| `--work-dot` | `#4a7dab` | `#6b9dc9` |
+| `--warn-ink` | `#b4512e` | `#e08a5f` |
+| `--warn-dot` | `#c0793f` | `#d08055` |
+| `--warn-tint` | `#f6e7de` | `#2e1d15` |
+| `--warn-border` | `#ebd5c6` | `#4a2f22` |
+| `--warn-checkbox` | `#e0bda9` | `#5c3a29` |
+
+Avatar fills — four distinguishable identity colours, each carrying
+`--primary-foreground` at ≥ 4.5:1 in both themes. Deliberately not the
+consequence palette: an avatar means "which account", not "safe / suggests /
+warns":
+
+| Token | Light | Dark |
+|---|---|---|
+| `--avatar-fill-1` | `#2f5d48` | `#2f7a57` |
+| `--avatar-fill-2` | `#8a4a2f` | `#a85c3a` |
+| `--avatar-fill-3` | `#6b4b8a` | `#8460a8` |
+| `--avatar-fill-4` | `#2f5470` | `#3a6a8f` |
 
 ### Source-dot semantics
 
@@ -286,4 +365,13 @@ Chat:
   fully static under `prefers-reduced-motion`.
 - Fonts are bundled with the app (e.g. fontsource packages) — a local-first
   desktop app must not fetch fonts from a CDN at runtime.
-- Light only; dark mode deferred (unchanged decision).
+- **Colour reaches components through tokens, never literals — and a token is
+  chosen for its ROLE, not its appearance.** Ink on a consequence fill is
+  `--primary-foreground`, never `--paper-card`: in light they are the same
+  value, so the mistake is invisible until a second palette exists. Surfaces
+  are `--paper-*`, ink is `--ink-*`, and neither substitutes for the other.
+- Light and dark. Dark is "night paper" — warm, not neutral slate — and lives
+  in the `.dark` block in `layout.css`. The elevation chain keeps its
+  direction in both themes; `--ink-overline` stays quieter than `--ink-meta`
+  in both. `frontend/src/lib/design/contrast.test.ts` enforces both, plus the
+  §2 contrast floor, against both palettes.

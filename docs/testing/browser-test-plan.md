@@ -58,7 +58,7 @@ Known browser-mode limits (do not report as bugs):
       line absent when unconfigured; calendar line absent when no events.
 - [ ] B3 Today (populated): after C/E legs create pages + events, the
       cockpit reflects them (calendar line: "N events today · next: …").
-- [ ] B4 Dark mode / theme toggle (if present) and a narrow window: no
+- [ ] B4 Dark mode / theme toggle and a narrow window: no
       broken layout in the main routes.
 
 ## C — Knowledge / ICM editor
