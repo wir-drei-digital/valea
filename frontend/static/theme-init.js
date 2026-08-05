@@ -41,5 +41,5 @@
 
   root.style.colorScheme = resolved;
   // Covers first paint and overscroll before layout.css lands.
-  root.style.background = resolved === 'dark' ? '#1e1a13' : '#fbf8f1';
+  root.style.background = resolved === 'dark' ? '#1b1a19' : '#fbf8f1';
 })();

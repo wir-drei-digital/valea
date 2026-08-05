@@ -144,8 +144,11 @@
 }
 
 /* ── Night paper ───────────────────────────────────────────────────────────
-   Dark is a warm palette, not a neutral slate: Valea is "paper & ink", and a
-   grey dark mode would be a different product at night.
+   Dark is near-neutral with a faint warm cast (~15% residual chroma over
+   luminance-matched gray) — revised from an earlier, warmer ramp that read
+   as brown in practice. The consequence colours keep their hues; only paper
+   and ink were neutralised, luminance-preserving, so every contrast ratio
+   and ordering below survived the revision unchanged.
 
    Direction of lift is PRESERVED, not inverted. The elevation chain
    canvas -> track -> sidebar -> panel -> surface -> card gets lighter, so
@@ -169,26 +172,26 @@
    8-digit `#rrggbbaa` throws `Error: not a hex colour`. */
 .dark {
   /* paper */
-  --paper-canvas: #14120c;
-  --paper-track: #17140e;
-  --paper-sidebar: #1a160f;
-  --paper-panel: #1c1811;
-  --paper-surface: #1e1a13;
-  --paper-card: #27221a;
-  --paper-pill: #2c271e;
-  --paper-nav-active: #322c22;
-  --paper-tree-active: #37301f;
-  --paper-hairline: #262119;
-  --paper-border: #332e24;
-  --paper-chip-border: #3d362a;
-  --paper-button-border: #4a4234;
+  --paper-canvas: #121211;
+  --paper-track: #151413;
+  --paper-sidebar: #171615;
+  --paper-panel: #191817;
+  --paper-surface: #1b1a19;
+  --paper-card: #232321;
+  --paper-pill: #282726;
+  --paper-nav-active: #2e2d2b;
+  --paper-tree-active: #32312e;
+  --paper-hairline: #222220;
+  --paper-border: #2f2e2d;
+  --paper-chip-border: #383735;
+  --paper-button-border: #444341;
   /* ink */
-  --ink-heading: #efe8d8;
-  --ink-body: #d8d0be;
-  --ink-secondary: #bdb4a0;
-  --ink-subtitle: #a79d88;
-  --ink-meta: #8a8071;
-  --ink-overline: #8d7a6b;
+  --ink-heading: #e9e8e6;
+  --ink-body: #d2d0ce;
+  --ink-secondary: #b6b5b2;
+  --ink-subtitle: #9f9e9b;
+  --ink-meta: #83817f;
+  --ink-overline: #807d7b;
   /* green — acts. Hover goes LIGHTER here; on dark paper, more is lighter.
      But the lift is capped: `UpdateNotice.svelte` puts real label text in
      `--primary-foreground` on `hover:bg-act-hover`, so the hover fill still

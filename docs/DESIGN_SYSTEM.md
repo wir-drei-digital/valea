@@ -103,7 +103,7 @@ filled button.**
 
 ### Night paper — the dark palette
 
-Dark is warm, not neutral slate, and lives in the `.dark` block in
+Dark is near-neutral with a faint warm cast, and lives in the `.dark` block in
 `frontend/src/routes/layout.css` (canonical for these values). The elevation
 chain keeps its direction — sorted by luminance, `canvas` → `track` →
 `sidebar` → `panel` → `surface` → `card` ascends in both themes, so "lifted
@@ -115,30 +115,30 @@ Paper:
 
 | Token | Light | Dark |
 |---|---|---|
-| `--paper-canvas` | `#e9e3d6` | `#14120c` |
-| `--paper-track` | `#eee8d9` | `#17140e` |
-| `--paper-sidebar` | `#f3eee2` | `#1a160f` |
-| `--paper-panel` | `#f7f2e7` | `#1c1811` |
-| `--paper-surface` | `#fbf8f1` | `#1e1a13` |
-| `--paper-card` | `#fffefa` | `#27221a` |
-| `--paper-pill` | `#ece5d2` | `#2c271e` |
-| `--paper-nav-active` | `#e7dfca` | `#322c22` |
-| `--paper-tree-active` | `#eee5cf` | `#37301f` |
-| `--paper-hairline` | `#efe9da` | `#262119` |
-| `--paper-border` | `#e6decb` | `#332e24` |
-| `--paper-chip-border` | `#e0d7c1` | `#3d362a` |
-| `--paper-button-border` | `#d8cfb9` | `#4a4234` |
+| `--paper-canvas` | `#e9e3d6` | `#121211` |
+| `--paper-track` | `#eee8d9` | `#151413` |
+| `--paper-sidebar` | `#f3eee2` | `#171615` |
+| `--paper-panel` | `#f7f2e7` | `#191817` |
+| `--paper-surface` | `#fbf8f1` | `#1b1a19` |
+| `--paper-card` | `#fffefa` | `#232321` |
+| `--paper-pill` | `#ece5d2` | `#282726` |
+| `--paper-nav-active` | `#e7dfca` | `#2e2d2b` |
+| `--paper-tree-active` | `#eee5cf` | `#32312e` |
+| `--paper-hairline` | `#efe9da` | `#222220` |
+| `--paper-border` | `#e6decb` | `#2f2e2d` |
+| `--paper-chip-border` | `#e0d7c1` | `#383735` |
+| `--paper-button-border` | `#d8cfb9` | `#444341` |
 
 Ink:
 
 | Token | Light | Dark |
 |---|---|---|
-| `--ink-heading` | `#29251e` | `#efe8d8` |
-| `--ink-body` | `#3d3b30` | `#d8d0be` |
-| `--ink-secondary` | `#57503f` | `#bdb4a0` |
-| `--ink-subtitle` | `#6e6656` | `#a79d88` |
-| `--ink-meta` | `#948a75` | `#8a8071` |
-| `--ink-overline` | `#a89085` | `#8d7a6b` |
+| `--ink-heading` | `#29251e` | `#e9e8e6` |
+| `--ink-body` | `#3d3b30` | `#d2d0ce` |
+| `--ink-secondary` | `#57503f` | `#b6b5b2` |
+| `--ink-subtitle` | `#6e6656` | `#9f9e9b` |
+| `--ink-meta` | `#948a75` | `#83817f` |
+| `--ink-overline` | `#a89085` | `#807d7b` |
 
 Consequence colours keep their meanings. `--act-hover` goes **lighter** than
 `--act` in dark where light darkens it — hover means "more", and on dark paper
@@ -370,7 +370,7 @@ Chat:
   `--primary-foreground`, never `--paper-card`: in light they are the same
   value, so the mistake is invisible until a second palette exists. Surfaces
   are `--paper-*`, ink is `--ink-*`, and neither substitutes for the other.
-- Light and dark. Dark is "night paper" — warm, not neutral slate — and lives
+- Light and dark. Dark is "night paper" — near-neutral with a faint warm cast — and lives
   in the `.dark` block in `layout.css`. The elevation chain keeps its
   direction in both themes; `--ink-overline` stays quieter than `--ink-meta`
   in both. `frontend/src/lib/design/contrast.test.ts` enforces both, plus the
