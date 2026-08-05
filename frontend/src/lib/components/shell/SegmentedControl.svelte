@@ -49,12 +49,17 @@
   const sm = $derived(size === 'sm');
 </script>
 
-<div role="tablist" aria-label={label} class="bg-paper-track inline-flex items-center rounded-full p-0.5">
+<!-- `role="group"` + `aria-pressed`, deliberately NOT `tablist`/`tab` and not
+     `radiogroup`/`radio`. Tabs promise panels and arrow keys (SettingsNav and
+     FilesPaneControls both record why that debt is refused), and the APG radio
+     pattern promises roving tabindex and arrow-key movement just the same.
+     Pressed toggle buttons in a labelled group promise exactly what is
+     implemented: each segment is Tab-reachable and announces its state. -->
+<div role="group" aria-label={label} class="bg-paper-track inline-flex items-center rounded-full p-0.5">
   {#each options as option (option.value)}
     <button
       type="button"
-      role="tab"
-      aria-selected={value === option.value}
+      aria-pressed={value === option.value}
       class={[
         'rounded-full whitespace-nowrap transition-colors',
         sm

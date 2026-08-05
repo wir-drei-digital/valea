@@ -76,7 +76,11 @@
 
     <SettingsNav {active} dirty={dirtySections} onSelect={select} />
 
-    <div class="min-w-0 flex-1 overflow-y-auto p-5">
+    <!-- `pr-10`, not `pr-5`: Dialog.Content's close button is absolutely
+         positioned (top-2 right-2, size-7), so scrolled content would pass
+         UNDER its transparent ghost footprint and clicks there would close
+         the dialog. The wider gutter keeps content out of that band. -->
+    <div class="min-w-0 flex-1 overflow-y-auto p-5 pr-10">
       {#each SETTINGS_SECTIONS as section (section.id)}
         {@const Section = SECTION_COMPONENTS[section.id]}
         <div hidden={active !== section.id}>

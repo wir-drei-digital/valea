@@ -28,5 +28,9 @@ export const MAIL_DOCUMENT_PALETTE = {
   linkUnderlineHover: '#1a4d8f',
   chipBorder: '#d8cfb9',
   chipBackground: '#fbf8f1',
-  chipInk: '#948a75'
+  // Not `--ink-meta`'s value (#948a75): at the chips' 12.5px that measured
+  // 3.22:1 on the chip fill, under AA. Same warm hue, darkened to 4.9:1 —
+  // the sheet is white-locked, so this is theme-independent and the palette
+  // test holds it to the 4.5:1 floor like every other ink here.
+  chipInk: '#756c58'
 } as const;

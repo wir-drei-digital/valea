@@ -11,6 +11,10 @@ describe('MAIL_DOCUMENT_PALETTE', () => {
     for (const ink of [MAIL_DOCUMENT_PALETTE.ink, MAIL_DOCUMENT_PALETTE.link]) {
       expect(contrastRatio(ink, MAIL_DOCUMENT_PALETTE.background)).toBeGreaterThanOrEqual(4.5);
     }
+    // Chip ink sits on the chip fill, not the sheet — measure it there.
+    expect(
+      contrastRatio(MAIL_DOCUMENT_PALETTE.chipInk, MAIL_DOCUMENT_PALETTE.chipBackground)
+    ).toBeGreaterThanOrEqual(4.5);
   });
 
   it('is all literal hex — the iframe cannot resolve var()', () => {

@@ -29,12 +29,18 @@
     <!-- The cast is safe: `setPreference` runs `parsePreference` on the way in
          (theme.svelte.ts), so an out-of-vocabulary string sanitises to
          'system' rather than reaching the store. -->
-    <SegmentedControl
-      options={OPTIONS}
-      value={themeStore.preference}
-      label="Theme"
-      onChange={(value) => themeStore.setPreference(value as ThemePreference)}
-    />
+    <!-- The plain wrapper div is load-bearing: this column's flex children
+         stretch, and a stretched track reads as an input field, not a
+         segmented control. The div takes the stretch; the inline-flex track
+         inside it shrink-wraps back to its options. -->
+    <div>
+      <SegmentedControl
+        options={OPTIONS}
+        value={themeStore.preference}
+        label="Theme"
+        onChange={(value) => themeStore.setPreference(value as ThemePreference)}
+      />
+    </div>
     <p class="text-ink-meta text-[12px]">
       {#if themeStore.preference === 'system'}
         Following your operating system, which is currently {themeStore.resolved}.

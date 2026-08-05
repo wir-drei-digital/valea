@@ -27,7 +27,14 @@
 <div class="flex min-h-screen flex-col">
   <div class="mx-auto flex w-full max-w-[1010px] flex-1 flex-col justify-center gap-10 px-8 py-14">
     <header class="flex flex-col items-center gap-6 text-center">
-      <div class="drop-shadow-[0_10px_24px_var(--act-tint)]" aria-hidden="true">
+      <!-- The halo is `--act` at 28%, not `--act-tint`: the tint is within a
+           few percent of the page background in both palettes, so a tint
+           shadow is invisible everywhere. `color-mix` is already in the app's
+           baseline — Tailwind 4 compiles every `/opacity` modifier to it. -->
+      <div
+        class="drop-shadow-[0_10px_24px_color-mix(in_srgb,var(--act)_28%,transparent)]"
+        aria-hidden="true"
+      >
         <Logo size="size-14" />
       </div>
       <div class="flex flex-col gap-3">

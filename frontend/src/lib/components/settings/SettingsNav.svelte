@@ -30,7 +30,7 @@
     {@const Icon = section.icon}
     <button
       type="button"
-      aria-current={active === section.id ? 'page' : undefined}
+      aria-current={active === section.id ? 'true' : undefined}
       onclick={() => onSelect(section.id)}
       class={[
         'flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13.5px] transition-colors',
@@ -42,10 +42,14 @@
       <Icon class="size-[15px] shrink-0" strokeWidth={1.5} />
       <span class="truncate">{section.label}</span>
       {#if dirty.includes(section.id)}
+        <!-- The dot is decoration; the `sr-only` text is what a screen reader
+             gets — a bare `title` on an empty span has no accessible name. -->
         <span
           class="bg-suggest-dash ml-auto size-1.5 shrink-0 rounded-full"
           title="Unsaved changes"
+          aria-hidden="true"
         ></span>
+        <span class="sr-only">, unsaved changes</span>
       {/if}
     </button>
   {/each}
