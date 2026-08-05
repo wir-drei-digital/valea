@@ -127,8 +127,8 @@ export class ThemeStore {
    * subscribe an effect that calls setPreference to what it wrote", in
    * `theme.test.svelte.ts`. Untracking a read never suppresses a
    * NOTIFICATION: `resolved` still reads both tracked, so genuine observers
-   * still wake — "still wakes a reader that observes the resolved theme"
-   * holds that line.
+   * still wake — "still wakes a reader that legitimately observes the
+   * resolved theme" holds that line.
    */
   #apply(): void {
     if (typeof document === 'undefined') return;

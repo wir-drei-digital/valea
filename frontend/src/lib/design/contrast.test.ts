@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { relativeLuminance, contrastRatio } from './contrast';
 import { readPalette } from './tokens';
+import { AVATAR_FILLS } from '../components/mail/avatar-fills';
+
+// Derived from the palette the components actually cycle through, not written
+// out again here — `avatar-fills.ts` promises this test guards additions, so a
+// fifth `bg-avatar-fill-5` entry without a `--avatar-fill-5` token must FAIL
+// the suite, not slip past a hardcoded list of four. Utility class → token
+// name is the `bg-` prefix, per layout.css's `--color-*: var(--*)` mapping.
+const AVATAR_TOKENS = AVATAR_FILLS.map((cls) => cls.replace(/^bg-/, ''));
 
 describe('contrast maths', () => {
   it('matches the WCAG reference points', () => {
@@ -50,7 +58,7 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
       'paper-pill', 'paper-nav-active', 'paper-tree-active',
       'ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline',
       'primary-foreground', 'act', 'act-hover',
-      'avatar-fill-1', 'avatar-fill-2', 'avatar-fill-3', 'avatar-fill-4'
+      ...AVATAR_TOKENS
     ];
     // Non-emptiness first: an absent or differently-formatted block yields {},
     // and every per-token loop below would then pass vacuously.
@@ -129,7 +137,7 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
   // at 11px semibold — normal text, so the 4.5:1 threshold applies.
   it('every avatar fill carries the initial at 4.5:1', () => {
     const fg = p['primary-foreground'];
-    for (const token of ['avatar-fill-1', 'avatar-fill-2', 'avatar-fill-3', 'avatar-fill-4']) {
+    for (const token of AVATAR_TOKENS) {
       expect(p[token], `${token} must be defined`).toBeDefined();
       expect(contrastRatio(p[token], fg), `${token} vs primary-foreground`).toBeGreaterThanOrEqual(4.5);
     }

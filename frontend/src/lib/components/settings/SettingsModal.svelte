@@ -6,7 +6,7 @@
   // (`shown`). That is not an optimisation — destroying `AgentSection` on a
   // switch would discard an unsaved harness command, which is the input to
   // a consent decision.
-  import type { Component } from 'svelte';
+  import { tick, type Component } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import SettingsNav from './SettingsNav.svelte';
   import AgentSection from './sections/AgentSection.svelte';
@@ -35,6 +35,7 @@
   let active = $state<SettingsSectionId>(DEFAULT_SECTION);
   let shown = $state<Set<SettingsSectionId>>(new Set([DEFAULT_SECTION]));
   let instances = $state<Partial<Record<SettingsSectionId, SectionInstance | null>>>({});
+  let panes = $state<Partial<Record<SettingsSectionId, HTMLElement | null>>>({});
 
   // `$effect.pre`, NOT `$effect`. Every open starts on the default section, and
   // the reset has to land BEFORE the content subtree renders with it. A plain
@@ -55,9 +56,19 @@
     }
   });
 
-  function select(id: SettingsSectionId): void {
+  // Spec (Accessibility): "Focus moves to the section heading on switch so a
+  // screen reader announces the new pane." Only on a user-initiated SWITCH —
+  // the open-time reset above assigns `active` directly and never comes
+  // through here, so initial focus stays with the dialog's own management.
+  // `tick()` first: a first selection mounts the pane, and the `<h2>` (each
+  // section's pane title, made focusable with tabindex="-1") does not exist
+  // to focus until the DOM has caught up.
+  async function select(id: SettingsSectionId): Promise<void> {
+    if (id === active) return;
     active = id;
     if (!shown.has(id)) shown = new Set([...shown, id]);
+    await tick();
+    panes[id]?.querySelector<HTMLElement>('h2')?.focus();
   }
 
   const dirtySections = $derived(
@@ -83,7 +94,7 @@
     <div class="min-w-0 flex-1 overflow-y-auto p-5 pr-10">
       {#each SETTINGS_SECTIONS as section (section.id)}
         {@const Section = SECTION_COMPONENTS[section.id]}
-        <div hidden={active !== section.id}>
+        <div hidden={active !== section.id} bind:this={panes[section.id]}>
           {#if shown.has(section.id)}
             <Section bind:this={instances[section.id]} />
           {/if}

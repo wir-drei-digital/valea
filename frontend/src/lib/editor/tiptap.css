@@ -18,15 +18,13 @@
  *   --ttp-primary-text    -> var(--primary-foreground) text-on-accent (the ink on a filled control)
  *   --ttp-border          -> var(--paper-border)     standard borders
  *   --ttp-border-light    -> var(--paper-hairline)   subtle dividers
- *   --ttp-shadow          -> rgba(42, 38, 32, 0.16)  popover shadow color (ink-heading family,
- *                                                     matches --shadow-card's rgb base at higher alpha)
  *   --ttp-radius          -> var(--radius)           card radius (0.75rem)
  *   --ttp-radius-inner    -> calc(var(--radius) - 4px)  nested control radius
  *   --ttp-font-mono       -> var(--font-mono)        IBM Plex Mono
  *
  * Menu/popover surfaces (.slash-command-menu, .bubble-menu, .block-context-menu)
- * additionally pin box-shadow to var(--shadow-card) directly (see below) rather
- * than the generic --ttp-shadow color, per the design system's card elevation.
+ * pin box-shadow to var(--shadow-card) directly (see below), per the design
+ * system's card elevation.
  */
 :root {
     --ttp-bg: var(--paper-card);
@@ -39,7 +37,6 @@
     --ttp-primary-text: var(--primary-foreground);
     --ttp-border: var(--paper-border);
     --ttp-border-light: var(--paper-hairline);
-    --ttp-shadow: rgba(42, 38, 32, 0.16);
     --ttp-radius: var(--radius);
     --ttp-radius-inner: calc(var(--radius) - 4px);
     --ttp-font-mono: var(--font-mono);

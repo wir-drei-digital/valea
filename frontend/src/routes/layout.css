@@ -11,8 +11,11 @@
    `dark:` utilities never apply to <html> itself. That is intended, and the
    two mechanisms are NOT interchangeable: the night-paper token block below is
    a plain class selector that does match <html>, which is what re-points every
-   token, and the `html.dark` rule in @layer base is what turns UA chrome and
-   scrollbars over. Keeping the variant off the media query is still
+   token, and the `html.dark` rule in @layer base is the color-scheme FALLBACK
+   for the window before either script has run — in practice the inline
+   `colorScheme` that `theme-init.js` and `ThemeStore.#apply()` set on <html>
+   always outranks it, so UA chrome and scrollbars follow the inline value.
+   Keeping the variant off the media query is still
    load-bearing — it stops shadcn-svelte's `dark:` utilities switching on
    behind the store's back.
 
@@ -71,7 +74,10 @@
      palette: an avatar means "which account", not "safe/suggests/warns",
      and the tokens it used to borrow (--warn-dot, --suggest-dash,
      --ink-secondary) are a dot, a dash and an ink — none sized to carry
-     text, and two of them measured below 3.5:1 under the white initial. */
+     text, and two of them measured below 3.5:1 under the white initial.
+     --avatar-fill-1 equals --act KNOWINGLY, in both palettes: a 24px
+     initial-bearing circle doesn't read as a button, so the collision is
+     harmless — diverge only as a both-palettes decision. */
   --avatar-fill-1: #2f5d48;
   --avatar-fill-2: #8a4a2f;
   --avatar-fill-3: #6b4b8a;

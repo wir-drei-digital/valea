@@ -30,6 +30,6 @@
     {src}
     alt={path.split('/').pop()}
     onerror={() => (failedSrc = src)}
-    class="border-paper-hairline max-w-full rounded-md border"
+    class="border-paper-hairline bg-paper-card max-w-full rounded-md border"
   />
 {/if}

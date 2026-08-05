@@ -100,7 +100,9 @@
   <!-- The consent framing lives HERE, not in the generic Settings header: it
        explains this pane specifically. -->
   <div>
-    <h2 class="font-display text-ink-heading text-[17px]">Agent</h2>
+    <!-- tabindex="-1": `SettingsModal.select()` moves focus here on a section
+         switch so a screen reader announces the new pane. -->
+    <h2 tabindex="-1" class="font-display text-ink-heading text-[17px]">Agent</h2>
     <p class="text-ink-body text-[12.5px]">
       Valea runs your own agent as a separate program and stays the approval layer around it. Claude
       Code is the built-in harness today.
