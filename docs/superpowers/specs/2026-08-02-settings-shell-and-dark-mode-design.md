@@ -673,7 +673,7 @@ dark window background, which is unobtrusive under both themes.
 | `stores/theme.test.svelte.ts` | Following an OS change while on `'system'`; **not** following it while pinned to `'light'`/`'dark'`; class and `color-scheme` applied on change; the `matchMedia` listener is removed on teardown and not double-registered across HMR |
 | `theme-init.test.ts` | Evaluates the real `static/theme-init.js` against stubbed globals; agrees with `resolveTheme` on all six preference × OS combinations; survives storage that throws |
 | `settings/settings-sections.test.ts` | Pins that `agent` and `appearance` are both present and in that order, ids unique, `DEFAULT_SECTION` is a real id |
-| `contrast.test.ts` | Every on-accent pairing (`--primary-foreground` over each consequence fill **and over every entry in `AVATAR_FILLS`**) plus `--ink-meta`/`--ink-overline` over each paper surface, in **both** palettes, against the floors in `DESIGN_SYSTEM.md:56` |
+| `contrast.test.ts` | On-accent pairings: `--primary-foreground` over `--act`/`--act-hover` **and over every entry in `AVATAR_FILLS`** — the only consequence-coloured sites that carry text; every other consequence colour lands on a textless 4–6px dot or dash, so no other ink-on-fill pairing exists to check. Plus the ink ramp's quietness ordering and `--ink-meta`'s floor over `--paper-surface`, in **both** palettes, against the floors in `DESIGN_SYSTEM.md:56` |
 
 The runes test uses the `runes` vitest project added in the issue #4 fix
 (`*.test.svelte.ts` + `vitest-env-svelte-client.ts`). `matchMedia` does not
