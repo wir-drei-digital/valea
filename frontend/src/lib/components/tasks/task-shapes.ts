@@ -120,13 +120,19 @@ export function taskSession(task: TaskEntry): string | null {
 }
 
 /**
- * A source chip's TEXT, shortened to the basename of a path-ish label
+ * A LOCATOR's chip text, shortened to its basename
  * (`01_clients/kita-villa-vesta/CONTEXT.md` → `CONTEXT.md`) so provenance fits
  * a single-line row. The locator itself is untouched — only the label shrinks,
  * and the href still resolves the whole path.
  *
  * A label ending in `/` is a folder-ish string, not a file label, and stays
  * verbatim; so does anything with no `/` at all ("from a phone call").
+ *
+ * Applied to RECOGNIZED locators only (review round 2). A freeform text source
+ * is prose, not a path, and slicing at its last `/` destroyed meaning rather
+ * than saving width: `call with Ana / follow up` became ` follow up`,
+ * `https://example.com/page.html` lost the domain that was the whole point, and
+ * a malformed `mail:w3d/INBOX` lost the fact that it was ever about mail.
  */
 export function sourceChipLabel(label: string): string {
   if (!label.includes('/') || label.endsWith('/')) return label;
@@ -201,8 +207,10 @@ function parsedDue(due: string): string | null {
  * locator kinds, and a confidently wrong link out of freeform provenance is
  * worse than the text.
  *
- * Every `label` is the chip's rendered text, shortened by `sourceChipLabel`;
- * every `href` still addresses the full locator.
+ * Every `label` is the chip's rendered text. A LINK kind's label is the
+ * locator's basename (`sourceChipLabel`) and its `href` still addresses the
+ * whole locator; a TEXT kind's label is the source verbatim, because freeform
+ * provenance is prose and there is no locator to take a basename of.
  */
 export type TaskSourceRender =
   | { kind: 'mail'; label: string; href: string }
@@ -224,14 +232,14 @@ export function taskSourceRender(source: string, mountKey: string): TaskSourceRe
         href: `/mail?account=${encodeURIComponent(account)}&message=${encodeURIComponent(msgId)}`
       };
     }
-    return { kind: 'text', label: sourceChipLabel(trimmed) };
+    return { kind: 'text', label: trimmed };
   }
 
   if (isIcmRelativeFile(trimmed)) {
     return { kind: 'file', label: sourceChipLabel(trimmed), href: knowledgeHref(mountKey, trimmed) };
   }
 
-  return { kind: 'text', label: sourceChipLabel(trimmed) };
+  return { kind: 'text', label: trimmed };
 }
 
 /**

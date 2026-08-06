@@ -88,6 +88,9 @@
   // verbatim text chip the leniency contract promises.
   const priorityText = $derived(priorityGlyph(task.priority) === null ? priorityLabel(task.priority) : null);
   const source = $derived(task.source === null ? null : taskSourceRender(task.source, mountKey));
+  // The chip shows a basename (link kinds) or a source that may be truncated by
+  // `max-w-[24ch]`; the FULL locator is otherwise exposed nowhere on the row.
+  const sourceTitle = $derived(task.source?.trim() ?? undefined);
   const session = $derived(taskSession(task));
   // `open` is the resting state and needs no chip; everything else — including
   // an unknown status, rendered verbatim — earns one.
@@ -134,6 +137,7 @@
         type="button"
         disabled={!addressable}
         onclick={onOpen}
+        title={task.title ?? undefined}
         class={[
           'min-w-0 truncate text-left',
           addressable ? 'hover:underline' : 'cursor-default',
@@ -182,14 +186,19 @@
       {/if}
       {#if source}
         <!-- §5 source chip: dot color names the source type (terracotta =
-             email, amber = document). Unrecognized locators stay plain text —
-             a confidently wrong link is worse. The label is the basename; the
-             href still addresses the whole locator. -->
+             email, amber = document). Unrecognized locators stay plain TEXT,
+             verbatim — a confidently wrong link is worse, and so is a
+             basename sliced out of prose. A link kind's label is the locator's
+             basename; its href still addresses the whole locator, and `title`
+             carries the full string on both variants. -->
         {#if source.kind === 'text'}
-          <span class="text-ink-meta max-w-[24ch] shrink-0 truncate text-[11.5px]">{source.label}</span>
+          <span class="text-ink-meta max-w-[24ch] shrink-0 truncate text-[11.5px]" title={sourceTitle}>
+            {source.label}
+          </span>
         {:else}
           <a
             href={source.href}
+            title={sourceTitle}
             class="border-paper-chip-border text-ink-secondary hover:text-ink-heading inline-flex max-w-[24ch] shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] hover:underline"
           >
             <span

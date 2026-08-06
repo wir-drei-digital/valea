@@ -145,8 +145,8 @@ describe('dueChip', () => {
 });
 
 describe('taskSourceRender', () => {
-  // The LABEL is the chip's text and rides a single-line row, so it is the
-  // basename (`sourceChipLabel`); the HREF still resolves the whole locator.
+  // A LINK kind's label is the locator's basename (`sourceChipLabel`) — the
+  // href still resolves the whole locator. A TEXT kind's label is verbatim.
   it('links a mail message locator into /mail', () => {
     expect(taskSourceRender('mail:w3d/INBOX/<msg-1@host>', 'primary')).toEqual({
       kind: 'mail',
@@ -160,8 +160,10 @@ describe('taskSourceRender', () => {
     expect(render).toMatchObject({ kind: 'mail', href: '/mail?account=w3d&message=m-9' });
   });
 
-  it('leaves a mail-ish locator with too few segments as plain text', () => {
-    expect(taskSourceRender('mail:w3d/INBOX', 'primary')).toEqual({ kind: 'text', label: 'INBOX' });
+  it('leaves a mail-ish locator with too few segments as plain text, VERBATIM', () => {
+    // Review round 2: basenaming this to "INBOX" threw away the one thing it
+    // still said — that the provenance was about mail.
+    expect(taskSourceRender('mail:w3d/INBOX', 'primary')).toEqual({ kind: 'text', label: 'mail:w3d/INBOX' });
   });
 
   it('links an ICM-relative file path against the task’s own ICM', () => {
@@ -178,19 +180,32 @@ describe('taskSourceRender', () => {
   });
 
   it('never links anything the spec does not name as a locator', () => {
-    const plain: [source: string, label: string][] = [
-      ['https://example.com/page.html', 'page.html'],
-      ['Kita follow-up conversation', 'Kita follow-up conversation'],
-      ['/etc/passwd', 'passwd'],
-      ['../secrets.md', 'secrets.md'],
-      ['./notes.md', 'notes.md'],
-      ['~/notes.md', 'notes.md'],
-      ['Clients', 'Clients'],
-      ['clients/', 'clients/']
+    const plain = [
+      'https://example.com/page.html',
+      'Kita follow-up conversation',
+      '/etc/passwd',
+      '../secrets.md',
+      './notes.md',
+      '~/notes.md',
+      'Clients',
+      'clients/'
     ];
-    for (const [source, label] of plain) {
-      expect(taskSourceRender(source, 'primary')).toEqual({ kind: 'text', label });
+    for (const source of plain) {
+      expect(taskSourceRender(source, 'primary')).toEqual({ kind: 'text', label: source });
     }
+  });
+
+  // Review round 2, Important: `sourceChipLabel` shortens a LOCATOR's basename.
+  // A text source has no locator — slicing at its last `/` destroyed meaning
+  // instead of saving width, and these three are the losses that proved it.
+  it('never basenames a text source — freeform provenance renders verbatim', () => {
+    expect(taskSourceRender('https://example.com/page.html', 'primary')!.label).toBe(
+      'https://example.com/page.html'
+    );
+    expect(taskSourceRender('call with Ana / follow up', 'primary')!.label).toBe('call with Ana / follow up');
+    expect(taskSourceRender('mail:w3d/INBOX', 'primary')!.label).toBe('mail:w3d/INBOX');
+    // Whitespace is still trimmed — that was never the basename rule's doing.
+    expect(taskSourceRender('  call with Ana  ', 'primary')).toEqual({ kind: 'text', label: 'call with Ana' });
   });
 
   it('is null for an empty or whitespace-only source', () => {
