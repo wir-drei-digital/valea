@@ -12,8 +12,14 @@ const DEFAULT_LABELS: Record<string, string> = { open: 'Open', in_progress: 'In 
 
 export type BoardColumn = { status: string; label: string; custom: boolean; tasks: TaskEntry[] };
 
+/**
+ * `hasOwn`, never a bare lookup: the status is a string out of the user's own
+ * `tasks.json`, so `"toString"` (or `"constructor"`) would otherwise resolve
+ * down the prototype chain and hand a FUNCTION back where a label belongs. A
+ * status Valea doesn't know is rendered verbatim — including that one.
+ */
 export function boardLabel(status: string): string {
-  return DEFAULT_LABELS[status] ?? status;
+  return Object.hasOwn(DEFAULT_LABELS, status) ? DEFAULT_LABELS[status] : status;
 }
 
 /** `""` (no status) reads as Open, matching the list's resting-state rule. */

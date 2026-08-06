@@ -442,6 +442,11 @@
            `sessionLiveById` answers `null` for an id that has aged out, and the
            chip then renders without a dot rather than claiming "ended". -->
       {@const session = taskSession(row.task)}
+      <!-- No hand-off on a finished row: the write is `status: in_progress`, so
+           `→ Assistant` on a done task would REOPEN it as a side effect of a
+           button that says nothing about status. `TaskRow` renders no button at
+           all when the prop is absent, which is the honest shape — reopening is
+           a deliberate act and lives in the editor's status select. -->
       <TaskRow
         task={row.task}
         mountKey={row.icm.mountKey}
@@ -452,7 +457,7 @@
         sessionLive={session === null ? null : sessionLiveById(recentSessionsStore.groups, session)}
         onToggleDone={() => void toggleDone(row.icm.mountKey, row.task)}
         onToggleToday={() => void toggleToday(row.icm.mountKey, row.task)}
-        onHandOff={() => void handOff(row.icm.mountKey, row.task)}
+        onHandOff={isCompleted(row.task) ? undefined : () => void handOff(row.icm.mountKey, row.task)}
         onOpen={() => openEditor(row.icm.mountKey, row.task)}
         onDrop={() => void drop(row.icm.mountKey, row.task)}
         onRepair={() => void repair(row.icm.mountKey, row.task)}

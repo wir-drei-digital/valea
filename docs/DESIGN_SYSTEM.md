@@ -266,8 +266,8 @@ same things (redesign 2026-08-06):
   column so a scan reads the rank without the word eating title width. An
   unknown priority renders no glyph and keeps its verbatim text chip.
 - **⚙** — assigned to the assistant. Who *works* the task, not who created it.
-- **Done cards and rows are receipts** (§8): dimmed, struck through, green
-  check — never expandable-looking.
+- **Done cards and rows are receipts** (§8): dimmed, struck through, the row's
+  green check — never expandable-looking.
 
 ## 6. Cards — the approval family
 

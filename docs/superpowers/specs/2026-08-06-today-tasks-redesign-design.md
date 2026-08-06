@@ -36,8 +36,10 @@ menu. Full critique in the session; what follows is the agreed design.
 
 `AppShell` + `Sidebar` as today. The main area becomes a two-region grid
 inside the scrolling column: main column `minmax(0, 880px)` + right rail
-`300px`, `gap 32px`, the pair centered. Below `1180px` viewport width the
-rail folds under the main column (single column, rail cards full-width).
+`300px`, `gap 32px`, the pair centered. Below `1212px` **container** width —
+the pane's own width, via `@container` / `@min-[1212px]`, not the viewport's
+(planning note superseded by pre-flight ruling) — the rail folds under the
+main column (single column, rail cards full-width).
 Dark mode uses existing tokens throughout; no new tokens.
 
 ### Header

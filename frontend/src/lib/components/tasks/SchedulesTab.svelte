@@ -3,7 +3,9 @@
   // with per-row pause / edit / run-now / delete plus expandable run history,
   // and the tri-state Pause-all switch last, as a quiet footer — making a
   // schedule is the reason to open this tab; pausing every one of them is the
-  // rare thing, and the CONTROL has nothing to offer until there IS a schedule.
+  // rare thing, and the CONTROL has nothing to offer until there IS a schedule
+  // — unless the pause is already engaged, in which case the way out of it must
+  // stay on screen whatever the list holds (`showKillSwitch`).
   // Its STATE banner is the exception and stays at the top, ungated: a paused
   // scheduler falsifies every "Active" chip below it, so it has to be read
   // first (review round 2, Important).
@@ -62,6 +64,16 @@
 
   /** Nothing anywhere to pause means the kill switch has nothing to offer — the footer stays away. */
   const anySchedules = $derived(icms.some((icm) => icm.schedules.length > 0));
+
+  /**
+   * …UNLESS the banner is already speaking about the pause. The resume control
+   * must render whenever the banner names it: a globally paused scheduler with
+   * no schedules left on screen (deleted them, or they live in a project that is
+   * currently disabled) otherwise says "resume when you're ready" with no way to
+   * resume — the pause survives in `workspace.yaml` and silently swallows every
+   * schedule made afterwards.
+   */
+  const showKillSwitch = $derived(anySchedules || killSwitch.banner !== null);
 
   // The row key (`scheduleRowKey`, tested) is computed ONCE per row in the
   // markup below and handed to every handler, rather than each handler
@@ -577,7 +589,7 @@
       <p class="text-ink-meta text-[12.5px]">No schedules here yet.</p>
     {/if}
 
-    {#if anySchedules}
+    {#if showKillSwitch}
       <!-- Unboxed (§11: never boxed section headers) — the kill switch is a
            quiet footer row, separated by the same hairline the lists use.
            `pauseAllError` rides along because it is this button's own reply to

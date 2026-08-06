@@ -251,9 +251,13 @@
   <!-- Calm, per the leniency contract: `tasks.json` is the user's file, and one
        Valea can't parse is a thing to fix, not an app error. Project-named
        because Today merges the ledgers — "tasks.json is unreadable" alone would
-       not say WHICH. Rendered whether or not there are rows. -->
-  {#each ledgerNotes as note (note)}
-    <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
+       not say WHICH. Rendered whether or not there are rows.
+
+       Keyed on the MOUNT KEY, never the sentence: two projects may share an
+       `icmName`, which makes their notes identical strings, and a duplicate
+       `#each` key throws in production (dev only warns). -->
+  {#each ledgerNotes as entry (entry.mountKey)}
+    <p class="text-ink-meta mt-1.5 text-[12.5px]">{entry.note}</p>
   {/each}
 
   {#if split.overdue.length > 0}

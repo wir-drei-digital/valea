@@ -112,6 +112,10 @@ describe('boardLabel', () => {
     expect(boardLabel('done')).toBe('Done');
     expect(boardLabel('Waiting on Nadja')).toBe('Waiting on Nadja');
   });
+
+  it('does not resolve prototype keys — a status is a string from the user file', () => {
+    expect(boardLabel('toString')).toBe('toString');
+  });
 });
 
 describe('dropPatch', () => {

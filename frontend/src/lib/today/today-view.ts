@@ -58,13 +58,21 @@ export function hasBriefing(section: TodaySection): boolean {
  * It is the whole answer to "does the tasks section have something to say":
  * the caller renders these notes, keeps the section alive for them, and drops
  * the whole-page empty state while any of them stands.
+ *
+ * Each note rides with the MOUNT KEY it came from, and that — not the sentence —
+ * is what the renderer keys its list on: two projects can carry the same
+ * `icmName` (the manifest does not police display names), and their notes are
+ * then character-for-character identical. A sentence-keyed `#each` over that
+ * pair throws `each_key_duplicate` in production. Mount keys are uniquified
+ * backend-side, so they cannot collide.
  */
 export function unreadableLedgerNotes(
   icms: { mountKey: string; icmName: string; status: LedgerStatusLike }[]
-): string[] {
+): { mountKey: string; note: string }[] {
   return icms.flatMap((icm) => {
     const note = ledgerNote(icm.status);
-    return note === null ? [] : [`${icm.icmName || icm.mountKey}: tasks.json is ${note}`];
+    if (note === null) return [];
+    return [{ mountKey: icm.mountKey, note: `${icm.icmName || icm.mountKey}: tasks.json is ${note}` }];
   });
 }
 
@@ -143,8 +151,8 @@ function agendaDuration(min: number): string | null {
   return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
 }
 
-/** One agenda line: the clock, the title, and how long it runs. */
-export type AgendaRow = { time: string; title: string; duration: string | null };
+/** One agenda line: the clock, the title, how long it runs, and whether it was called off. */
+export type AgendaRow = { time: string; title: string; duration: string | null; cancelled: boolean };
 
 /**
  * Today's timed events as agenda lines, earliest first.
@@ -153,6 +161,12 @@ export type AgendaRow = { time: string; title: string; duration: string | null }
  * whose all-day entries land in a separate lane and carry no clock time — the
  * same reading `Valea.Cockpit`'s own `next_event/3` takes when it filters
  * `all_day` rows out of the "next" line.
+ *
+ * Cancelled rows STAY, struck through, exactly as the week and month grids
+ * render them: a meeting that was called off is still a fact about the day (the
+ * hour it freed is the point), and dropping it from the agenda alone would make
+ * two views of the same calendar disagree. Only VALEA cancellations arrive —
+ * external ones are removed at expansion.
  */
 export function agendaRows(events: CalendarEvent[]): AgendaRow[] {
   return [...events]
@@ -160,17 +174,24 @@ export function agendaRows(events: CalendarEvent[]): AgendaRow[] {
     .map((event) => ({
       time: timeLabel(event.startMin),
       title: event.title,
-      duration: agendaDuration(event.endMin - event.startMin)
+      duration: agendaDuration(event.endMin - event.startMin),
+      cancelled: event.cancelled === true
     }));
 }
 
 /**
- * The header's `next event HH:MM` — the first event starting at or after
- * `nowMin` (minutes from local midnight, via `minutesOfDay`). An event starting
- * exactly now IS next: it has not begun before now, and rounding it away would
- * make the line skip the meeting the user is walking into.
+ * The header's `next event HH:MM` — the first NON-CANCELLED event starting at or
+ * after `nowMin` (minutes from local midnight, via `minutesOfDay`). An event
+ * starting exactly now IS next: it has not begun before now, and rounding it
+ * away would make the line skip the meeting the user is walking into.
+ *
+ * A cancelled event is not somewhere to be, so it cannot be what is next — the
+ * agenda still lists it struck through, but the header would be sending the user
+ * to a meeting that isn't happening.
  */
 export function nextEventTime(events: CalendarEvent[], nowMin: number): string | null {
-  const upcoming = events.filter((event) => event.startMin >= nowMin).sort((a, b) => a.startMin - b.startMin);
+  const upcoming = events
+    .filter((event) => event.cancelled !== true && event.startMin >= nowMin)
+    .sort((a, b) => a.startMin - b.startMin);
   return upcoming.length === 0 ? null : timeLabel(upcoming[0].startMin);
 }

@@ -110,17 +110,31 @@ describe('agendaRows', () => {
         event({ startMin: 900, endMin: 990, title: 'Interview' })
       ])
     ).toEqual([
-      { time: '9:15', title: 'Standup', duration: '45 min' },
-      { time: '10:00', title: 'Design review', duration: '2 h' },
-      { time: '15:00', title: 'Interview', duration: '1 h 30 min' }
+      { time: '9:15', title: 'Standup', duration: '45 min', cancelled: false },
+      { time: '10:00', title: 'Design review', duration: '2 h', cancelled: false },
+      { time: '15:00', title: 'Interview', duration: '1 h 30 min', cancelled: false }
     ]);
   });
 
   it('has no duration for a zero-length or inverted event', () => {
     expect(agendaRows([event({ startMin: 780, endMin: 780, title: 'Ping' })])).toEqual([
-      { time: '13:00', title: 'Ping', duration: null }
+      { time: '13:00', title: 'Ping', duration: null, cancelled: false }
     ]);
     expect(agendaRows([event({ startMin: 780, endMin: 700, title: 'Ping' })])[0].duration).toBeNull();
+  });
+
+  // Calendar parity: the grids keep a cancelled valea event and strike it
+  // through, so the agenda does too — and carries the flag that draws it.
+  it('keeps a cancelled event as a row and flags it', () => {
+    expect(
+      agendaRows([
+        event({ startMin: 600, endMin: 660, title: 'Called off', cancelled: true }),
+        event({ startMin: 540, endMin: 600, title: 'Standup' })
+      ])
+    ).toEqual([
+      { time: '9:00', title: 'Standup', duration: '1 h', cancelled: false },
+      { time: '10:00', title: 'Called off', duration: '1 h', cancelled: true }
+    ]);
   });
 });
 
@@ -138,6 +152,17 @@ describe('nextEventTime', () => {
   it('is null when nothing is upcoming', () => {
     expect(nextEventTime(events, 661)).toBeNull();
     expect(nextEventTime([], 0)).toBeNull();
+  });
+
+  // A cancelled event is not somewhere to be: the header must not send the user
+  // to a meeting that isn't happening (the agenda still shows it struck through).
+  it('skips a cancelled event and names the next real one', () => {
+    const withCancelled = [
+      event({ startMin: 600, endMin: 660, cancelled: true }),
+      event({ startMin: 660, endMin: 720 })
+    ];
+    expect(nextEventTime(withCancelled, 540)).toBe('11:00');
+    expect(nextEventTime([event({ startMin: 600, endMin: 660, cancelled: true })], 540)).toBeNull();
   });
 });
 
@@ -174,7 +199,7 @@ describe('unreadableLedgerNotes', () => {
         ledger({ mountKey: 'work', icmName: 'Work', status: 'unreadable' }),
         ledger({ mountKey: 'home', icmName: 'Home', status: 'ok' })
       ])
-    ).toEqual(['Work: tasks.json is unreadable — fix by hand or ask the agent']);
+    ).toEqual([{ mountKey: 'work', note: 'Work: tasks.json is unreadable — fix by hand or ask the agent' }]);
   });
 
   it('falls back to the mount key when the manifest names nothing, and keeps ledger order', () => {
@@ -184,8 +209,23 @@ describe('unreadableLedgerNotes', () => {
         ledger({ mountKey: 'b-mount', icmName: 'B', status: 'unreadable' })
       ])
     ).toEqual([
-      'a-mount: tasks.json is unreadable — fix by hand or ask the agent',
-      'B: tasks.json is unreadable — fix by hand or ask the agent'
+      { mountKey: 'a-mount', note: 'a-mount: tasks.json is unreadable — fix by hand or ask the agent' },
+      { mountKey: 'b-mount', note: 'B: tasks.json is unreadable — fix by hand or ask the agent' }
+    ]);
+  });
+
+  // The whole reason the notes carry their mount key: the renderer keys its
+  // `#each` on something unique, and identical display names make the SENTENCES
+  // identical (a duplicate `#each` key throws in production).
+  it('keeps two same-named projects apart by mount key, notes and all', () => {
+    expect(
+      unreadableLedgerNotes([
+        ledger({ mountKey: 'work', icmName: 'Work', status: 'unreadable' }),
+        ledger({ mountKey: 'work-2', icmName: 'Work', status: 'unreadable' })
+      ])
+    ).toEqual([
+      { mountKey: 'work', note: 'Work: tasks.json is unreadable — fix by hand or ask the agent' },
+      { mountKey: 'work-2', note: 'Work: tasks.json is unreadable — fix by hand or ask the agent' }
     ]);
   });
 });

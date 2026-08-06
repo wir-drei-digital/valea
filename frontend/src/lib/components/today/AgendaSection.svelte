@@ -27,7 +27,7 @@
     occurrenceToGridEvents,
     type CalendarEvent
   } from '$lib/components/calendar/calendar-shapes';
-  import { agendaRows } from '$lib/today/today-view';
+  import { agendaRows, type AgendaRow } from '$lib/today/today-view';
 
   let {
     enabled,
@@ -51,7 +51,7 @@
     onEvents: (events: CalendarEvent[]) => void;
   } = $props();
 
-  let rows = $state<{ time: string; title: string; duration: string | null }[]>([]);
+  let rows = $state<AgendaRow[]>([]);
   let loading = $state(true);
   let failed = $state(false);
 
@@ -127,7 +127,15 @@
         {#each rows as row, i (`${row.time}/${row.title}/${i}`)}
           <li class="border-paper-hairline flex items-baseline gap-2 border-b py-1.5 last:border-b-0">
             <span class="text-ink-secondary w-10 shrink-0 text-[13px] tabular-nums">{row.time}</span>
-            <span class="text-ink-body min-w-0 flex-1 truncate text-[13px]">{row.title}</span>
+            <!-- A cancelled event keeps its line, struck through, the way the
+                 week and month grids draw it: the hour it freed is the point,
+                 and two views of one calendar must not disagree. -->
+            <span
+              class={[
+                'min-w-0 flex-1 truncate text-[13px]',
+                row.cancelled ? 'text-ink-meta line-through' : 'text-ink-body'
+              ]}>{row.title}</span
+            >
             {#if row.duration}
               <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">{row.duration}</span>
             {/if}
