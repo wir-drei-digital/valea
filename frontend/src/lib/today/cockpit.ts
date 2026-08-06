@@ -27,10 +27,18 @@ export type TodayTasks = {
   inProgress: number;
   top: TodayTopTask[];
 };
+/**
+ * What happened to the ICM's `today.json` — the state that REPLACED the `ok`
+ * boolean (Today/Tasks redesign). Every enabled ICM now gets a section, so the
+ * briefing file's fate is a field rather than the section's existence:
+ * `present` renders the agent's card, `unreadable` the calm one-line note,
+ * `absent` nothing at all.
+ */
+export type TodayJsonState = 'present' | 'absent' | 'unreadable';
 export type TodaySection = {
   mountKey: string;
   icmName: string;
-  ok: boolean;
+  todayJson: TodayJsonState;
   updatedAt: string | null;
   notes: string | null;
   prepared: TodayPrepared[];
@@ -38,7 +46,7 @@ export type TodaySection = {
    * `null` for an UNREADABLE task ledger — the calm "fix by hand" note — and a
    * zeroed line for an absent or empty one. That difference is the whole point:
    * "nothing to do" and "I cannot read your file" are not the same answer, and
-   * the ledger degrades on its own (`ok` above stays about `today.json`).
+   * the ledger degrades on its own (`todayJson` above stays about `today.json`).
    */
   tasks: TodayTasks | null;
 };
@@ -155,12 +163,25 @@ function normalizeTasksLine(raw: unknown): TodayTasks | null {
   };
 }
 
+/**
+ * The briefing file's state, with the spec's two-sided leniency: a MISSING
+ * field degrades quiet (`absent` — an old or trimmed payload renders nothing,
+ * not a scary note), while a field that is present but says something we do not
+ * know degrades honest (`unreadable` — we cannot vouch for that briefing, and
+ * the calm note says so). Never throws either way.
+ */
+function normalizeTodayJson(raw: Record<string, unknown>): TodayJsonState {
+  const value = pick(raw, 'today_json', 'todayJson');
+  if (value === 'present' || value === 'absent' || value === 'unreadable') return value;
+  return value === undefined ? 'absent' : 'unreadable';
+}
+
 function normalizeSection(raw: Record<string, unknown>): TodaySection {
   const prepared = Array.isArray(raw.prepared) ? raw.prepared : [];
   return {
     mountKey: str(pick(raw, 'mount_key', 'mountKey')) ?? '',
     icmName: str(pick(raw, 'icm_name', 'icmName')) ?? '',
-    ok: pick(raw, 'ok', 'ok') === true,
+    todayJson: normalizeTodayJson(raw),
     updatedAt: str(pick(raw, 'updated_at', 'updatedAt')),
     notes: str(raw.notes),
     prepared: prepared

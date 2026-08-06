@@ -10,7 +10,7 @@ const rawSnake = {
     {
       mount_key: 'primary',
       icm_name: 'Mara Lindt Coaching',
-      ok: true,
+      today_json: 'present',
       updated_at: '2026-07-16T08:00:00Z',
       notes: 'Quiet day.',
       prepared: [{ title: 'Prep Lea', summary: 'One page', page: 'clients/lea.md' }],
@@ -40,7 +40,7 @@ describe('normalizeCockpitToday', () => {
     const [section] = today.sections;
     expect(section.mountKey).toBe('primary');
     expect(section.icmName).toBe('Mara Lindt Coaching');
-    expect(section.ok).toBe(true);
+    expect(section.todayJson).toBe('present');
     expect(section.updatedAt).toBe('2026-07-16T08:00:00Z');
     expect(section.notes).toBe('Quiet day.');
     expect(section.prepared).toEqual([{ title: 'Prep Lea', summary: 'One page', page: 'clients/lea.md' }]);
@@ -79,7 +79,7 @@ describe('normalizeCockpitToday', () => {
         {
           mountKey: 'primary',
           icmName: 'Studio',
-          ok: true,
+          todayJson: 'present',
           updatedAt: '2026-07-16T08:00:00Z',
           notes: null,
           prepared: [],
@@ -94,6 +94,7 @@ describe('normalizeCockpitToday', () => {
 
     expect(today.sections[0].mountKey).toBe('primary');
     expect(today.sections[0].icmName).toBe('Studio');
+    expect(today.sections[0].todayJson).toBe('present');
     expect(today.sections[0].tasks).toEqual({ dueToday: 1, overdue: 0, inProgress: 0, top: [] });
     expect(today.mail).toEqual([
       {
@@ -123,7 +124,7 @@ describe('normalizeCockpitToday', () => {
         {
           mount_key: 'primary',
           icm_name: 'Studio',
-          ok: true,
+          today_json: 'present',
           updated_at: 42,
           notes: ['not a string'],
           prepared: [{ title: 'ok', summary: 7 }, 'not-a-map'],
@@ -156,18 +157,18 @@ describe('normalizeCockpitToday', () => {
     expect(today.recentSessions).toEqual([]);
   });
 
-  it('renders a section with ok:false and no prepared content, without dropping provenance', () => {
+  it('renders an unreadable section with no prepared content, without dropping provenance', () => {
     const today = normalizeCockpitToday({
       sections: [
         {
           mount_key: 'primary',
           icm_name: 'Studio',
-          ok: false,
+          today_json: 'unreadable',
           updated_at: null,
           notes: null,
           prepared: [],
           // The two files are independent: a broken `today.json` still has real
-          // tasks to show, so the tasks line rides along on an `ok: false`
+          // tasks to show, so the tasks line rides along on an unreadable
           // section (`Valea.Cockpit`'s `icm_section/1`).
           tasks: { due_today: 3, overdue: 0, in_progress: 0, top: [] }
         }
@@ -177,7 +178,7 @@ describe('normalizeCockpitToday', () => {
     });
 
     const [section] = today.sections;
-    expect(section.ok).toBe(false);
+    expect(section.todayJson).toBe('unreadable');
     expect(section.mountKey).toBe('primary');
     expect(section.icmName).toBe('Studio');
     expect(section.prepared).toEqual([]);
@@ -189,18 +190,18 @@ describe('normalizeCockpitToday', () => {
   // first and the counts for the second.
   it('keeps an unreadable task ledger as null rather than zeroing it', () => {
     const today = normalizeCockpitToday({
-      sections: [{ mount_key: 'primary', icm_name: 'Studio', ok: true, prepared: [], tasks: null }]
+      sections: [{ mount_key: 'primary', icm_name: 'Studio', today_json: 'present', prepared: [], tasks: null }]
     });
     expect(today.sections[0].tasks).toBeNull();
 
     const missing = normalizeCockpitToday({
-      sections: [{ mount_key: 'primary', icm_name: 'Studio', ok: true, prepared: [] }]
+      sections: [{ mount_key: 'primary', icm_name: 'Studio', today_json: 'present', prepared: [] }]
     });
     expect(missing.sections[0].tasks).toBeNull();
 
     // A wrong-typed line (a list, a string) is no more readable than a missing one.
     const wrongTyped = normalizeCockpitToday({
-      sections: [{ mount_key: 'primary', icm_name: 'Studio', ok: true, prepared: [], tasks: 'nope' }]
+      sections: [{ mount_key: 'primary', icm_name: 'Studio', today_json: 'present', prepared: [], tasks: 'nope' }]
     });
     expect(wrongTyped.sections[0].tasks).toBeNull();
   });
@@ -215,6 +216,37 @@ describe('normalizeCockpitToday', () => {
     });
 
     expect(today.recentSessions[0].live).toBe(false);
+  });
+});
+
+// Today/Tasks redesign (2026-08-06): `today_json` REPLACED the `ok` boolean —
+// every enabled ICM gets a section now, and this state says what happened to
+// the briefing file rather than to the section.
+describe('section todayJson state', () => {
+  const section = (extra: Record<string, unknown>) => ({
+    sections: [{ mount_key: 'w3d', icm_name: 'w3d', ...extra }]
+  });
+
+  it('accepts both spellings and all three states', () => {
+    for (const state of ['present', 'absent', 'unreadable'] as const) {
+      expect(normalizeCockpitToday(section({ today_json: state })).sections[0].todayJson).toBe(state);
+      expect(normalizeCockpitToday(section({ todayJson: state })).sections[0].todayJson).toBe(state);
+    }
+  });
+
+  // The spec's leniency reading: a field that isn't there at all is an old or
+  // trimmed payload, and the quiet state ('absent', which renders nothing) is
+  // the honest default. A value that IS there but means nothing to us is a
+  // file we cannot vouch for — 'unreadable' says so with a calm note rather
+  // than silently pretending the briefing was fine.
+  it('missing field degrades quiet (absent); unknown value degrades honest (unreadable)', () => {
+    expect(normalizeCockpitToday(section({})).sections[0].todayJson).toBe('absent');
+    expect(normalizeCockpitToday(section({ today_json: 'exploded' })).sections[0].todayJson).toBe('unreadable');
+    expect(normalizeCockpitToday(section({ today_json: null })).sections[0].todayJson).toBe('unreadable');
+    expect(normalizeCockpitToday(section({ today_json: 7 })).sections[0].todayJson).toBe('unreadable');
+    // The retired boolean is not a state: a payload still carrying `ok` reads
+    // as a payload with no `today_json` at all.
+    expect(normalizeCockpitToday(section({ ok: true })).sections[0].todayJson).toBe('absent');
   });
 });
 

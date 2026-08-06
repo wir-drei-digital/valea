@@ -7,12 +7,15 @@ defmodule Valea.Cockpit do
   sessions. String keys throughout (JSON-ready; also required for
   legitimate `false` values — see `Valea.Api.Agents.harness_doctor`).
 
-  Leniency contract: absent `today.json` → no section for that ICM;
-  unreadable/malformed → a section with `"ok" => false` (the FE renders a
-  calm note, never an error state); unknown fields ignored; wrong-typed
-  fields degrade to nil/[] rather than failing the parse. `today.json`
-  changes ride the existing `icm_changed` watcher events — no new
-  watcher wiring here.
+  Leniency contract: EVERY enabled ICM gets a section, and `"today_json"`
+  reports the briefing file's state — `"present"`, `"absent"` (empty briefing
+  fields; the FE renders nothing for it) or `"unreadable"` (the FE renders a
+  calm note, never an error state). Absence dropping the whole section is
+  exactly what the Today/Tasks redesign (2026-08-06) retired, along with the
+  `"ok"` boolean it was paired with: it hid the tasks line below, which reads
+  a different file entirely. Unknown fields ignored; wrong-typed fields
+  degrade to nil/[] rather than failing the parse. `today.json` changes ride
+  the existing `icm_changed` watcher events — no new watcher wiring here.
 
   ## The tasks line and schedule notices (tasks+schedules spec §UI surfaces)
 
@@ -20,10 +23,10 @@ defmodule Valea.Cockpit do
   is open, so a per-section `"tasks"` line (counts + top 3) replaces the array
   agents used to hand-maintain in `today.json`. It reads a DIFFERENT file, so it
   degrades on its own: a malformed task ledger yields `"tasks" => nil` with the
-  section's `"ok"` untouched (the `mail_summary/0` posture — one broken input
-  never kills a section), and an absent ledger yields a zeroed line. The section
-  itself still exists only where `today.json` does; the Tasks route is the
-  complete view.
+  section's `"today_json"` untouched (the `mail_summary/0` posture — one broken
+  input never kills a section), and an absent ledger yields a zeroed line. The
+  section exists whatever `today.json`'s state, so this line is never hidden by
+  a missing briefing; the Tasks route is still the complete view.
 
   `"schedule_notices"` is top-level, across every ICM: parked (`waiting`),
   `failed`, and newly `registered` schedules from the last 24 h. Notices carry
@@ -48,10 +51,11 @@ defmodule Valea.Cockpit do
   Returns the Today cockpit payload as a map with string keys, ready for JSON.
 
   Returns `{:ok, map}` with keys:
-    - "sections": one per enabled ICM that has a readable `today.json`, in
-      `Valea.Mounts.enabled/0` order — `%{"mount_key", "icm_name", "ok",
-      "updated_at", "notes", "prepared", "tasks"}` (see moduledoc for
-      the leniency contract). `"tasks"` is the ICM's task line —
+    - "sections": one per enabled ICM; `"today_json"` reports the briefing
+      file's state (`"present" | "absent" | "unreadable"`), in
+      `Valea.Mounts.enabled/0` order — `%{"mount_key", "icm_name",
+      "today_json", "updated_at", "notes", "prepared", "tasks"}` (see moduledoc
+      for the leniency contract). `"tasks"` is the ICM's task line —
       `%{"due_today", "overdue", "in_progress", "top" => [%{"id", "title",
       "due", "today", "priority"}]}` — or `nil` when `tasks.json` cannot be
       parsed
@@ -117,26 +121,29 @@ defmodule Valea.Cockpit do
     case Valea.Mounts.enabled() do
       {:ok, mounts} ->
         # Task 14: synthetic `kind: :mail` mounts have no manifest and no
-        # `today.json` — the cockpit sections are ICM content only.
+        # `today.json` — the cockpit sections are ICM content only. Every ICM
+        # mount that survives that filter yields a section, so the old
+        # `Enum.reject(&is_nil/1)` is gone with the nil `icm_section/1` used to
+        # return for an absent `today.json`.
         mounts
         |> Enum.filter(&(&1.kind == :icm))
         |> Enum.map(&icm_section/1)
-        |> Enum.reject(&is_nil/1)
 
       {:error, :no_workspace} ->
         []
     end
   end
 
-  # The tasks line is computed for EVERY section, `today.json`'s own fate
-  # included: the two files are independent, and an ICM whose `today.json` is
-  # broken still has real tasks to show.
+  # A section for EVERY enabled ICM (redesign spec 2026-08-06): the tasks line
+  # and the briefing state are independent facts, and an absent `today.json`
+  # must never hide real tasks again. `"today_json"` says exactly what happened
+  # to the briefing file: "present" | "absent" | "unreadable".
   defp icm_section(mount) do
     base = %{"mount_key" => mount.name, "icm_name" => mount.manifest.name}
 
     case File.read(Path.join(mount.root, "today.json")) do
       {:error, :enoent} ->
-        nil
+        base |> Map.put("today_json", "absent") |> Map.merge(empty_fields()) |> with_tasks(mount)
 
       {:error, _reason} ->
         unreadable_section(base, mount)
@@ -144,7 +151,7 @@ defmodule Valea.Cockpit do
       {:ok, raw} ->
         case parse_today(raw) do
           {:ok, fields} ->
-            base |> Map.put("ok", true) |> Map.merge(fields) |> with_tasks(mount)
+            base |> Map.put("today_json", "present") |> Map.merge(fields) |> with_tasks(mount)
 
           :error ->
             unreadable_section(base, mount)
@@ -153,7 +160,10 @@ defmodule Valea.Cockpit do
   end
 
   defp unreadable_section(base, mount) do
-    base |> Map.put("ok", false) |> Map.merge(empty_fields()) |> with_tasks(mount)
+    base
+    |> Map.put("today_json", "unreadable")
+    |> Map.merge(empty_fields())
+    |> with_tasks(mount)
   end
 
   defp empty_fields do

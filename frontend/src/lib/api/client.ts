@@ -594,7 +594,10 @@ const cockpitTodayFields = [
     sections: [
       'mountKey',
       'icmName',
-      'ok',
+      // Today/Tasks redesign: the briefing file's state ('present' | 'absent'
+      // | 'unreadable'), which RETIRED the `ok` boolean — a section now exists
+      // for every enabled ICM.
+      'todayJson',
       'updatedAt',
       'notes',
       { prepared: ['title', 'summary', 'page'] },

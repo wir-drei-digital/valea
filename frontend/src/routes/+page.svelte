@@ -42,6 +42,21 @@
   let failed = $state(false);
   let loading = $state(true);
 
+  // Bridge for the Today/Tasks redesign's cockpit rework: the payload now
+  // carries a section for EVERY enabled ICM, with `todayJson` reporting the
+  // briefing file's state instead of an absent file dropping the section. This
+  // page still renders the pre-redesign shape, so it keeps to the sections that
+  // actually carry a briefing — an `absent` one contributed nothing before and
+  // contributes nothing here. The redesigned page (a card for `present`, the
+  // calm note for `unreadable`, nothing for `absent`, and tasks read straight
+  // from the ledgers) replaces this file wholesale.
+  // `$derived.by` rather than `$derived`: the expression form is analyzed in
+  // the declaration's own control flow, where `today` is still narrowed to the
+  // `null` it was initialized with (`today?.sections` then reads as `never`).
+  const briefedSections = $derived.by(
+    () => today?.sections.filter((section) => section.todayJson !== 'absent') ?? []
+  );
+
   async function load() {
     loading = true;
     failed = false;
@@ -283,7 +298,7 @@
           </section>
         {/if}
 
-        {#if today.sections.length === 0}
+        {#if briefedSections.length === 0}
           <div class="border-paper-border bg-paper-card mt-8 rounded-xl border p-5">
             <p class="text-ink-body text-[13.5px] leading-relaxed">
               <strong class="text-ink-heading">Nothing prepared yet.</strong>
@@ -299,7 +314,7 @@
           </div>
         {:else}
           <div class="mt-8 flex flex-col gap-8">
-            {#each today.sections as section (section.mountKey)}
+            {#each briefedSections as section (section.mountKey)}
               <section>
                 <div class="flex items-baseline gap-2">
                   <span class="text-ink-meta text-[12px]">{mountProvenanceLabel(section.icmName)}</span>
@@ -310,7 +325,7 @@
                   {/if}
                 </div>
 
-                {#if !section.ok}
+                {#if section.todayJson === 'unreadable'}
                   <p class="text-ink-meta mt-2 text-[13px]">today.json couldn't be read</p>
                 {:else}
                   {#if section.notes}
@@ -345,8 +360,9 @@
 
                 <!-- The tasks line (tasks+schedules spec §Cockpit) — it
                      REPLACED the `open_loops` array agents used to hand-
-                     maintain in `today.json`. Rendered OUTSIDE the `ok` branch
-                     above on purpose: it reads a DIFFERENT file, so a broken
+                     maintain in `today.json`. Rendered OUTSIDE the briefing-
+                     state branch above on purpose: it reads a DIFFERENT file,
+                     so a broken
                      `today.json` never hides real tasks (and vice versa —
                      `tasks: null` is the unreadable-ledger case). The full
                      view is `/tasks`; this is counts plus the top three. -->

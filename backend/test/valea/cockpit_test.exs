@@ -20,12 +20,45 @@ defmodule Valea.CockpitTest do
       assert today["mail"] == []
     end
 
-    test "enabled ICM without today.json contributes no section" do
+    # Today/Tasks redesign (2026-08-06): an absent `today.json` used to DROP the
+    # ICM's whole section, which hid the tasks line with it. Every enabled ICM
+    # now yields a section and `"today_json"` says what happened to the
+    # briefing file — the two facts are independent.
+    test "an ICM without today.json still yields a section, state absent, tasks intact" do
       ws = AgentCase.open_workspace!()
-      AgentCase.mount_test_icm!(ws.path, name: "Primary")
+      icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
 
-      {:ok, today} = Valea.Cockpit.today()
-      assert today["sections"] == []
+      File.write!(
+        Path.join(icm.root, "tasks.json"),
+        Jason.encode!(%{"tasks" => [%{"id" => "t-1", "title" => "x", "status" => "in_progress"}]})
+      )
+
+      {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
+      assert section["mount_key"] == icm.mount_key
+      assert section["icm_name"] == "Primary"
+      assert section["today_json"] == "absent"
+      assert section["updated_at"] == nil
+      assert section["notes"] == nil
+      assert section["prepared"] == []
+      assert section["tasks"]["in_progress"] == 1
+    end
+
+    test "no section carries the retired ok field" do
+      ws = AgentCase.open_workspace!()
+      present = AgentCase.mount_test_icm!(ws.path, name: "present")
+      broken = AgentCase.mount_test_icm!(ws.path, name: "broken")
+      AgentCase.mount_test_icm!(ws.path, name: "absent")
+
+      File.write!(Path.join(present.root, "today.json"), ~s({"notes": "n"}))
+      File.write!(Path.join(broken.root, "today.json"), "{not json")
+
+      {:ok, %{"sections" => sections}} = Valea.Cockpit.today()
+
+      assert length(sections) == 3
+      refute Enum.any?(sections, &Map.has_key?(&1, "ok"))
+
+      assert Enum.sort(Enum.map(sections, & &1["today_json"])) ==
+               ~w(absent present unreadable)
     end
 
     test "valid today.json becomes a section with provenance" do
@@ -43,7 +76,7 @@ defmodule Valea.CockpitTest do
       {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
       assert section["mount_key"] == icm.mount_key
       assert section["icm_name"] == "Mara Lindt Coaching"
-      assert section["ok"] == true
+      assert section["today_json"] == "present"
       assert section["updated_at"] == "2026-07-16T08:00:00Z"
       assert section["notes"] == "Quiet day."
 
@@ -59,13 +92,13 @@ defmodule Valea.CockpitTest do
       refute Map.has_key?(section, "unknown_field")
     end
 
-    test "malformed JSON → ok false section, never an error" do
+    test "malformed JSON → an unreadable section, never an error" do
       ws = AgentCase.open_workspace!()
       icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
       File.write!(Path.join(icm.root, "today.json"), "{not json")
 
       {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
-      assert section["ok"] == false
+      assert section["today_json"] == "unreadable"
       assert section["prepared"] == []
       refute Map.has_key?(section, "open_loops")
     end
@@ -82,7 +115,7 @@ defmodule Valea.CockpitTest do
       }))
 
       {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
-      assert section["ok"] == true
+      assert section["today_json"] == "present"
       assert section["updated_at"] == nil
       assert section["notes"] == nil
       assert section["prepared"] == [%{"title" => "ok", "summary" => nil, "page" => nil}]
@@ -210,13 +243,13 @@ defmodule Valea.CockpitTest do
              }
     end
 
-    test "malformed tasks.json → tasks nil, section stays ok" do
+    test "malformed tasks.json → tasks nil, the briefing state is untouched" do
       ws = AgentCase.open_workspace!()
       icm = AgentCase.mount_test_icm!(ws.path, name: "Primary")
       File.write!(Path.join(icm.root, "tasks.json"), "{not json")
 
       section = section_with_today!(icm)
-      assert section["ok"] == true
+      assert section["today_json"] == "present"
       assert section["tasks"] == nil
     end
 
@@ -227,7 +260,7 @@ defmodule Valea.CockpitTest do
       write_tasks!(icm, [%{"id" => "t-1", "title" => "x", "status" => "in_progress"}])
 
       {:ok, %{"sections" => [section]}} = Valea.Cockpit.today()
-      assert section["ok"] == false
+      assert section["today_json"] == "unreadable"
       assert section["tasks"]["in_progress"] == 1
     end
   end

@@ -31,8 +31,8 @@ defmodule Valea.Api.Cockpit do
   exactly this reason; nothing here can fix it without giving up the typed
   declaration.
 
-  `sections[].ok`, `sections[].tasks.top[].today` and
-  `recent_sessions[].live` are NESTED typed booleans
+  `sections[].tasks.top[].today` and `recent_sessions[].live` are NESTED
+  typed booleans
   (inside their own item's `constraints fields: [...]`), declared with a
   plain atom key like every other field here — the top-level generic-action
   boolean/falsy workaround documented in `Valea.Api.Mail`'s moduledoc
@@ -61,7 +61,14 @@ defmodule Valea.Api.Cockpit do
                           fields: [
                             mount_key: [type: :string, allow_nil?: false],
                             icm_name: [type: :string, allow_nil?: false],
-                            ok: [type: :boolean, allow_nil?: false],
+                            # Today/Tasks redesign (2026-08-06): the state of
+                            # the ICM's `today.json` — "present" | "absent" |
+                            # "unreadable" — which RETIRED the `ok` boolean.
+                            # A section now exists for every enabled ICM, so
+                            # the field says what happened to the briefing
+                            # file instead of the section's existence saying
+                            # it (and hiding the tasks line with it).
+                            today_json: [type: :string, allow_nil?: false],
                             updated_at: [type: :string, allow_nil?: true],
                             notes: [type: :string, allow_nil?: true],
                             prepared: [

@@ -93,12 +93,15 @@ defmodule ValeaWeb.RpcTest do
              "data" => %{"sections" => sections, "mail" => mail}
            } = rpc("cockpit_today", %{}, ["sections", "mail"])
 
-    # No `today.json` was ever written into the mounted ICM above, so it
-    # contributes no section (Spec D §C leniency contract: absent file →
-    # no section) — this RPC round trip just confirms the typed `:today`
-    # action shape holds together end-to-end, not the section-assembly
-    # logic itself (that's `test/valea/cockpit_test.exs`'s job).
-    assert sections == []
+    # No `today.json` was ever written into the mounted ICM above, and it STILL
+    # gets a section (Today/Tasks redesign 2026-08-06): `todayJson` reports the
+    # briefing file's state rather than the section's existence hinging on it —
+    # this RPC round trip just confirms the typed `:today` action shape holds
+    # together end-to-end, not the section-assembly logic itself (that's
+    # `test/valea/cockpit_test.exs`'s job).
+    assert [section] = sections
+    assert section["mountKey"] == icm.mount_key
+    assert section["todayJson"] == "absent"
 
     # A freshly created workspace has no mail account configured yet — the
     # v4 workspace template ships `accounts: {}` (mail design spec E), so
@@ -124,19 +127,20 @@ defmodule ValeaWeb.RpcTest do
     File.write!(Path.join(dir, id <> ".jsonl"), Jason.encode!(meta) <> "\n")
   end
 
-  # Review finding (Task 3): `sections[].ok == false` and
-  # `recent_sessions[].live == false` were only ever exercised by calling
-  # `Valea.Cockpit.today/0` directly — never through the full RPC path, which
-  # is the one layer where `Ash.Type.Map`'s `check_fields/2`/`fetch_field/2`
-  # constraint casting could null a legitimate `false` if the source map
-  # weren't string-keyed (the ash_typescript 0.17.3 falsy-bool issue
-  # documented in `Valea.Api.Cockpit`'s moduledoc and
-  # `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s). This drives BOTH
-  # falsy-bool leaves through `POST /rpc/run` in one round trip: a malformed
-  # `today.json` (→ `sections[0]["ok"]`) and an ended (non-live) session
-  # transcript (→ `recentSessions[0]["live"]`) — proving `false` survives
-  # extraction as `false`, not `nil`/missing.
-  test "cockpit_today RPC: malformed today.json and an ended session both keep their `false`" do
+  # Review finding (Task 3): `recent_sessions[].live == false` was only ever
+  # exercised by calling `Valea.Cockpit.today/0` directly — never through the
+  # full RPC path, which is the one layer where `Ash.Type.Map`'s
+  # `check_fields/2`/`fetch_field/2` constraint casting could null a legitimate
+  # `false` if the source map weren't string-keyed (the ash_typescript 0.17.3
+  # falsy-bool issue documented in `Valea.Api.Cockpit`'s moduledoc and
+  # `Valea.Api.Queue.reject_item`/`Valea.Api.Mail`'s). An ended (non-live)
+  # session transcript drives that leaf (→ `recentSessions[0]["live"]`) here;
+  # the section's own falsy bool is GONE with `ok` (Today/Tasks redesign — the
+  # `todayJson` state string replaced it), so this round trip also pins the
+  # replacement's `"unreadable"` reaching the wire under its camelCased name.
+  # `sections[].tasks.top[].today == false` (the remaining nested-in-a-nested-
+  # map falsy leaf) is pinned by the tasks-line RPC test below.
+  test "cockpit_today RPC: a malformed today.json reads unreadable, an ended session keeps its `false`" do
     {:ok, ws} = Manager.create("Falsy")
     icm = AgentCase.mount_test_icm!(ws.path, name: "Broken")
     File.write!(Path.join(icm.root, "today.json"), "{not json")
@@ -147,12 +151,11 @@ defmodule ValeaWeb.RpcTest do
              "data" => %{"sections" => [section], "recentSessions" => [session]}
            } = rpc("cockpit_today", %{}, ["sections", "recentSessions"])
 
+    assert section["todayJson"] == "unreadable"
+
     # The `false` itself, not merely "falsy" — this is what the reviewer
     # feared could get nulled by `check_fields/2` on a non-string-keyed
     # source map.
-    assert section["ok"] == false
-    assert is_boolean(section["ok"])
-
     assert session["live"] == false
     assert is_boolean(session["live"])
     assert session["status"] == "ended"
@@ -268,7 +271,7 @@ defmodule ValeaWeb.RpcTest do
       %{
         "sections" => [
           "mountKey",
-          "ok",
+          "todayJson",
           %{"tasks" => ["dueToday", "overdue", "inProgress", %{"top" => ["id", "today"]}]}
         ]
       },
@@ -319,7 +322,7 @@ defmodule ValeaWeb.RpcTest do
     assert %{"success" => true, "data" => %{"sections" => [degraded]}} =
              rpc("cockpit_today", %{}, fields)
 
-    assert degraded["ok"] == true
+    assert degraded["todayJson"] == "present"
     assert degraded["tasks"] == nil
   end
 end
