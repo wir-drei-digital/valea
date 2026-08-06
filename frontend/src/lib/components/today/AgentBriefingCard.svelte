@@ -11,7 +11,7 @@
   import { knowledgeHref } from '$lib/shell/nav';
   import { mountProvenanceLabel } from '$lib/shell/provenance';
   import type { TodaySection } from '$lib/today/cockpit';
-  import { formatTimestamp } from '$lib/today/today-view';
+  import { formatTimestamp, hasBriefing } from '$lib/today/today-view';
 
   let { section }: { section: TodaySection } = $props();
 
@@ -29,15 +29,15 @@
    * in the quieter register. The state is still not `absent`, and Task 11's
    * whole-page empty state is what speaks for a workspace with nothing in it.
    *
-   * Truthiness, not `!== null`: `"notes": ""` normalizes to an empty STRING,
-   * which the body below renders as nothing just like a missing key. The guard
-   * has to agree with what actually paints, or the empty box comes back for the
-   * one file that spells its emptiness out.
+   * The predicate itself lives in `today-view.ts` because the ROUTE asks the
+   * same question — its whole-page empty state must not paint the welcome card
+   * under a briefing, nor hide behind one that renders nothing. Truthiness, not
+   * `!== null`, for the reason stated there.
    */
-  const hasBriefing = $derived(Boolean(section.notes) || section.prepared.length > 0);
+  const briefed = $derived(hasBriefing(section));
 </script>
 
-{#if hasBriefing}
+{#if briefed}
   <!-- `text-overline` uppercases in CSS, so the source case here is cosmetic. -->
   <section class="border-paper-border bg-paper-card rounded-xl border p-4">
     <h2 class="text-overline flex flex-wrap items-baseline gap-x-1">
