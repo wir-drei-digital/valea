@@ -58,6 +58,7 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
       'paper-pill', 'paper-nav-active', 'paper-tree-active',
       'ink-heading', 'ink-body', 'ink-secondary', 'ink-subtitle', 'ink-meta', 'ink-overline',
       'primary-foreground', 'act', 'act-hover',
+      'warn-ink', 'warn-tint',
       ...AVATAR_TOKENS
     ];
     // Non-emptiness first: an absent or differently-formatted block yields {},
@@ -130,6 +131,16 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
     expect(delta < 0, `act-hover must be ${palette === 'light' ? 'darker' : 'lighter'} than act`).toBe(
       palette === 'light'
     );
+  });
+
+  // `OverduePill.svelte:14` is the first place the warn ramp carries text on
+  // its OWN tint — everywhere else `--warn-ink` sits on paper, where the ink
+  // ramp's own floors already cover it. A tint is a much smaller gap than
+  // paper, so the pair has to be pinned separately: light's shipped pair
+  // measured 4.19:1, which is exactly the kind of near-miss nothing else in
+  // this file would have caught.
+  it('the overdue pill carries warn-ink on warn-tint at 4.5:1', () => {
+    expect(contrastRatio(p['warn-ink'], p['warn-tint'])).toBeGreaterThanOrEqual(4.5);
   });
 
   // The invariant AccountSwitcher.svelte:38 asserts in a comment:

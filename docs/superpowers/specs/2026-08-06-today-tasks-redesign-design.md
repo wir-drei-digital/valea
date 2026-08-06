@@ -1,6 +1,6 @@
 # Today & Tasks redesign — design
 
-**Status:** Approved (brainstorm 2026-08-06; mockup rounds 1–5 on the review artifact)
+**Status:** Implemented (plan 2026-08-06)
 **Scope:** Today page, Tasks page (list + new board view), small Schedules-tab fixes, one backend cockpit change.
 
 ## Problem

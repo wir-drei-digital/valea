@@ -91,7 +91,7 @@ suggested" badges, highlight marks in text.
 
 | Token | Hex |
 |---|---|
-| warn ink, counts | `#B4512E` |
+| warn ink, counts | `#AC4D2C` |
 | email source dot | `#C0793F` |
 | badge tint | `#F6E7DE` |
 | card border | `#EBD5C6` |
@@ -99,7 +99,9 @@ suggested" badges, highlight marks in text.
 
 Use for: "sends an email" badges, overdue counts, the "now" line on the
 calendar, notification badge. **Outline buttons only — terracotta is never a
-filled button.**
+filled button.** Warn ink on the badge tint clears 4.5:1 in both palettes —
+the overdue pill puts real text on that tint, and `contrast.test.ts` pins the
+pair.
 
 ### Night paper — the dark palette
 
@@ -157,7 +159,7 @@ hover fill still clears 4.5:1; the derivation lives with the token):
 | `--suggest-bg` | `#f9f2e3` | `#26200f` |
 | `--suggest-border` | `#e8d9b5` | `#3d3320` |
 | `--work-dot` | `#4a7dab` | `#6b9dc9` |
-| `--warn-ink` | `#b4512e` | `#e08a5f` |
+| `--warn-ink` | `#ac4d2c` | `#e08a5f` |
 | `--warn-dot` | `#c0793f` | `#d08055` |
 | `--warn-tint` | `#f6e7de` | `#2e1d15` |
 | `--warn-border` | `#ebd5c6` | `#4a2f22` |
@@ -246,6 +248,26 @@ explains what happened and what will happen next, in one or two sentences.
   for suggestion counts; plain `#948A75` text for neutral counts.
 - **Status pill** — one per screen, bottom of sidebar. Names the transport
   ("IMAP · Infomaniak") or "All local".
+
+### Tasks board
+
+The board's vocabulary, shared with the task list so a card and a row say the
+same things (redesign 2026-08-06):
+
+- **Status columns** — Open · In progress · Done, always in that order. A
+  status Valea doesn't know gets its own column at the end, labelled with the
+  raw string **verbatim** and drawn with a **dashed** border: same affordances,
+  visibly yours rather than ours. Dropped entries get no column.
+- **Overdue pill** — `--warn-tint` fill, `--warn-ink` text, `--warn-border`
+  border; the one filled chip in the row, because overdue is the only state
+  that earns reading from across the page. The pair is pinned at 4.5:1 in both
+  palettes (§2, Terracotta).
+- **Priority glyphs** — `‼` high · `!` medium · `·` low, in a fixed 4-unit
+  column so a scan reads the rank without the word eating title width. An
+  unknown priority renders no glyph and keeps its verbatim text chip.
+- **⚙** — assigned to the assistant. Who *works* the task, not who created it.
+- **Done cards and rows are receipts** (§8): dimmed, struck through, green
+  check — never expandable-looking.
 
 ## 6. Cards — the approval family
 
@@ -337,7 +359,11 @@ Chat:
   title with its monospace YAML reference right-aligned — the two layers of
   the same truth.
 - **Layout grid:** sidebar 236 · optional list pane 250–340 · main flexible
-  (content max 560–660) · optional rail 290–340.
+  (content max 560–660) · optional rail 290–340. Today: main 880 + rail 300
+  (folds under a 1212px **container** width — the pane's own width, via
+  `@container` / `@min-[1212px]`, not the viewport's, so the rail keeps its
+  room when the sidebar collapses instead of folding on a viewport number that
+  no longer describes the space it has).
 - Page headers: overline date → Newsreader greeting/title → one-line subtitle.
   Section overlines separate content groups; **never boxed section headers.**
 

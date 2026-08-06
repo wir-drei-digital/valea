@@ -63,8 +63,17 @@
   /* blue — agent at work (session "working" indicator; muted steel so it
      sits in the Paper & ink palette rather than shouting) */
   --work-dot: #4a7dab;
-  /* terracotta — warns */
-  --warn-ink: #b4512e;
+  /* terracotta — warns.
+     --warn-ink was #b4512e until the overdue pill (`bg-warn-tint
+     text-warn-ink`) made ink-on-tint load-bearing: that pair measured 4.19:1,
+     under AA for the 10.5px pill text. Two points of HSL lightness darker
+     (15.7/59.3/44.3 → 15.5/59.3/42.4 — same hue, same saturation) clears it at
+     4.52:1. Darkening the INK rather than lightening the tint, deliberately:
+     the tint would have to reach #faf1ec to do the same job, a hair off
+     --paper-surface #fbf8f1, and the pill's fill would stop reading as a fill.
+     Darker ink only ever helps the ~20 other sites where --warn-ink is text on
+     paper. Pinned by contrast.test.ts, both palettes. */
+  --warn-ink: #ac4d2c;
   --warn-dot: #c0793f;
   --warn-tint: #f6e7de;
   --warn-border: #ebd5c6;
