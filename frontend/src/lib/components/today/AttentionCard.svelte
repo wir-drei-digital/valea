@@ -44,7 +44,7 @@
              row's button hands the repo to an agent in one click; once a
              resolution session exists it re-reads "Open session", so a second
              resolver never gets started by accident. -->
-        <li class="py-1.5">
+        <li class="py-1.5 pr-2">
           <div class="flex items-center gap-2">
             <span class="bg-warn-ink size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
             <span class="text-ink-body min-w-0 flex-1 text-[13px]">{gitAttentionText(repo)}</span>

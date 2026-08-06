@@ -244,144 +244,169 @@
     <MainColumn wide>
       <!-- Editorial column + rail (spec §Layout). The pair is centered inside
            the full-width pane — the 660px prose cap this page used to take is
-           exactly what the redesign retires. Under 1180px the rail folds under
-           the column and its cards go full-width. -->
-      <div
-        class="mx-auto grid w-full max-w-[1220px] grid-cols-1 gap-8 min-[1180px]:grid-cols-[minmax(0,880px)_300px]"
-      >
-        <div class="min-w-0">
-          {#if loading}
-            <div class="flex flex-col gap-6" aria-hidden="true">
-              <div class="flex flex-col gap-2">
-                <Skeleton class="h-3 w-40" />
-                <Skeleton class="h-7 w-56" />
+           exactly what the redesign retires.
+           The fold is a CONTAINER query, not a viewport one: the sidebar
+           (236px) and this pane's gutters (64px) are not the page's to spend,
+           so a 1180px VIEWPORT leaves the column ~548px — narrower than the cap
+           being retired, which is the opposite of the intent. `@container` on
+           the wrapper makes the pane's own width the question, and 1212px is
+           what the two regions actually need (880 + 32 gap + 300). -->
+      <div class="@container">
+        <div
+          class="mx-auto grid w-full max-w-[1220px] grid-cols-1 gap-8 @min-[1212px]:grid-cols-[minmax(0,880px)_300px]"
+        >
+          <div class="min-w-0">
+            {#if loading}
+              <div class="flex flex-col gap-6" aria-hidden="true">
+                <div class="flex flex-col gap-2">
+                  <Skeleton class="h-3 w-40" />
+                  <Skeleton class="h-7 w-56" />
+                </div>
+                <Skeleton class="h-14 w-full rounded-[14px]" />
+                <Skeleton class="h-24 w-full rounded-xl" />
               </div>
-              <Skeleton class="h-14 w-full rounded-[14px]" />
-              <Skeleton class="h-24 w-full rounded-xl" />
-            </div>
-          {:else if failed || !today}
-            <div class="flex flex-col items-start gap-3 py-10">
-              <p class="text-ink-body text-[13.5px]">
-                Couldn't load your day. The backend may still be starting.
-              </p>
-              <Button variant="outline" size="sm" onclick={() => void load()}>Retry</Button>
-            </div>
-          {:else}
-            <div class="flex flex-col gap-6">
-              <header class="flex flex-col gap-1.5">
-                <p class="text-overline">{dateOverline(now)}</p>
-                <h1 class="font-display text-ink-heading text-[28px] leading-tight font-medium">
-                  {greetingForHour(now.getHours())}
-                </h1>
-                {#if summary.length > 0}
-                  <p class="text-[13px]">
-                    {#each summary as segment, i (segment.text)}
-                      {#if i > 0}<span class="text-ink-meta"> · </span>{/if}
-                      <span class={segment.tone === 'warn' ? 'text-warn-ink font-medium' : 'text-ink-meta'}>
-                        {segment.text}
-                      </span>
-                    {/each}
-                  </p>
-                {/if}
-              </header>
-
-              {#if quickMountKey}
-                <!-- The picker sits on the composer's left edge and names the
-                     target, so the placeholder no longer has to. Two bits of
-                     geometry against the Composer's own dock: the negative
-                     margins cancel its `px-4`, landing the card's edges on the
-                     column's, and `mt-4` centers the 32px select on the card's
-                     first row (4px dock padding + 1px border + 12px card
-                     padding + half of the 30px row). -->
-                <div>
-                  <div class="flex items-start gap-2">
-                    <NativeSelect
-                      aria-label="Project for the new session"
-                      bind:value={quickMountKey}
-                      disabled={quickBusy}
-                      class="mt-4 w-auto max-w-[180px] shrink-0"
-                    >
-                      {#each icmStore.groups as group (group.mount)}
-                        <option value={group.mount}>{group.title || group.mount}</option>
+            {:else if failed || !today}
+              <div class="flex flex-col items-start gap-3 py-10">
+                <p class="text-ink-body text-[13.5px]">
+                  Couldn't load your day. The backend may still be starting.
+                </p>
+                <Button variant="outline" size="sm" onclick={() => void load()}>Retry</Button>
+              </div>
+            {:else}
+              <div class="flex flex-col gap-6">
+                <header class="flex flex-col gap-1.5">
+                  <p class="text-overline">{dateOverline(now)}</p>
+                  <h1 class="font-display text-ink-heading text-[28px] leading-tight font-medium">
+                    {greetingForHour(now.getHours())}
+                  </h1>
+                  {#if summary.length > 0}
+                    <p class="text-[13px]">
+                      {#each summary as segment, i (segment.text)}
+                        {#if i > 0}<span class="text-ink-meta"> · </span>{/if}
+                        <span class={segment.tone === 'warn' ? 'text-warn-ink font-medium' : 'text-ink-meta'}>
+                          {segment.text}
+                        </span>
                       {/each}
-                    </NativeSelect>
-                    <div class="-mx-4 min-w-0 flex-1">
-                      <Composer
-                        busy={quickBusy}
-                        configItems={[]}
-                        placeholder="Start a session…"
-                        onSend={(text) => void quickStart(text)}
-                        onStop={() => {}}
-                        onSetConfig={() => {}}
-                      />
-                    </div>
-                  </div>
-                  {#if quickError}
-                    <p class="text-warn-ink text-[12.5px]" role="alert">{quickError}</p>
+                    </p>
                   {/if}
-                </div>
-              {/if}
+                </header>
 
-              <AttentionCard
-                gitRows={gitAttention}
-                notices={interruptNotices}
-                {resolving}
-                {resolveError}
-                onResolve={(repo) => void resolveConflict(repo)}
-              />
+                <!-- Gated on the GROUPS, not on the seeded pick: `quickMountKey`
+                     is empty until the seeding `$effect` runs, which is a flush
+                     later than the render that brought the groups in — gating on
+                     it painted the composer one frame late, on top of the pop-in
+                     the reserved row below now absorbs. (An ICM the tree dropped
+                     but recent sessions still remember has no option to select,
+                     so the picker can't offer it; same trade TasksTab's
+                     quick-add makes.) -->
+                {#if icmStore.groups.length > 0 || quickMountKey !== ''}
+                  <!-- The picker sits on the composer's left edge and names the
+                       target, so the placeholder no longer has to. Two bits of
+                       geometry against the Composer's own dock: the negative
+                       margins cancel its `px-4`, landing the card's edges on the
+                       column's, and `mt-4` centers the 32px select on the card's
+                       first row (4px dock padding + 1px border + 12px card
+                       padding + half of the 30px row). -->
+                  <div>
+                    <div class="flex items-start gap-2">
+                      <NativeSelect
+                        aria-label="Project for the new session"
+                        bind:value={quickMountKey}
+                        disabled={quickBusy}
+                        class="mt-4 w-auto max-w-[180px] shrink-0"
+                      >
+                        {#each icmStore.groups as group (group.mount)}
+                          <option value={group.mount}>{group.title || group.mount}</option>
+                        {/each}
+                      </NativeSelect>
+                      <div class="-mx-4 min-w-0 flex-1">
+                        <Composer
+                          busy={quickBusy}
+                          configItems={[]}
+                          placeholder="Start a session…"
+                          onSend={(text) => void quickStart(text)}
+                          onStop={() => {}}
+                          onSetConfig={() => {}}
+                        />
+                      </div>
+                    </div>
+                    {#if quickError}
+                      <p class="text-warn-ink text-[12.5px]" role="alert">{quickError}</p>
+                    {/if}
+                  </div>
+                {:else if !icmStore.loaded && icmStore.listError === null}
+                  <!-- The ICM tree resolves LATER than the cockpit payload (it
+                       is a list plus a root listing per mount), so the page
+                       leaves its skeleton before it knows whether there is
+                       anything to start a session in. Hold the composer's exact
+                       height until it does — otherwise every cold load paints a
+                       complete column and then shoves it down. Not rendered once
+                       the tree has answered: a workspace with no projects gets
+                       Task 11's empty state, not a 76px hole. -->
+                  <div class="h-[76px]" aria-hidden="true"></div>
+                {/if}
 
-              <!-- The agent's briefings, one card per ICM whose `today.json`
-                   is readable. `unreadable` gets the calm note below instead of
-                   a card, and `absent` renders nothing at all — no placeholder
-                   box asking for a file. -->
-              {#each today.sections.filter((s) => s.todayJson === 'present') as section (section.mountKey)}
-                <AgentBriefingCard {section} />
-              {/each}
+                <AttentionCard
+                  gitRows={gitAttention}
+                  notices={interruptNotices}
+                  {resolving}
+                  {resolveError}
+                  onResolve={(repo) => void resolveConflict(repo)}
+                />
 
-              {#each today.sections.filter((s) => s.todayJson === 'unreadable') as section (section.mountKey)}
-                <!-- Leniency contract: `today.json` is the user's file, and one
-                     we can't parse is a thing to fix, not an app error. -->
-                <div>
-                  <h2 class="text-overline">{section.icmName || section.mountKey}</h2>
-                  <p class="text-ink-meta mt-1 text-[13px]">today.json couldn't be read</p>
-                </div>
-              {/each}
+                <!-- The agent's briefings, one card per ICM whose `today.json`
+                     is readable. `unreadable` gets the calm note below instead of
+                     a card, and `absent` renders nothing at all — no placeholder
+                     box asking for a file. -->
+                {#each today.sections.filter((s) => s.todayJson === 'present') as section (section.mountKey)}
+                  <AgentBriefingCard {section} />
+                {/each}
 
-              {#if today.recentSessions.length > 0}
-                <!-- Task 11 re-homes this to the rail, where it becomes the
-                     third quiet card; it stays in the column meanwhile so the
-                     page doesn't lose a working affordance mid-rebuild. -->
-                <section class="pb-6">
-                  <h2 class="text-overline mb-2">Recent sessions</h2>
-                  <ul class="flex flex-col">
-                    {#each today.recentSessions as session (session.id)}
-                      <li>
-                        <a
-                          href={`/chat?session=${session.id}`}
-                          class="text-ink-secondary hover:bg-paper-pill flex items-center gap-2 rounded-md py-1.5 text-[13px] transition-colors"
-                        >
-                          {#if session.live}
-                            <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
-                          {:else}
-                            <span class="size-1.5 shrink-0" aria-hidden="true"></span>
-                          {/if}
-                          <span class="min-w-0 flex-1 truncate">{session.title}</span>
-                          <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
-                            {formatTimestamp(session.startedAt)}
-                          </span>
-                        </a>
-                      </li>
-                    {/each}
-                  </ul>
-                </section>
-              {/if}
-            </div>
-          {/if}
+                {#each today.sections.filter((s) => s.todayJson === 'unreadable') as section (section.mountKey)}
+                  <!-- Leniency contract: `today.json` is the user's file, and one
+                       we can't parse is a thing to fix, not an app error. -->
+                  <div>
+                    <h2 class="text-overline">{section.icmName || section.mountKey}</h2>
+                    <p class="text-ink-meta mt-1 text-[13px]">today.json couldn't be read</p>
+                  </div>
+                {/each}
+
+                {#if today.recentSessions.length > 0}
+                  <!-- Task 11 re-homes this to the rail, where it becomes the
+                       third quiet card; it stays in the column meanwhile so the
+                       page doesn't lose a working affordance mid-rebuild. -->
+                  <section class="pb-6">
+                    <h2 class="text-overline mb-2">Recent sessions</h2>
+                    <ul class="flex flex-col">
+                      {#each today.recentSessions as session (session.id)}
+                        <li>
+                          <a
+                            href={`/chat?session=${session.id}`}
+                            class="text-ink-secondary hover:bg-paper-pill flex items-center gap-2 rounded-md py-1.5 text-[13px] transition-colors"
+                          >
+                            {#if session.live}
+                              <span class="bg-act-dot size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+                            {:else}
+                              <span class="size-1.5 shrink-0" aria-hidden="true"></span>
+                            {/if}
+                            <span class="min-w-0 flex-1 truncate">{session.title}</span>
+                            <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
+                              {formatTimestamp(session.startedAt)}
+                            </span>
+                          </a>
+                        </li>
+                      {/each}
+                    </ul>
+                  </section>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <aside class="flex min-w-0 flex-col gap-3">
+            <!-- Task 11: rail cards -->
+          </aside>
         </div>
-
-        <aside class="flex min-w-0 flex-col gap-3">
-          <!-- Task 11: rail cards -->
-        </aside>
       </div>
     </MainColumn>
   {/snippet}
