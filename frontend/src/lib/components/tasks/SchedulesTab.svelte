@@ -1,7 +1,9 @@
 <script lang="ts">
-  // The Schedules tab: every enabled ICM's registry, the tri-state Pause-all
-  // header, and per-row pause / edit / run-now / delete plus expandable run
-  // history.
+  // The Schedules tab: the composer first, then every enabled ICM's registry
+  // with per-row pause / edit / run-now / delete plus expandable run history,
+  // and the tri-state Pause-all switch last, as a quiet footer — making a
+  // schedule is the reason to open this tab; pausing every one of them is the
+  // rare thing, and it has nothing to say until there IS a schedule.
   //
   // The honest limitation is stated on the page, not buried: nothing fires while
   // Valea is closed (spec §Decisions — "Limitation stated honestly in the UI").
@@ -37,6 +39,30 @@
 
   const icms = $derived(tasksStore.scheduleIcms);
   const killSwitch = $derived(killSwitchCopy(tasksStore.schedulerPaused));
+
+  /**
+   * The sections that earn a heading: one holding rows, or one whose ledger has
+   * something to say for itself (`schedulesLedgerNote` — an unreadable
+   * `schedules.json` is NOT an empty one, and must keep saying so). An empty,
+   * readable section collapses entirely; the composer above it is the answer.
+   */
+  const listedIcms = $derived(
+    icms.filter((icm) => icm.schedules.length > 0 || schedulesLedgerNote(icm.status) !== null)
+  );
+
+  /**
+   * One line, once, instead of the same sentence under every project heading.
+   *
+   * It renders exactly when NO section does, which is also the only state in
+   * which it is true: an unreadable ledger keeps its section, so "no schedules
+   * yet" is never said over a file Valea could not read (that would dress a
+   * read failure up as a fact about the user's files — the one thing the
+   * leniency contract must never do).
+   */
+  const showsEmptyLine = $derived(listedIcms.length === 0);
+
+  /** Nothing anywhere to pause means the kill switch has nothing to offer — the footer stays away. */
+  const anySchedules = $derived(icms.some((icm) => icm.schedules.length > 0));
 
   // The row key (`scheduleRowKey`, tested) is computed ONCE per row in the
   // markup below and handed to every handler, rather than each handler
@@ -321,41 +347,6 @@
   />
 {:else}
   <div class="flex flex-col gap-4">
-    <!-- Unboxed (§11: never boxed section headers) — the kill switch is a
-         quiet header row, separated by the same hairline the lists use. -->
-    <div class="border-paper-hairline flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-      <div class="min-w-0">
-        <p class="text-ink-heading text-[13px] font-semibold">{killSwitch.label}</p>
-        <p class="text-ink-meta mt-0.5 text-[12px]">
-          Schedules fire only while Valea is running — nothing happens while the app is closed.
-        </p>
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        role="switch"
-        aria-checked={killSwitch.engaged}
-        disabled={pauseAllBusy || !killSwitch.toggleable}
-        onclick={() => void togglePauseAll()}
-      >
-        {killSwitch.engaged ? 'Resume all' : 'Pause all'}
-      </Button>
-    </div>
-
-    {#if killSwitch.banner}
-      <p
-        class={['text-[12.5px]', killSwitch.tone === 'warn' ? 'text-warn-ink' : 'text-ink-body']}
-        role={killSwitch.tone === 'warn' ? 'alert' : 'status'}
-      >
-        {killSwitch.banner}
-      </p>
-    {/if}
-
-    {#if pauseAllError}
-      <p class="text-warn-ink text-[12.5px]" role="alert">{pauseAllError}</p>
-    {/if}
-
     <div>
       <Button
         type="button"
@@ -525,49 +516,90 @@
       </div>
     {/if}
 
-    <div class="flex flex-col gap-7">
-      {#each icms as icm (icm.mountKey)}
-        {@const note = schedulesLedgerNote(icm.status)}
-        <section>
-          <h2 class="text-overline">{icm.icmName || icm.mountKey}</h2>
+    {#if showsEmptyLine}
+      <p class="text-ink-meta text-[12.5px]">No schedules here yet.</p>
+    {/if}
 
-          {#if note}
-            <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
-          {/if}
+    {#if listedIcms.length > 0}
+      <div class="flex flex-col gap-7">
+        {#each listedIcms as icm (icm.mountKey)}
+          {@const note = schedulesLedgerNote(icm.status)}
+          <section>
+            <h2 class="text-overline">{icm.icmName || icm.mountKey}</h2>
 
-          {#if icm.schedules.length === 0}
-            {#if icm.status !== 'unreadable'}
-              <p class="text-ink-meta mt-1.5 text-[12.5px]">No schedules here yet.</p>
+            {#if note}
+              <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
             {/if}
-          {:else}
-            <ul class="mt-1.5 flex flex-col">
-              {#each icm.schedules as entry, index (entry.id ?? `no-id-${index}`)}
-                {@const key = scheduleRowKey(icm.mountKey, entry.id, index)}
-                <ScheduleRow
-                  {entry}
-                  expanded={expanded[key] === true}
-                  busy={busyRow === key}
-                  notice={notices[key] ?? null}
-                  runs={runs[key] ?? []}
-                  runsLoading={runsLoading[key] === true}
-                  runsError={runsError[key] ?? null}
-                  confirmingDelete={confirmingDelete === key}
-                  confirmingRun={confirmingRun === key}
-                  onToggleExpand={() => void toggleExpand(key, icm.mountKey, entry.id)}
-                  onTogglePause={(next) => void togglePause(key, icm.mountKey, entry.id, next)}
-                  onEdit={() => void editEntry(icm.mountKey, entry)}
-                  onRunNow={() => void runNow(key, icm.mountKey, entry.id)}
-                  onAskRun={() => (confirmingRun = key)}
-                  onCancelRun={() => (confirmingRun = null)}
-                  onAskDelete={() => (confirmingDelete = key)}
-                  onConfirmDelete={() => void confirmDelete(key, icm.mountKey, entry.id)}
-                  onCancelDelete={() => (confirmingDelete = null)}
-                />
-              {/each}
-            </ul>
-          {/if}
-        </section>
-      {/each}
-    </div>
+
+            {#if icm.schedules.length > 0}
+              <ul class="mt-1.5 flex flex-col">
+                {#each icm.schedules as entry, index (entry.id ?? `no-id-${index}`)}
+                  {@const key = scheduleRowKey(icm.mountKey, entry.id, index)}
+                  <ScheduleRow
+                    {entry}
+                    expanded={expanded[key] === true}
+                    busy={busyRow === key}
+                    notice={notices[key] ?? null}
+                    runs={runs[key] ?? []}
+                    runsLoading={runsLoading[key] === true}
+                    runsError={runsError[key] ?? null}
+                    confirmingDelete={confirmingDelete === key}
+                    confirmingRun={confirmingRun === key}
+                    onToggleExpand={() => void toggleExpand(key, icm.mountKey, entry.id)}
+                    onTogglePause={(next) => void togglePause(key, icm.mountKey, entry.id, next)}
+                    onEdit={() => void editEntry(icm.mountKey, entry)}
+                    onRunNow={() => void runNow(key, icm.mountKey, entry.id)}
+                    onAskRun={() => (confirmingRun = key)}
+                    onCancelRun={() => (confirmingRun = null)}
+                    onAskDelete={() => (confirmingDelete = key)}
+                    onConfirmDelete={() => void confirmDelete(key, icm.mountKey, entry.id)}
+                    onCancelDelete={() => (confirmingDelete = null)}
+                  />
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {/each}
+      </div>
+    {/if}
+
+    {#if anySchedules}
+      <!-- Unboxed (§11: never boxed section headers) — the kill switch is a
+           quiet footer row, separated by the same hairline the lists use. Its
+           banner and error ride along with it: they announce what the switch
+           did, and an announcement with no switch in sight is a headless one. -->
+      <footer class="border-paper-hairline mt-6 border-t pt-4">
+        <p class="text-overline">Schedules pause</p>
+        <div class="mt-1.5 flex flex-wrap items-center justify-between gap-3">
+          <p class="text-ink-meta min-w-0 text-[12px]">
+            Schedules fire only while Valea is running — nothing happens while the app is closed.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            role="switch"
+            aria-checked={killSwitch.engaged}
+            disabled={pauseAllBusy || !killSwitch.toggleable}
+            onclick={() => void togglePauseAll()}
+          >
+            {killSwitch.engaged ? 'Resume all' : 'Pause all'}
+          </Button>
+        </div>
+
+        {#if killSwitch.banner}
+          <p
+            class={['mt-2 text-[12.5px]', killSwitch.tone === 'warn' ? 'text-warn-ink' : 'text-ink-body']}
+            role={killSwitch.tone === 'warn' ? 'alert' : 'status'}
+          >
+            {killSwitch.banner}
+          </p>
+        {/if}
+
+        {#if pauseAllError}
+          <p class="text-warn-ink mt-2 text-[12.5px]" role="alert">{pauseAllError}</p>
+        {/if}
+      </footer>
+    {/if}
   </div>
 {/if}
