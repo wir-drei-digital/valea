@@ -217,3 +217,102 @@ export function applyTaskFilters(tasks: TaskEntry[], filters: TaskFilters, today
 export function countByStatus(tasks: TaskEntry[], status: string): number {
   return tasks.filter((task) => task.status === status).length;
 }
+
+// -- redesign additions (spec 2026-08-06) -------------------------------------
+
+/** `iso + days` in pure string-date math (UTC-anchored, so no DST wobble). */
+export function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Whole days a task is overdue, or null when it isn't (no/invalid/future due). */
+export function overdueDays(task: TaskEntry, todayIso: string): number | null {
+  const due = dueDate(task);
+  if (due === null || due >= todayIso) return null;
+  const ms = Date.parse(`${todayIso}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`);
+  return Math.round(ms / 86_400_000);
+}
+
+export function overduePillText(days: number): string {
+  return days === 1 ? '1 day over' : `${days} days over`;
+}
+
+export type PriorityGlyphSpec = { glyph: '‼' | '!' | '·'; tone: 'high' | 'medium' | 'low' };
+
+/**
+ * The word became a glyph (spec §List rows). Unknown priorities return null —
+ * they keep their verbatim text chip (leniency), a glyph would launder them.
+ */
+export function priorityGlyph(priority: string | null): PriorityGlyphSpec | null {
+  if (priority === 'high') return { glyph: '‼', tone: 'high' };
+  if (priority === 'medium') return { glyph: '!', tone: 'medium' };
+  if (priority === 'low') return { glyph: '·', tone: 'low' };
+  return null;
+}
+
+/** Case-insensitive substring over title + notes. Blank query matches everything (search is narrowing, not a view). */
+export function matchesSearch(task: TaskEntry, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === '') return true;
+  return (task.title ?? '').toLowerCase().includes(q) || (task.notes ?? '').toLowerCase().includes(q);
+}
+
+export type DueBucket = 'overdue' | 'today' | 'week' | 'later' | 'none';
+
+/** "This week" = within the next 7 days inclusive. No/invalid due → 'none'. */
+export function dueBucket(task: TaskEntry, todayIso: string): DueBucket {
+  const due = dueDate(task);
+  if (due === null) return 'none';
+  if (due < todayIso) return 'overdue';
+  if (due === todayIso) return 'today';
+  if (due <= addDaysIso(todayIso, 7)) return 'week';
+  return 'later';
+}
+
+export type TaskGroup = { key: string; label: string; rows: TaskEntry[] };
+
+const PRIORITY_GROUPS: { key: string; label: string; match: (p: string | null) => boolean }[] = [
+  { key: 'high', label: 'High', match: (p) => p === 'high' },
+  { key: 'medium', label: 'Medium', match: (p) => p === 'medium' },
+  { key: 'low', label: 'Low', match: (p) => p === 'low' },
+  { key: 'none', label: 'None', match: (p) => p === null || !['high', 'medium', 'low'].includes(p) }
+];
+
+/** High/Medium/Low/None in that order; unknown priorities join None; empty buckets dropped. Rows keep incoming order. */
+export function groupByPriority(rows: TaskEntry[]): TaskGroup[] {
+  return PRIORITY_GROUPS.map(({ key, label, match }) => ({
+    key,
+    label,
+    rows: rows.filter((row) => match(row.priority))
+  })).filter((group) => group.rows.length > 0);
+}
+
+const DUE_LABELS: Record<DueBucket, string> = {
+  overdue: 'Overdue',
+  today: 'Today',
+  week: 'This week',
+  later: 'Later',
+  none: 'No date'
+};
+
+export function groupByDue(rows: TaskEntry[], todayIso: string): TaskGroup[] {
+  return (['overdue', 'today', 'week', 'later', 'none'] as DueBucket[])
+    .map((key) => ({ key, label: DUE_LABELS[key], rows: rows.filter((row) => dueBucket(row, todayIso) === key) }))
+    .filter((group) => group.rows.length > 0);
+}
+
+/** Overdue rows split out and re-sorted oldest-due-first (the warn group); the rest keep incoming order. */
+export function splitOverdue(rows: TaskEntry[], todayIso: string): { overdue: TaskEntry[]; rest: TaskEntry[] } {
+  const overdue = rows
+    .filter((row) => overdueDays(row, todayIso) !== null)
+    .sort((a, b) => (dueDate(a)! < dueDate(b)! ? -1 : dueDate(a)! > dueDate(b)! ? 1 : 0));
+  return { overdue, rest: rows.filter((row) => overdueDays(row, todayIso) === null) };
+}
+
+/** The empty-Today "Next up" picker: open backlog (outside the today view), standard sort, capped. */
+export function nextUp(tasks: TaskEntry[], todayIso: string, limit: number): TaskEntry[] {
+  const today = new Set(todayFilter(tasks, todayIso).map((task) => task.id));
+  return sortTasks(tasks.filter((task) => !isCompleted(task) && !today.has(task.id))).slice(0, limit);
+}

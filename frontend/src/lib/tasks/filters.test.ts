@@ -1,14 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addDaysIso,
   applyTaskFilters,
   countByStatus,
+  dueBucket,
   dueDate,
+  groupByDue,
+  groupByPriority,
   isCompleted,
   isKnownStatus,
   localDateIso,
+  matchesSearch,
+  nextUp,
   normalizeTask,
   orderTaskRows,
+  overdueDays,
+  overduePillText,
+  priorityGlyph,
   sortTasks,
+  splitOverdue,
   todayFilter,
   type TaskEntry
 } from './filters';
@@ -287,5 +297,114 @@ describe('countByStatus', () => {
     expect(countByStatus(rows, 'open')).toBe(2);
     expect(countByStatus(rows, 'blocked')).toBe(1);
     expect(countByStatus(rows, 'done')).toBe(0);
+  });
+});
+
+// -- redesign additions (spec 2026-08-06) -------------------------------------
+//
+// Nested so this half can keep the spec's own `TODAY` (2026-08-06) and its
+// status-less `t` builder without disturbing the constants the tests above
+// were written against.
+describe('redesign additions', () => {
+  const t = (raw: Record<string, unknown>) => normalizeTask({ id: 'x', title: 't', ...raw });
+  const TODAY = '2026-08-06';
+
+  describe('overdue maths', () => {
+    it('counts days over, string-date math, month boundary', () => {
+      expect(overdueDays(t({ due: '2026-08-04' }), TODAY)).toBe(2);
+      expect(overdueDays(t({ due: '2026-07-31' }), '2026-08-01')).toBe(1);
+    });
+    it('null for today, future, unparseable, and completed-irrelevant absent due', () => {
+      expect(overdueDays(t({ due: TODAY }), TODAY)).toBeNull();
+      expect(overdueDays(t({ due: '2026-08-08' }), TODAY)).toBeNull();
+      expect(overdueDays(t({ due: 'soonish' }), TODAY)).toBeNull();
+      expect(overdueDays(t({}), TODAY)).toBeNull();
+    });
+    it('pill text singular/plural', () => {
+      expect(overduePillText(1)).toBe('1 day over');
+      expect(overduePillText(3)).toBe('3 days over');
+    });
+    it('addDaysIso crosses months and years', () => {
+      expect(addDaysIso('2026-08-30', 7)).toBe('2026-09-06');
+      expect(addDaysIso('2026-12-28', 7)).toBe('2027-01-04');
+    });
+  });
+
+  describe('priorityGlyph', () => {
+    it('maps the three known priorities and returns null otherwise', () => {
+      expect(priorityGlyph('high')).toEqual({ glyph: '‼', tone: 'high' });
+      expect(priorityGlyph('medium')).toEqual({ glyph: '!', tone: 'medium' });
+      expect(priorityGlyph('low')).toEqual({ glyph: '·', tone: 'low' });
+      expect(priorityGlyph(null)).toBeNull();
+      expect(priorityGlyph('urgent')).toBeNull(); // unknown → text chip elsewhere, not a glyph
+    });
+  });
+
+  describe('matchesSearch', () => {
+    it('case-insensitive substring over title and notes; blank query matches all', () => {
+      const task = t({ title: 'Rechnung Kita', notes: 'CHF 500 offen' });
+      expect(matchesSearch(task, 'kita')).toBe(true);
+      expect(matchesSearch(task, 'chf')).toBe(true);
+      expect(matchesSearch(task, 'zzz')).toBe(false);
+      expect(matchesSearch(task, '  ')).toBe(true);
+      expect(matchesSearch(t({ title: null, notes: null }), 'x')).toBe(false);
+    });
+  });
+
+  describe('dueBucket / groupByDue', () => {
+    it('buckets overdue/today/week/later/none', () => {
+      expect(dueBucket(t({ due: '2026-08-01' }), TODAY)).toBe('overdue');
+      expect(dueBucket(t({ due: TODAY }), TODAY)).toBe('today');
+      expect(dueBucket(t({ due: '2026-08-13' }), TODAY)).toBe('week'); // today+7 inclusive
+      expect(dueBucket(t({ due: '2026-08-14' }), TODAY)).toBe('later');
+      expect(dueBucket(t({}), TODAY)).toBe('none');
+      expect(dueBucket(t({ due: 'nope' }), TODAY)).toBe('none');
+    });
+    it('groupByDue emits only non-empty buckets, Overdue first, labeled', () => {
+      const rows = [t({ id: 'a', due: '2026-08-20' }), t({ id: 'b', due: '2026-08-01' })];
+      const groups = groupByDue(rows, TODAY);
+      expect(groups.map((g) => g.key)).toEqual(['overdue', 'later']);
+      expect(groups[0].label).toBe('Overdue');
+      expect(groups.find((g) => g.key === 'later')!.label).toBe('Later');
+    });
+  });
+
+  describe('groupByPriority', () => {
+    it('High/Medium/Low/None order, unknown priorities join None, empty buckets dropped', () => {
+      const rows = [
+        t({ id: 'a', priority: 'low' }),
+        t({ id: 'b', priority: 'urgent' }),
+        t({ id: 'c', priority: 'high' })
+      ];
+      const groups = groupByPriority(rows);
+      expect(groups.map((g) => g.label)).toEqual(['High', 'Low', 'None']);
+      expect(groups[2].rows.map((r) => r.id)).toEqual(['b']);
+    });
+  });
+
+  describe('splitOverdue', () => {
+    it('overdue oldest-due first; rest keeps incoming order', () => {
+      const rows = [
+        t({ id: 'later', due: '2026-08-09' }),
+        t({ id: 'worse', due: '2026-08-01' }),
+        t({ id: 'bad', due: '2026-08-04' })
+      ];
+      const { overdue, rest } = splitOverdue(rows, TODAY);
+      expect(overdue.map((r) => r.id)).toEqual(['worse', 'bad']);
+      expect(rest.map((r) => r.id)).toEqual(['later']);
+    });
+  });
+
+  describe('nextUp', () => {
+    it('open backlog only (not today-view, not completed), standard sort, capped', () => {
+      const rows = [
+        t({ id: 'in-today', today: true }),
+        t({ id: 'done', status: 'done' }),
+        t({ id: 'p-high', priority: 'high' }),
+        t({ id: 'p-low', priority: 'low' }),
+        t({ id: 'dated', due: '2026-09-01' })
+      ];
+      expect(nextUp(rows, TODAY, 2).map((r) => r.id)).toEqual(['dated', 'p-high']);
+    });
   });
 });
