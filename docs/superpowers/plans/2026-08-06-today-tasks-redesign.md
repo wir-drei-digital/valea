@@ -1338,7 +1338,20 @@ Id-less tasks render with `draggable={false}` plus the `ID_LESS_TASK_NOTE` line 
 
 `BoardColumn.svelte` (props `{ column: BoardColumn, children-per-card via snippet or direct composition, onDrop: (status: string) => void }`): a `flex-1 min-w-[220px]` container, `bg-paper-track border-paper-border rounded-[10px] border p-2.5` (custom columns add `border-dashed`), header `flex justify-between` — overline label + `tabular-nums` count; body `flex flex-col gap-2`; DnD: `ondragover={(e) => e.preventDefault()}`, `ondrop={(e) => { e.preventDefault(); onDrop(column.status); }}`.
 
-`TaskBoard.svelte`: derives `columns = deriveColumns(rows.map((r) => r.task))`, tracks `dragging: { mountKey: string; taskId: string } | null` (`$state`, set in each card's `onDragStart` via a lookup from the row list, cleared on `ondragend`), renders `flex gap-3 items-start overflow-x-auto` of columns. Drop handler:
+`TaskBoard.svelte`: tracks `dragging: { mountKey: string; taskId: string } | null` (`$state`, set in each card's `onDragStart` via a lookup from the row list, cleared on `ondragend`) and an OPTIMISTIC overlay `pending = $state<Map<string, string>>(new Map())` keyed `${mountKey}/${taskId}` → column status (pre-flight ruling 2026-08-06: spec governs — the card follows the drop immediately and visibly reverts on failure). Columns derive THROUGH the overlay:
+
+```ts
+const columns = $derived(
+  deriveColumns(
+    rows.map(({ icm, task }) => {
+      const override = pending.get(`${icm.mountKey}/${task.id}`);
+      return override === undefined ? task : { ...task, status: override };
+    })
+  )
+);
+```
+
+Renders `flex gap-3 items-start overflow-x-auto` of columns. Drop handler:
 
 ```ts
 async function handleDrop(columnStatus: string): Promise<void> {
@@ -1349,14 +1362,17 @@ async function handleDrop(columnStatus: string): Promise<void> {
   if (!row) return;
   const patch = dropPatch(row.task, columnStatus);
   if (patch === null) return;
+  const key = `${drag.mountKey}/${drag.taskId}`;
+  pending = new Map(pending).set(key, columnStatus); // card moves NOW
   const outcome = await tasksStore.patchTask(drag.mountKey, drag.taskId, patch);
+  const next = new Map(pending);
+  next.delete(key); // success: the re-listed store rows carry the new status; failure: the card snaps back
+  pending = next;
   if (!outcome.ok) onError(taskErrorMessage(outcome.error));
-  // No optimistic local mutation: patchTask re-lists on success, and a failed
-  // patch leaves the card where the FILE says it is — the file is the truth.
 }
 ```
 
-(That satisfies "revert visibly" — the card only moves when the write lands; on failure the error line explains. Note this simplification in a comment AND in the task report; the spec's "optimistic move, revert on failure" is met by the stronger no-lie rendering.)
+(The overlay is per-drop and self-clearing on both outcomes, so it can never disagree with the file for longer than one in-flight write; a failed write reverts the card visibly with the error line explaining.)
 
 Done column footer: `Archive all` button → inline confirmation (the Clear-done card pattern from TasksTab, listing `{icmName}: {n}` per project with done entries) → sequential `clearDone(mountKey)` per project; first failure → `onError(taskErrorMessage(...))` and stop.
 
