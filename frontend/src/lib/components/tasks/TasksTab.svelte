@@ -43,6 +43,7 @@
     todayFilter,
     type TaskEntry
   } from '$lib/tasks/filters';
+  import { boardTasks } from '$lib/tasks/board';
   import { handoffPrompt, sessionLiveById } from '$lib/tasks/handoff';
   import {
     duplicateIdNote,
@@ -173,6 +174,36 @@
   );
 
   const filteredTasks = $derived(perIcm.flatMap((entry) => entry.tasks));
+
+  /**
+   * The BOARD's rows: the same filtered set the list shows, plus every ledger's
+   * FINISHED entries — narrowed by the two axes that apply to every card
+   * (assignee, search) but not by the Today|All view.
+   *
+   * Why (controller ruling 2026-08-06): the Today view is the day's OPEN work,
+   * so it filters completed entries out — which left the Done column
+   * permanently empty in the DEFAULT view, and a card dropped onto it vanished
+   * instead of landing. Finished entries are ambient receipts, the same reading
+   * the list's project footer takes when it counts the ledger rather than the
+   * fold, so the Done column shows the same cards in both views.
+   *
+   * `done` only: `dropped` entries live behind Clear done and never reach the
+   * board (`deriveColumns` drops them too).
+   *
+   * The `Today · n` segment count is deliberately NOT changed by this — it
+   * counts the view's open work, exactly as a section's row count sits apart
+   * from its "n done" footer in the list.
+   */
+  const boardRows = $derived(
+    perIcm.flatMap(({ icm, tasks }) =>
+      boardTasks(
+        tasks,
+        assigneeNarrow(icm.tasks.filter((task) => task.status === 'done')).filter((task) =>
+          matchesSearch(task, debounced)
+        )
+      )
+    )
+  );
 
   /** The calm per-ledger notes, verbatim from `task-shapes` — an unreadable file and duplicate ids both stay visible. */
   function noteLines(icm: TaskIcm): string[] {
@@ -526,13 +557,8 @@
         <!-- The same rows the list would show, dealt into status columns. The
              board owns its own writes (drop → patch, Archive all → clearDone)
              and reports through the tab's one error line. -->
-        <TaskBoard
-          rows={toRows(filteredTasks)}
-          {todayIso}
-          onOpen={openEditor}
-          onError={(message) => (rowError = message)}
-        />
-        {#if filteredTasks.length === 0 && debounced.trim() !== ''}
+        <TaskBoard rows={toRows(boardRows)} {todayIso} onOpen={openEditor} onError={(message) => (rowError = message)} />
+        {#if boardRows.length === 0 && debounced.trim() !== ''}
           <!-- The spec's search contract holds on the board too: three columns
                of zeros state the fact but never name the query that caused it.
                The other empty cases need no line here — the columns are always

@@ -17,6 +17,12 @@
   // No STATUS chip either: on the board the column is the status, including a
   // custom one, whose column label is the verbatim string the chip would show.
   //
+  // No SOURCE chip, deliberately (spec §Board view lists the card's chips and
+  // source is not among them): both LINK kinds would be nested anchors, and
+  // carrying only the freeform text kind would make provenance appear and
+  // disappear by kind, which is worse than a card that consistently doesn't
+  // claim to show it. The list row is where a task's source lives.
+  //
   // Spans rather than <p>/<div> for the card's own text blocks: a <button>'s
   // content model is phrasing content, and these carry `block`/`flex` anyway.
   import type { TaskEntry } from '$lib/tasks/filters';
@@ -130,8 +136,10 @@
     {/if}
 
     <!-- Last and quietest, as in the list: which project this is, at the size
-         that never competes with the due state. -->
-    <span class="text-ink-meta text-[9px]">{icmName}</span>
+         that never competes with the due state. `shrink-0` for the same reason
+         the row's tag has it — a long project name must not be squeezed to
+         nothing by the chips beside it. -->
+    <span class="text-ink-meta shrink-0 text-[9px]">{icmName}</span>
   </span>
 
   {#if !addressable}

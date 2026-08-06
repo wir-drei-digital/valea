@@ -16,10 +16,13 @@
 
   let {
     column,
+    dragActive = false,
     onDrop,
     children
   }: {
     column: BoardColumn;
+    /** Whether one of the board's OWN cards is in flight — see `handleDragOver`. */
+    dragActive?: boolean;
     /** Called with THIS column's status when a card is dropped anywhere inside it. */
     onDrop: (status: string) => void;
     /** The column's cards, plus the Done column's archive footer. */
@@ -30,6 +33,11 @@
   let over = $state(false);
 
   function handleDragOver(event: DragEvent): void {
+    // A file or a selection dragged in from outside is not a card: without this
+    // guard every column lit up and offered a drop the board would then
+    // silently ignore. Returning before `preventDefault` also leaves the column
+    // a NON-target for that drag, so the browser shows its own "no" cursor.
+    if (!dragActive) return;
     // Preventing the default on dragover is literally what MAKES an element a
     // drop target; without it the drop event never fires.
     event.preventDefault();

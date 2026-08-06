@@ -188,7 +188,7 @@
 
 <div class="flex items-start gap-3 overflow-x-auto pt-2">
   {#each columns as column (column.status)}
-    <BoardColumn {column} onDrop={(status) => void handleDrop(status)}>
+    <BoardColumn {column} dragActive={dragging !== null} onDrop={(status) => void handleDrop(status)}>
       {#each column.cards as card (card.key)}
         <!-- The bound session's live dot, when the recency window still knows
              it: `sessionLiveById` answers `null` for an id that has aged out,

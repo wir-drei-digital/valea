@@ -42,6 +42,27 @@ export function deriveColumns(tasks: TaskEntry[]): BoardColumn[] {
 }
 
 /**
+ * The board's row set: the view's rows, plus the ledger's finished ones.
+ *
+ * Why the board reaches past the view filter (controller ruling 2026-08-06):
+ * the Today filter excludes completed entries, so in the DEFAULT view the Done
+ * column was permanently empty — and a card dropped on it disappeared instead
+ * of landing, which reads as data loss rather than as a status change. Finished
+ * entries are ambient RECEIPTS, not view rows; the list already takes that
+ * reading when its project footer counts the ledger rather than the fold.
+ *
+ * `receipts` must arrive already narrowed by whatever applies to every card
+ * (assignee, search): this function decides nothing about relevance, it only
+ * unions. Entries already present are dropped by OBJECT IDENTITY, never by id —
+ * ids are nullable and duplicable (`nextUp` carries the same note), and the
+ * store hands both lists the very same references.
+ */
+export function boardTasks(rows: TaskEntry[], receipts: TaskEntry[]): TaskEntry[] {
+  const seen = new Set(rows);
+  return [...rows, ...receipts.filter((task) => !seen.has(task))];
+}
+
+/**
  * The entry a column derives from: the pending drop's status while a write is in
  * flight, otherwise the file's — with `""` normalized to `open`.
  *

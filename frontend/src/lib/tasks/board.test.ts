@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTask } from './filters';
-import { DEFAULT_BOARD_STATUSES, boardLabel, boardTask, deriveColumns, dropPatch } from './board';
+import { DEFAULT_BOARD_STATUSES, boardLabel, boardTask, boardTasks, deriveColumns, dropPatch } from './board';
 
 const t = (raw: Record<string, unknown>) => normalizeTask({ id: 'x', title: 't', ...raw });
 
@@ -40,6 +40,33 @@ describe('deriveColumns', () => {
       t({ id: 'urgent', status: 'open', today: true })
     ]);
     expect(cols[0].tasks.map((x) => x.id)).toEqual(['urgent', 'later']);
+  });
+});
+
+describe('boardTasks', () => {
+  it('appends the receipts the view filter left out, after the view rows', () => {
+    const open = t({ id: 'a', status: 'open', today: true });
+    const receipt = t({ id: 'b', status: 'done' });
+    expect(boardTasks([open], [receipt]).map((x) => x.id)).toEqual(['a', 'b']);
+  });
+
+  it('drops a receipt already in the rows (the All view, where the union is a no-op)', () => {
+    const open = t({ id: 'a', status: 'open' });
+    const receipt = t({ id: 'b', status: 'done' });
+    expect(boardTasks([open, receipt], [receipt]).map((x) => x.id)).toEqual(['a', 'b']);
+  });
+
+  it('dedupes by IDENTITY, so twins sharing an id both survive', () => {
+    // Two entries, one id — the leniency contract renders both, and an
+    // id-keyed dedupe would have swallowed the second.
+    const shown = t({ id: 'dup', status: 'done' });
+    const twin = t({ id: 'dup', status: 'done' });
+    expect(boardTasks([shown], [shown, twin])).toEqual([shown, twin]);
+  });
+
+  it('is the plain row set when there are no receipts', () => {
+    const rows = [t({ id: 'a' }), t({ id: 'b' })];
+    expect(boardTasks(rows, [])).toEqual(rows);
   });
 });
 
