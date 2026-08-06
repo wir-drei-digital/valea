@@ -189,6 +189,23 @@ jobs:
       - name: Bootstrap hex/rebar
         run: cd backend && mix local.hex --force && mix local.rebar --force
 
+      # Burrito's Linux ERTS is MUSL-linked (its beam.smp carries a
+      # /tmp/libc-musl-… interpreter), but rustler_precompiled picks NIF
+      # artifacts by the BUILD HOST's triple — gnu on this runner — so the
+      # sidecar shipped a glibc mdex NIF a musl BEAM can never load: every
+      # markdown parse on Linux raised UndefinedFunctionError and icm_page
+      # 500'd ("markdown files cannot be opened", found 2026-08-06 on the
+      # packaged 0.3.0). TARGET_ARCH/TARGET_ABI are rustler_precompiled's
+      # documented (Nerves-style) override; vendor defaults to "unknown",
+      # yielding x86_64-unknown-linux-musl — a variant mdex ships and
+      # checksums. Linux lane only: macOS/Windows BEAMs share one libc with
+      # their NIFs and must keep host detection.
+      - name: Point rustler_precompiled at the musl NIFs (Linux)
+        if: matrix.burrito_target == 'linux_x64'
+        run: |
+          echo "TARGET_ARCH=x86_64" >> "$GITHUB_ENV"
+          echo "TARGET_ABI=musl" >> "$GITHUB_ENV"
+
       - name: Build SPA + Burrito sidecar (+ spawn shim on Windows)
         env:
           BURRITO_TARGET: ${{ matrix.burrito_target }}

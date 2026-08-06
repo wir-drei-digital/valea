@@ -18,7 +18,14 @@ lane, and no Intel macOS lane (GitHub retired the last Intel runners;
 Apple silicon covers every Mac since 2020). Only the AppImage self-updates
 on Linux; `.deb`/`.rpm` installs update through the package manager story
 we don't have yet — point those users at the AppImage if they want
-auto-update. On Windows the updater artifact IS the installer
+auto-update. The Linux lane exports `TARGET_ARCH=x86_64 TARGET_ABI=musl`
+before the sidecar build: Burrito's Linux ERTS is musl-linked, and without
+the override `rustler_precompiled` ships the build host's glibc NIFs
+(mdex), which a musl BEAM cannot load — markdown parsing then crashes on
+every Linux install (the 0.3.0 "markdown files cannot be opened" bug). Any
+new Rust-NIF dependency must publish a `x86_64-unknown-linux-musl`
+precompiled variant or be force-built in that lane.
+On Windows the updater artifact IS the installer
 (`installMode: "passive"`): it reruns with a progress bar and restarts the
 app itself, so the frontend's relaunch call is never observed — see
 "Windows" below.

@@ -327,6 +327,15 @@ defmodule Valea.ICM.WatcherTest do
       def start_link(_opts), do: {:error, :backend_unavailable}
     end
 
+    # What the real `file_system` package returns when its Linux backend can't
+    # find the inotifywait executable (inotify-tools not installed): the
+    # worker's `init` returns `:ignore`, not `{:error, _}`. Found the hard way
+    # on the packaged Linux app — an unhandled `:ignore` case-clause crashed
+    # the whole workspace runtime at open (2026-08-06).
+    defmodule IgnoringFS do
+      def start_link(_opts), do: :ignore
+    end
+
     setup do
       root =
         Path.join(
@@ -351,6 +360,41 @@ defmodule Valea.ICM.WatcherTest do
       # the GenServer still serves its API in the disabled state:
       assert Enum.empty?(Valea.ICM.Watcher.watched_roots(:degraded_watcher_test))
       assert Process.alive?(pid)
+    end
+
+    test "enters disabled state when the FS backend returns :ignore (Linux without inotify-tools)",
+         %{
+           root: root
+         } do
+      pid =
+        start_supervised!(
+          {Valea.ICM.Watcher, {root, fs_mod: IgnoringFS, name: :ignoring_watcher_test}}
+        )
+
+      assert Valea.ICM.Watcher.watching?(:ignoring_watcher_test) == false
+      assert Enum.empty?(Valea.ICM.Watcher.watched_roots(:ignoring_watcher_test))
+      assert Process.alive?(pid)
+    end
+
+    test "workspace open survives an FS backend that returns :ignore" do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "valea-app-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+        )
+
+      System.put_env("VALEA_APP_DIR", dir)
+      Application.put_env(:valea, :icm_watcher_fs_mod, IgnoringFS)
+
+      on_exit(fn ->
+        Valea.Workspace.Manager.close()
+        Application.delete_env(:valea, :icm_watcher_fs_mod)
+        File.rm_rf!(dir)
+        System.delete_env("VALEA_APP_DIR")
+      end)
+
+      assert {:ok, _ws} = Valea.Workspace.Manager.create("W")
+      assert Valea.ICM.Watcher.watching?() == false
     end
 
     test "workspace open survives an unavailable FS backend (spec A5)" do

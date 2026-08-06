@@ -261,6 +261,19 @@ defmodule Valea.ICM.Watcher do
           FileSystem.subscribe(watcher)
           {watcher, true}
 
+        # `:ignore` is `file_system`'s third shape, not an error tuple: the
+        # Linux inotify backend returns it when the `inotifywait` executable
+        # is missing (inotify-tools not installed). Unhandled, it crashed the
+        # WHOLE workspace open on lean Linux installs (found on the packaged
+        # app, 2026-08-06) — the disabled state is the same degrade the
+        # `{:error, _}` arm always promised.
+        :ignore ->
+          Logger.warning(
+            "ICM file watching disabled (:backend_ignored) — tree refreshes on navigation only"
+          )
+
+          {nil, false}
+
         {:error, reason} ->
           Logger.warning(
             "ICM file watching disabled (#{inspect(reason)}) — tree refreshes on navigation only"
@@ -557,7 +570,16 @@ defmodule Valea.ICM.Watcher do
       # log once, return `nil`, don't crash. We only reach here with
       # `watching: true` (the fixed listener came up), so the workspace's
       # own trees stay covered; only these ICM roots fall back to a
-      # navigation refresh.
+      # navigation refresh. `:ignore` is handled for symmetry with `init/1`
+      # (the missing-inotify-tools shape), though a backend that came up for
+      # the fixed listener rarely refuses the dynamic one.
+      :ignore ->
+        Logger.warning(
+          "ICM root watching unavailable (:backend_ignored) — those roots refresh on navigation only"
+        )
+
+        nil
+
       {:error, reason} ->
         Logger.warning(
           "ICM root watching unavailable (#{inspect(reason)}) — those roots refresh on navigation only"
