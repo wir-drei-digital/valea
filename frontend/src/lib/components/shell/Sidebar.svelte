@@ -26,36 +26,52 @@
   } = $props();
 
   const sections = mainNav();
-  // The brand band doubles as the traffic-light clearance on macOS and as a
-  // drag surface everywhere the app owns its frame. `windowChrome()` rather
-  // than `inDesktop()`: the two are the same set today, but the reason the
-  // band exists is the chrome, not the runtime.
+  // The top of the nav answers to the window CHROME, not the runtime — hence
+  // `windowChrome()` rather than `inDesktop()`. Two shapes, and macOS is the
+  // one that differs.
   //
-  // On macOS the lights float over the webview at the window's top-left,
-  // exactly where the brand lockup would sit — hence the empty 48px band,
-  // which carries `data-tauri-drag-region` itself because Tauri's drag
-  // handler only fires on the element the mousedown lands on.
+  // On macOS the traffic lights float over the webview at the window's
+  // top-left, exactly where the brand lockup would sit. That platform gets an
+  // EMPTY 48px band instead: clearance for the lights, and a drag surface.
   //
-  // On frameless Windows and Linux there are no traffic lights to clear, but
-  // the band stays: it is the app's LARGE drag surface, alongside the root
+  // Everywhere else the lockup renders — the browser as it always has, and
+  // frameless Windows and Linux, where nothing occupies that corner and the
+  // band was dead space. (This reverses
+  // `2026-08-02-frameless-windows-linux-chrome-design.md`'s "reused as-is; it
+  // already renders on every desktop OS": the band's REASON is the traffic
+  // lights, and only one of the three platforms has them.)
+  //
+  // DRAG. Both shapes are the app's LARGE drag surface, alongside the root
   // layout's 12px top strip — which is deliberately too thin to be the only
-  // one. (It rendered there before those windows went frameless too, as dead
-  // space beside a native title bar; what changed is that it now earns its
-  // height.)
+  // one. The attribute's VALUE is what makes the filled shape work: a bare
+  // `data-tauri-drag-region` fires only when the mousedown lands on the
+  // element carrying it, which across a lockup would mean the gap between the
+  // mark and the wordmark and nothing else. `"deep"` extends it to the whole
+  // subtree (tauri 2.11 `src/window/scripts/drag.js`), and nothing in ours
+  // blocks it — the `<svg>` is an SVGElement, which that walk skips outright
+  // rather than treating as a barrier, and the `<p>` is inert. The empty band
+  // says `"deep"` too: with no children the two values are the same thing
+  // there, and it stays correct if one ever lands.
   const chrome = windowChrome();
 
   let settingsOpen = $state(false);
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Brand header. In the DESKTOP app this band is chromeless — no mark, no
-       wordmark (on macOS the traffic lights live here instead; the brand
-       shows on the onboarding screen) — but it stays as that clearance and
-       as a window-drag surface. In the browser it carries the lockup. -->
-  {#if chrome !== 'browser'}
-    <div data-tauri-drag-region class="h-12 shrink-0"></div>
+  <!-- Brand header. Chromeless on macOS ONLY — no mark, no wordmark, because
+       the traffic lights live in that corner (the brand shows on the
+       onboarding screen instead) — and the lockup everywhere else.
+
+       `select-none` off the browser: the wordmark is a drag surface there, and
+       while Tauri's own `preventDefault` already stops a drag selecting it,
+       the I-beam cursor over what behaves as a title bar still reads wrong. -->
+  {#if chrome === 'macos-overlay'}
+    <div data-tauri-drag-region="deep" class="h-12 shrink-0"></div>
   {:else}
-    <div class="flex items-center gap-2.5 px-3 pt-4 pb-3">
+    <div
+      data-tauri-drag-region={chrome === 'browser' ? undefined : 'deep'}
+      class={['flex items-center gap-2.5 px-3 pt-4 pb-3', chrome !== 'browser' && 'select-none']}
+    >
       <Logo />
       <p class="font-display text-ink-heading text-[17px] font-medium">Valea</p>
     </div>

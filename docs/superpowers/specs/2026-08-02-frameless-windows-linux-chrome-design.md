@@ -321,6 +321,17 @@ destroyed mid-registration leaks the listener it never saw.
 ### Drag surfaces
 
 - `Sidebar`'s 48px band — reused as-is; it already renders on every desktop OS.
+
+  ⚠️ **Superseded on 2026-08-06.** The band is empty on **macOS only** now. Its
+  reason is the traffic lights, and Windows and Linux do not have any — so what
+  this design reused as-is was 48px of dead space in the one corner those two
+  platforms leave free. They render the brand lockup there instead, the same
+  one the browser has always shown. The band is still the large drag surface on
+  all three: the lockup carries `data-tauri-drag-region="deep"`, which extends
+  the region to the whole subtree rather than to direct hits on the container
+  alone (a bare attribute across a lockup would drag only from the gap between
+  the mark and the wordmark). "Drag by the nav's top band" in the acceptance
+  table below therefore now means dragging *by the logo* on Windows and Linux.
 - `+layout`'s fixed 12px top strip — kept **at 12px on every platform**, and
   changed only to **stop short of the controls horizontally**.
 
