@@ -82,18 +82,28 @@ export function priorityLabel(priority: string | null): string | null {
   }
 }
 
-export function assigneeLabel(assignee: string | null): string {
-  switch (assignee) {
-    // The product's own noun (Chat's empty state, the cockpit): the ASSISTANT
-    // works the task. "Agent" is harness vocabulary and stays behind the hood.
-    case 'agent':
-      return 'Assistant';
-    case 'user':
-    case null:
-      return 'Me';
-    default:
-      return assignee;
-  }
+/**
+ * Keys for ONE rendered `#each` list of task rows — degenerate-entry handling,
+ * which is why it lives here rather than in the markup.
+ *
+ * Three things a task id is not: unique across ledgers (ids are per-FILE, and a
+ * priority/due grouping puts two projects' rows in one list), unique WITHIN a
+ * ledger (duplicates render, with the "first one wins" note beside them), and
+ * present at all (id-less entries render with the repair affordance). Any of
+ * the three would hand Svelte a duplicate key, which is a runtime error — so
+ * the mount qualifies the id, a repeat gets a `~n` suffix, and an id-less entry
+ * is keyed by position.
+ */
+export function rowKeys(rows: { mountKey: string; id: string | null }[]): string[] {
+  const used = new Map<string, number>();
+  return rows.map((row, index) => {
+    // `#` vs `/` keeps positional keys out of the id namespace: an entry whose
+    // id literally IS `#0` still gets `mount/#0`.
+    const base = row.id === null ? `${row.mountKey}#${index}` : `${row.mountKey}/${row.id}`;
+    const seen = used.get(base) ?? 0;
+    used.set(base, seen + 1);
+    return seen === 0 ? base : `${base}~${seen}`;
+  });
 }
 
 /**

@@ -1,29 +1,44 @@
 <script lang="ts">
-  // The Tasks tab: every enabled ICM's ledger, merged and grouped by ICM with
-  // the cockpit's provenance-header shape, default-filtered to Today.
+  // The Tasks tab: every enabled ICM's ledger, merged, narrowed by the persisted
+  // controls row, and grouped by project / priority / due date.
   //
-  // Reads `tasksStore` directly rather than taking the whole ledger through
-  // props (the `ChatView`/`sessionsListStore` precedent) — the route stays thin
-  // and there is exactly one copy of the merged ledger in the app.
+  // Reads `tasksStore` and `tasksSettings` directly rather than taking either
+  // through props (the `ChatView`/`sessionsListStore` precedent) — the route
+  // stays thin, there is exactly one copy of the merged ledger in the app, and
+  // exactly one owner of the filter state that outlives the page.
   //
-  // The three filter axes are three `SegmentedControl`s, one track each —
-  // the app's one pill grammar (critique P1: the old flat `FilterPill` row
-  // painted the track color on its ACTIVE pill, inverting the segmented
-  // control's vocabulary two rows above it, and its axis dividers measured
-  // ~1.03:1). A mutually-exclusive set is a segmented control, full stop.
+  // What is persisted and what is not (spec §Persistence): the four filter axes
+  // — mode, view, assignee, group-by — live in `tasksSettings` and survive a
+  // reload; the search box and the per-section "Show done" expansions are
+  // session-local `$state` here, because a filter you cannot see on return is a
+  // filter that makes the app look broken, and neither of those two is visible
+  // in the controls row after a reload.
+  //
+  // The old status SegmentedControl is gone (spec: the board covers status
+  // browsing, done rows fold behind their section footer). `applyTaskFilters`
+  // keeps its `status` axis for compatibility and is passed `null`.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
+  import { NativeSelect } from '$lib/components/ui/native-select/index.js';
   import { EmptyState, SegmentedControl } from '$lib/components/shell';
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import { tasksStore, type TaskIcm } from '$lib/tasks/store.svelte';
+  import { tasksSettings } from '$lib/tasks/settings.svelte';
+  import type { TasksGroupBy } from '$lib/tasks/settings';
   import {
     applyTaskFilters,
-    countByStatus,
+    groupByDue,
+    groupByPriority,
     isCompleted,
-    type TaskEntry,
-    type TaskFilters
+    matchesSearch,
+    nextUp,
+    orderTaskRows,
+    splitOverdue,
+    todayFilter,
+    type TaskEntry
   } from '$lib/tasks/filters';
-  import { duplicateIdNote, ledgerNote, repairFields, taskErrorMessage } from './task-shapes';
+  import { duplicateIdNote, ledgerNote, repairFields, rowKeys, taskErrorMessage } from './task-shapes';
   import QuickAdd from './QuickAdd.svelte';
   import TaskRow from './TaskRow.svelte';
   import TaskEditor from './TaskEditor.svelte';
@@ -38,7 +53,35 @@
     defaultMountKey: string | null;
   } = $props();
 
-  let filters = $state<TaskFilters>({ view: 'today', assignee: null, status: null });
+  /** One rendered line: the entry, the ledger it came from, and a key no twin can collide with. */
+  type Row = { key: string; icm: TaskIcm; task: TaskEntry };
+
+  /**
+   * One rendered section. `icm` is set for project sections only — "Clear done"
+   * archives a MOUNT's ledger, and a priority bucket spans mounts.
+   */
+  type Section = {
+    key: string;
+    label: string;
+    icm: TaskIcm | null;
+    /** `groupByDue`'s own overdue bucket: it IS the overdue group, so it takes no nested overdue header. */
+    overdueBucket: boolean;
+    /** Calm per-ledger notes (unreadable file, duplicate ids) — project sections only. */
+    notes: string[];
+    open: TaskEntry[];
+    done: TaskEntry[];
+  };
+
+  let search = $state('');
+  /** `search` after ~150ms of quiet — what actually narrows the list, so a fast typist doesn't re-filter per keystroke. */
+  let debounced = $state('');
+  /**
+   * Section keys whose done rows are unfolded. A `Set` inside `$state` is NOT
+   * proxied by Svelte (that is `SvelteSet`'s job), so this is always REPLACED,
+   * never mutated in place — mutation would update nothing.
+   */
+  let showDone = $state<Set<string>>(new Set());
+
   let quickMountKey = $state('');
   let quickBusy = $state(false);
   let quickError = $state<string | null>(null);
@@ -53,8 +96,15 @@
   let editorSaving = $state(false);
   let editorError = $state<string | null>(null);
 
+  const filters = $derived(tasksSettings.filters);
   const icms = $derived(tasksStore.taskIcms);
   const pickerIcms = $derived(icms.map((icm) => ({ mountKey: icm.mountKey, icmName: icm.icmName })));
+
+  $effect(() => {
+    const query = search;
+    const timer = setTimeout(() => (debounced = query), 150);
+    return () => clearTimeout(timer);
+  });
 
   // Seeds the picker from the MRU once the ledger list arrives, and repairs it
   // if the selected ICM disappears (unmounted mid-session).
@@ -72,23 +122,130 @@
     return icm?.tasks.find((task) => task.id === editing!.taskId) ?? null;
   });
 
-  function rowsFor(icm: TaskIcm): TaskEntry[] {
-    return applyTaskFilters(icm.tasks, filters, todayIso);
+  /** The assignee axis alone, for the counts — `null` is "everyone", and an absent `assignee` reads as the user's. */
+  function assigneeNarrow(rows: TaskEntry[]): TaskEntry[] {
+    return rows.filter((task) => filters.assignee === null || (task.assignee ?? 'user') === filters.assignee);
   }
 
-  const visibleCount = $derived(icms.reduce((total, icm) => total + rowsFor(icm).length, 0));
-  const otherFiltersActive = $derived(filters.assignee !== null || filters.status !== null);
+  // Segment counts are computed over the merged ledgers with the CURRENT
+  // assignee filter applied and the SEARCH IGNORED: a segment must never promise
+  // rows its click won't show, and search is transient narrowing inside a view,
+  // not a view of its own (a count that moved while you typed would be noise).
+  const todayCount = $derived(assigneeNarrow(icms.flatMap((icm) => todayFilter(icm.tasks, todayIso))).length);
+  // OPEN tasks only. The All view still SHOWS done rows — folded behind each
+  // section's footer — but a count that included them would promise rows a click
+  // hides, and archived-pending work is not what "All · 12" is read as.
+  const allCount = $derived(assigneeNarrow(icms.flatMap((icm) => icm.tasks.filter((task) => !isCompleted(task)))).length);
+
+  /** Every entry in every ledger → its project. The one place a bare `TaskEntry` is resolved back to a mount. */
+  const ownerOf = $derived.by(() => {
+    const map = new Map<TaskEntry, TaskIcm>();
+    for (const icm of icms) for (const task of icm.tasks) map.set(task, icm);
+    return map;
+  });
+
+  /** The view + assignee + search pass, per ledger — every list below is a regrouping of exactly these rows. */
+  const perIcm = $derived(
+    icms.map((icm) => ({
+      icm,
+      tasks: applyTaskFilters(
+        icm.tasks,
+        { view: filters.view, assignee: filters.assignee, status: null },
+        todayIso
+      ).filter((task) => matchesSearch(task, debounced))
+    }))
+  );
+
+  const filteredTasks = $derived(perIcm.flatMap((entry) => entry.tasks));
+
+  /** The calm per-ledger notes, verbatim from `task-shapes` — an unreadable file and duplicate ids both stay visible. */
+  function noteLines(icm: TaskIcm): string[] {
+    const lines: string[] = [];
+    const note = ledgerNote(icm.status);
+    if (note !== null) lines.push(`tasks.json is ${note}`);
+    const duplicates = duplicateIdNote(icm.tasks);
+    if (duplicates !== null) lines.push(duplicates);
+    return lines;
+  }
 
   /**
-   * Status counts over the CURRENT view's base (same view + assignee, status
-   * open) — a segment must never promise rows its click won't show. The old
-   * whole-ledger count did exactly that: "Done · 1" on the Today view clicked
-   * through to zero rows (critique P-issue; the fix is the tested
-   * `countByStatus` over the filtered base).
+   * Grouping. `project` keeps the per-ICM sections; `priority` and `due` regroup
+   * the flattened rows, re-sorted as ONE list first — `perIcm` arrives
+   * ICM-major, and a "High" bucket ordered by project is not ordered at all.
+   *
+   * Done/dropped rows are split off in every grouping rather than dropped: they
+   * fold behind the section footer, which is the only place "Clear done" lives.
    */
-  const statusBase = $derived(
-    icms.flatMap((icm) => applyTaskFilters(icm.tasks, { ...filters, status: null }, todayIso))
+  const sections = $derived.by((): Section[] => {
+    if (filters.groupBy === 'project') {
+      return perIcm.map(({ icm, tasks }) => ({
+        key: `project:${icm.mountKey}`,
+        label: icm.icmName || icm.mountKey,
+        icm,
+        overdueBucket: false,
+        notes: noteLines(icm),
+        open: tasks.filter((task) => !isCompleted(task)),
+        done: tasks.filter(isCompleted)
+      }));
+    }
+
+    const flat = orderTaskRows(filteredTasks);
+    const groups = filters.groupBy === 'priority' ? groupByPriority(flat) : groupByDue(flat, todayIso);
+    return groups.map((group) => ({
+      key: `${filters.groupBy}:${group.key}`,
+      label: group.label,
+      icm: null,
+      overdueBucket: filters.groupBy === 'due' && group.key === 'overdue',
+      notes: [],
+      open: group.rows.filter((task) => !isCompleted(task)),
+      done: group.rows.filter(isCompleted)
+    }));
+  });
+
+  /**
+   * A section renders when it has rows or something to say. An ICM with nothing
+   * in it stays quiet — the per-section "No tasks yet." note is gone, because a
+   * page listing six projects repeated it six times and said nothing.
+   */
+  const visibleSections = $derived(
+    sections.filter((section) => section.open.length > 0 || section.done.length > 0 || section.notes.length > 0)
   );
+
+  /** Grouped by priority or due date, the ledger notes have no section to sit under — they get one quiet block. */
+  const strayNotes = $derived(
+    filters.groupBy === 'project'
+      ? []
+      : icms
+          .map((icm) => ({ mountKey: icm.mountKey, name: icm.icmName || icm.mountKey, notes: noteLines(icm) }))
+          .filter((entry) => entry.notes.length > 0)
+  );
+
+  /**
+   * The empty Today view is never blank (spec §Day planning): it offers the top
+   * of the backlog, each row one click from today. Fed the assignee-narrowed
+   * ledgers, so "Mine" doesn't suggest the assistant's work; `nextUp` itself
+   * drops completed entries and anything the Today view already holds.
+   */
+  const nextUpTasks = $derived.by(() => {
+    if (filters.view !== 'today' || filteredTasks.length > 0 || debounced.trim() !== '') return [];
+    return nextUp(assigneeNarrow(icms.flatMap((icm) => icm.tasks)), todayIso, 5);
+  });
+
+  /** Attaches each entry to its project and stamps collision-free `#each` keys (see `rowKeys`). */
+  function toRows(tasks: TaskEntry[]): Row[] {
+    const owned = tasks.flatMap((task) => {
+      const icm = ownerOf.get(task);
+      return icm === undefined ? [] : [{ icm, task }];
+    });
+    const keys = rowKeys(owned.map(({ icm, task }) => ({ mountKey: icm.mountKey, id: task.id })));
+    return owned.map((row, index) => ({ key: keys[index], ...row }));
+  }
+
+  function toggleShowDone(key: string): void {
+    const next = new Set(showDone);
+    if (!next.delete(key)) next.add(key);
+    showDone = next;
+  }
 
   function report(outcome: { ok: true } | { ok: false; error: string }): boolean {
     rowError = outcome.ok ? null : taskErrorMessage(outcome.error);
@@ -121,6 +278,12 @@
     report(await tasksStore.createTask(mountKey, repairFields(task)));
   }
 
+  function openEditor(mountKey: string, task: TaskEntry): void {
+    if (task.id === null) return;
+    editorError = null;
+    editing = { mountKey, taskId: task.id };
+  }
+
   async function quickAdd(mountKey: string, title: string): Promise<void> {
     quickBusy = true;
     quickError = null;
@@ -141,7 +304,7 @@
   // Archival is per-ICM only, behind an inline confirmation that names the
   // count (critique P-issue: "Clear done everywhere" swept every project on one
   // unconfirmed click, with a near-twin control 40px below it). Cross-project
-  // archiving is gone — each project's header owns its own sweep.
+  // archiving is gone — each project's footer owns its own sweep.
   async function clearDone(mountKey: string): Promise<void> {
     clearing = mountKey;
     try {
@@ -166,15 +329,28 @@
       editorSaving = false;
     }
   }
-
-  /** A section renders when it has rows or something to say — a filtered-empty ICM stays quiet and the single message below speaks. */
-  function sectionVisible(icm: TaskIcm, rows: TaskEntry[]): boolean {
-    if (rows.length > 0) return true;
-    if (icm.status === 'unreadable') return true;
-    if (duplicateIdNote(icm.tasks) !== null) return true;
-    return icm.tasks.length === 0;
-  }
 </script>
+
+{#snippet rowList(rows: Row[], tagged: boolean)}
+  <ul class="mt-1.5 flex flex-col">
+    {#each rows as row (row.key)}
+      <TaskRow
+        task={row.task}
+        mountKey={row.icm.mountKey}
+        {todayIso}
+        projectTag={tagged ? row.icm.icmName || row.icm.mountKey : null}
+        busy={row.task.id !== null && busyTaskId === row.task.id}
+        selected={editing?.mountKey === row.icm.mountKey && editing?.taskId === row.task.id}
+        sessionLive={null}
+        onToggleDone={() => void toggleDone(row.icm.mountKey, row.task)}
+        onToggleToday={() => void toggleToday(row.icm.mountKey, row.task)}
+        onOpen={() => openEditor(row.icm.mountKey, row.task)}
+        onDrop={() => void drop(row.icm.mountKey, row.task)}
+        onRepair={() => void repair(row.icm.mountKey, row.task)}
+      />
+    {/each}
+  </ul>
+{/snippet}
 
 {#if icms.length === 0}
   <EmptyState
@@ -184,44 +360,61 @@
   />
 {:else}
   <div class="flex flex-col gap-4">
-    <QuickAdd
-      icms={pickerIcms}
-      bind:mountKey={quickMountKey}
-      busy={quickBusy}
-      error={quickError}
-      onAdd={(mountKey, title) => void quickAdd(mountKey, title)}
-    />
-
     <div class="flex flex-wrap items-center gap-2">
+      <SegmentedControl
+        label="List or board"
+        size="sm"
+        value={filters.mode}
+        options={[
+          { value: 'list', label: 'List' },
+          { value: 'board', label: 'Board' }
+        ]}
+        onChange={(mode) => tasksSettings.setFilters({ mode: mode === 'board' ? 'board' : 'list' })}
+      />
       <SegmentedControl
         label="Which tasks"
         value={filters.view}
         options={[
-          { value: 'today', label: 'Today' },
-          { value: 'all', label: 'All' }
+          { value: 'today', label: 'Today', count: todayCount },
+          { value: 'all', label: 'All', count: allCount }
         ]}
-        onChange={(view) => (filters = { ...filters, view: view as TaskFilters['view'] })}
+        onChange={(view) => tasksSettings.setFilters({ view: view === 'all' ? 'all' : 'today' })}
       />
       <SegmentedControl
         label="Whose tasks"
         value={filters.assignee ?? 'anyone'}
         options={[
-          { value: 'anyone', label: 'Anyone' },
-          { value: 'user', label: 'Me' },
-          { value: 'agent', label: 'Assistant' }
+          { value: 'user', label: 'Mine' },
+          { value: 'agent', label: "Assistant's" },
+          { value: 'anyone', label: 'Everyone' }
         ]}
         onChange={(assignee) =>
-          (filters = { ...filters, assignee: assignee === 'anyone' ? null : (assignee as 'user' | 'agent') })}
+          tasksSettings.setFilters({ assignee: assignee === 'user' || assignee === 'agent' ? assignee : null })}
       />
-      <SegmentedControl
-        label="Task status"
-        value={filters.status ?? 'any'}
-        options={[
-          { value: 'any', label: 'Any status' },
-          { value: 'in_progress', label: 'In progress', count: countByStatus(statusBase, 'in_progress') },
-          { value: 'done', label: 'Done', count: countByStatus(statusBase, 'done') }
-        ]}
-        onChange={(status) => (filters = { ...filters, status: status === 'any' ? null : status })}
+
+      {#if filters.mode === 'list'}
+        <!-- Group-by is a LIST concept: the board is status-grouped by definition. -->
+        <label class="text-ink-meta text-[11.5px]" for="tasks-group-by">Group</label>
+        <!-- A get/set binding, not a local mirror: the store IS the value, and
+             a second copy of a persisted axis is the bug that makes a reload
+             disagree with the control. -->
+        <NativeSelect
+          id="tasks-group-by"
+          bind:value={() => filters.groupBy, (value) => tasksSettings.setFilters({ groupBy: value as TasksGroupBy })}
+          class="w-auto"
+        >
+          <option value="project">Project</option>
+          <option value="priority">Priority</option>
+          <option value="due">Due date</option>
+        </NativeSelect>
+      {/if}
+
+      <Input
+        type="search"
+        bind:value={search}
+        placeholder="Search tasks…"
+        aria-label="Search tasks"
+        class="ml-auto w-[200px]"
       />
     </div>
 
@@ -229,122 +422,170 @@
       <p class="text-warn-ink text-[12.5px]" role="alert">{rowError}</p>
     {/if}
 
-    <div class="flex flex-col gap-7">
-      {#each icms as icm (icm.mountKey)}
-        {@const rows = rowsFor(icm)}
-        {@const note = ledgerNote(icm.status)}
-        {@const duplicates = duplicateIdNote(icm.tasks)}
-        {@const doneCount = icm.tasks.filter(isCompleted).length}
-        {#if sectionVisible(icm, rows)}
-          <section>
-            <div class="flex items-baseline justify-between gap-3">
-              <h2 class="text-overline">{icm.icmName || icm.mountKey}</h2>
-              {#if doneCount > 0 && confirmingClear !== icm.mountKey}
-                <button
-                  type="button"
-                  disabled={clearing !== null}
-                  onclick={() => (confirmingClear = icm.mountKey)}
-                  class="text-ink-meta hover:text-ink-heading text-[11.5px] hover:underline"
-                >
-                  Clear done
-                </button>
-              {/if}
-            </div>
+    <div class="flex flex-col gap-2">
+      <QuickAdd
+        icms={pickerIcms}
+        bind:mountKey={quickMountKey}
+        busy={quickBusy}
+        error={quickError}
+        onAdd={(mountKey, title) => void quickAdd(mountKey, title)}
+      />
 
-            {#if confirmingClear === icm.mountKey}
-              <div
-                class="border-paper-border bg-paper-card shadow-card mt-1.5 flex flex-wrap items-center gap-2 rounded-[12px] border p-2.5"
-              >
-                <p class="text-ink-body flex-1 text-[12.5px]">
-                  Archive {doneCount === 1 ? 'the finished task' : `${doneCount} finished tasks`} in
-                  {icm.icmName || icm.mountKey}? They move to this project's archive file.
-                </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => (confirmingClear = null)}
-                  disabled={clearing !== null}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onclick={() => void clearDone(icm.mountKey)}
-                  disabled={clearing !== null}
-                >
-                  Archive
-                </Button>
-              </div>
-            {/if}
-
-            {#if note}
-              <!-- Calm, per the leniency contract: tasks.json is the user's file,
-                   and an unparseable one is a thing to fix, not an app error. -->
-              <p class="text-ink-meta mt-1.5 text-[12.5px]">tasks.json is {note}</p>
-            {/if}
-
-            {#if duplicates}
-              <p class="text-ink-meta mt-1.5 text-[12.5px]">{duplicates}</p>
-            {/if}
-
-            {#if rows.length === 0}
-              {#if icm.status !== 'unreadable' && icm.tasks.length === 0}
-                <p class="text-ink-meta mt-1.5 text-[12.5px]">No tasks yet.</p>
-              {/if}
-            {:else}
-              <ul class="mt-1.5 flex flex-col">
-                {#each rows as task, index (task.id ?? `no-id-${index}`)}
-                  <TaskRow
-                    {task}
-                    mountKey={icm.mountKey}
-                    {todayIso}
-                    busy={task.id !== null && busyTaskId === task.id}
-                    selected={editing?.mountKey === icm.mountKey && editing?.taskId === task.id}
-                    sessionLive={null}
-                    onToggleDone={() => void toggleDone(icm.mountKey, task)}
-                    onToggleToday={() => void toggleToday(icm.mountKey, task)}
-                    onOpen={() => {
-                      if (task.id === null) return;
-                      editorError = null;
-                      editing = { mountKey: icm.mountKey, taskId: task.id };
-                    }}
-                    onDrop={() => void drop(icm.mountKey, task)}
-                    onRepair={() => void repair(icm.mountKey, task)}
-                  />
-                {/each}
-              </ul>
-            {/if}
-          </section>
+      {#if filters.mode === 'board'}
+        <!-- Task 9 replaces this line with the board itself; the toggle is
+             honest about where it goes rather than rendering dead furniture. -->
+        <p class="text-ink-meta text-[13px]">Board view is coming next.</p>
+      {:else}
+        {#if strayNotes.length > 0}
+          <!-- Grouped by priority or due date there are no project sections, so
+               the leniency notes say which ledger they are about. -->
+          <div class="flex flex-col gap-1 pt-2">
+            {#each strayNotes as entry (entry.mountKey)}
+              {#each entry.notes as note (note)}
+                <p class="text-ink-meta text-[12.5px]">{entry.name}: {note}</p>
+              {/each}
+            {/each}
+          </div>
         {/if}
-      {/each}
-    </div>
 
-    <!-- ONE empty message for the whole filtered view — the per-section
-         "nothing matches" note and this line used to render together,
-         contradicting each other (critique P-issue). -->
-    {#if visibleCount === 0}
-      {#if otherFiltersActive}
-        <p class="text-ink-body text-[13px]">
-          Nothing matches these filters.
-          <button
-            type="button"
-            class="underline"
-            onclick={() => (filters = { view: 'all', assignee: null, status: null })}
-          >
-            Show everything
-          </button>
-        </p>
-      {:else if filters.view === 'today'}
-        <p class="text-ink-body text-[13px]">
-          Nothing due, overdue, or flagged for today. The
-          <button type="button" class="underline" onclick={() => (filters = { ...filters, view: 'all' })}>All</button>
-          filter shows the whole backlog.
-        </p>
+        <div class="flex flex-col gap-7 pt-2">
+          {#each visibleSections as section (section.key)}
+            {@const split = splitOverdue(section.open, todayIso)}
+            {@const expanded = showDone.has(section.key)}
+            {@const tagged = filters.groupBy !== 'project'}
+            <!-- The mount whose ledger "Clear done" sweeps — a project section
+                 has one, a priority or due bucket spans mounts and has none. -->
+            {@const clearMount = section.icm === null ? null : section.icm.mountKey}
+            {@const ledgerDone = section.icm === null ? 0 : section.icm.tasks.filter(isCompleted).length}
+            <section>
+              <div class="flex items-baseline gap-2">
+                <h2 class="text-overline">{section.label}</h2>
+                {#if section.open.length > 0}
+                  <span class="text-ink-meta text-[11.5px] tabular-nums">{section.open.length}</span>
+                {/if}
+              </div>
+
+              {#each section.notes as note (note)}
+                <!-- Calm, per the leniency contract: tasks.json is the user's file,
+                     and an unparseable one is a thing to fix, not an app error. -->
+                <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
+              {/each}
+
+              {#if split.overdue.length > 0}
+                {#if !section.overdueBucket}
+                  <!-- Overdue first, in every group — the one thing that reorders
+                       a list on its own. Inside the Due-date grouping's own
+                       Overdue bucket the header would name itself, so it doesn't. -->
+                  <h3 class="text-overline text-warn-ink mt-2.5">Overdue · {split.overdue.length}</h3>
+                {/if}
+                {@render rowList(toRows(split.overdue), tagged)}
+              {/if}
+
+              {#if split.rest.length > 0}
+                {@render rowList(toRows(split.rest), tagged)}
+              {/if}
+
+              {#if expanded && section.done.length > 0}
+                {@render rowList(toRows(section.done), tagged)}
+              {/if}
+
+              {#if section.done.length > 0}
+                <!-- Every group carries one of these, so the visible words
+                     ("Show", "Clear done") repeat down the page — the labels
+                     name the section, which is what a screen reader is left
+                     with when the header two lines up is out of reach. -->
+                <div class="text-ink-meta mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px]">
+                  <span class="tabular-nums">{section.done.length} done</span>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-label={`${expanded ? 'Hide' : 'Show'} done tasks in ${section.label}`}
+                    class="hover:text-ink-heading hover:underline"
+                    onclick={() => toggleShowDone(section.key)}
+                  >
+                    {expanded ? 'Hide' : 'Show'}
+                  </button>
+                  {#if clearMount !== null && confirmingClear !== clearMount}
+                    <span aria-hidden="true">·</span>
+                    <button
+                      type="button"
+                      disabled={clearing !== null}
+                      aria-label={`Clear done tasks in ${section.label}`}
+                      onclick={() => (confirmingClear = clearMount)}
+                      class="hover:text-ink-heading hover:underline"
+                    >
+                      Clear done
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if clearMount !== null && confirmingClear === clearMount}
+                <!-- The card counts the LEDGER, not the fold: archiving sweeps
+                     every done entry in the file, including ones the current
+                     filters are hiding. -->
+                <div
+                  class="border-paper-border bg-paper-card shadow-card mt-1.5 flex flex-wrap items-center gap-2 rounded-[12px] border p-2.5"
+                >
+                  <p class="text-ink-body flex-1 text-[12.5px]">
+                    Archive {ledgerDone === 1 ? 'the finished task' : `${ledgerDone} finished tasks`} in
+                    {section.label}? They move to this project's archive file.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => (confirmingClear = null)}
+                    disabled={clearing !== null}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onclick={() => void clearDone(clearMount)}
+                    disabled={clearing !== null}
+                  >
+                    Archive
+                  </Button>
+                </div>
+              {/if}
+            </section>
+          {/each}
+        </div>
+
+        <!-- ONE message for the whole filtered view. -->
+        {#if filteredTasks.length === 0}
+          {#if debounced.trim() !== ''}
+            <p class="text-ink-body pt-2 text-[13px]">No tasks match "{debounced.trim()}".</p>
+          {:else if filters.view === 'today'}
+            <!-- The empty Today view is a plan, not a void: the top of the
+                 backlog, each row one Today click from becoming the day's. -->
+            <div class="pt-2">
+              {#if nextUpTasks.length > 0}
+                <h2 class="text-overline">Next up</h2>
+                {@render rowList(toRows(nextUpTasks), true)}
+              {/if}
+              <p class="text-ink-body mt-2.5 text-[13px]">
+                Nothing due, overdue, or flagged for today — pick from the backlog above, or see
+                <button type="button" class="underline" onclick={() => tasksSettings.setFilters({ view: 'all' })}>All</button>.
+              </p>
+            </div>
+          {:else if filters.assignee !== null}
+            <p class="text-ink-body pt-2 text-[13px]">
+              Nothing matches these filters.
+              <button type="button" class="underline" onclick={() => tasksSettings.setFilters({ assignee: null })}>
+                Show everyone
+              </button>
+            </p>
+          {:else}
+            <p class="text-ink-body pt-2 text-[13px]">No tasks yet — add one above.</p>
+          {/if}
+        {/if}
       {/if}
-    {/if}
+    </div>
   </div>
 {/if}
 

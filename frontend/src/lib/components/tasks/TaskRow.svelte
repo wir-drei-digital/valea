@@ -59,6 +59,7 @@
     busy = false,
     selected = false,
     sessionLive = null,
+    projectTag = null,
     onToggleDone,
     onToggleToday,
     onOpen,
@@ -72,6 +73,12 @@
     selected?: boolean;
     /** Whether the bound chat session is still alive; `null` = not known (no live dot). */
     sessionLive?: boolean | null;
+    /**
+     * The row's project, for lists that are NOT grouped by project (priority,
+     * due, Next up) — `null` inside a project section, where the header already
+     * says it. The board card carries the same tag at the same size.
+     */
+    projectTag?: string | null;
     onToggleDone: () => void;
     /** Flip the `today` flag — the day's triage, one click from the row. */
     onToggleToday: () => void;
@@ -222,6 +229,12 @@
           {#if sessionLive}<span class="bg-act-dot size-1.5 rounded-full" aria-hidden="true"></span>{/if}
           session
         </a>
+      {/if}
+      {#if projectTag}
+        <!-- Last and quietest: which project a row belongs to only matters when
+             the list isn't already grouped by project, and it never competes
+             with the due state for attention. -->
+        <span class="text-ink-meta shrink-0 text-[9px]">{projectTag}</span>
       {/if}
     </div>
 

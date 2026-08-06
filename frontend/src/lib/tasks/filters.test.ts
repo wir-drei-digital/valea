@@ -406,5 +406,18 @@ describe('redesign additions', () => {
       ];
       expect(nextUp(rows, TODAY, 2).map((r) => r.id)).toEqual(['dated', 'p-high']);
     });
+
+    it('excludes the today rows by IDENTITY, so one id-less today row cannot hide the id-less backlog', () => {
+      const rows = [
+        t({ id: null, title: 'flagged for today', today: true }),
+        t({ id: null, title: 'still in the backlog' })
+      ];
+      expect(nextUp(rows, TODAY, 5).map((r) => r.title)).toEqual(['still in the backlog']);
+    });
+
+    it('a repeated id in the today view does not evict its twin from the backlog', () => {
+      const rows = [t({ id: 'dup', title: 'today copy', today: true }), t({ id: 'dup', title: 'backlog copy' })];
+      expect(nextUp(rows, TODAY, 5).map((r) => r.title)).toEqual(['backlog copy']);
+    });
   });
 });

@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   ID_LESS_TASK_NOTE,
   MALFORMED_TASKS_NOTE,
-  assigneeLabel,
   dueChip,
   duplicateIdNote,
   ledgerNote,
   priorityLabel,
   repairFields,
+  rowKeys,
   showsAssigneeGear,
   sourceChipLabel,
   statusLabel,
@@ -89,15 +89,41 @@ describe('statusLabel', () => {
   });
 });
 
-describe('priorityLabel / assigneeLabel', () => {
+describe('priorityLabel', () => {
   it('labels the known values and echoes anything else', () => {
     expect(priorityLabel('high')).toBe('High');
     expect(priorityLabel('urgent')).toBe('urgent');
     expect(priorityLabel(null)).toBeNull();
-    expect(assigneeLabel('agent')).toBe('Assistant');
-    expect(assigneeLabel('user')).toBe('Me');
-    expect(assigneeLabel(null)).toBe('Me');
-    expect(assigneeLabel('team')).toBe('team');
+  });
+});
+
+describe('rowKeys', () => {
+  it('qualifies ids by mount — the same id in two ledgers is two rows', () => {
+    expect(rowKeys([{ mountKey: 'w3d', id: 't-1' }, { mountKey: 'home', id: 't-1' }])).toEqual(['w3d/t-1', 'home/t-1']);
+  });
+
+  it('suffixes a repeated id inside one ledger (duplicates render, "first one wins" addressing them)', () => {
+    expect(
+      rowKeys([
+        { mountKey: 'w3d', id: 't-1' },
+        { mountKey: 'w3d', id: 't-1' },
+        { mountKey: 'w3d', id: 't-1' }
+      ])
+    ).toEqual(['w3d/t-1', 'w3d/t-1~1', 'w3d/t-1~2']);
+  });
+
+  it('keys an id-less entry by position, and never collides with a real id', () => {
+    expect(
+      rowKeys([
+        { mountKey: 'w3d', id: null },
+        { mountKey: 'w3d', id: null },
+        { mountKey: 'w3d', id: '#1' }
+      ])
+    ).toEqual(['w3d#0', 'w3d#1', 'w3d/#1']);
+  });
+
+  it('is empty for an empty list', () => {
+    expect(rowKeys([])).toEqual([]);
   });
 });
 

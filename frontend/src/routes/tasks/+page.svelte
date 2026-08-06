@@ -18,6 +18,7 @@
   import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
   import { mostRecentMountKey } from '$lib/today/quick-session';
   import { localDateIso } from '$lib/tasks/filters';
+  import { tasksSettings } from '$lib/tasks/settings.svelte';
   import { tasksStore } from '$lib/tasks/store.svelte';
   import TasksTab from '$lib/components/tasks/TasksTab.svelte';
   import SchedulesTab from '$lib/components/tasks/SchedulesTab.svelte';
@@ -43,6 +44,13 @@
   const defaultMountKey = $derived(
     mostRecentMountKey(recentSessionsStore.groups, icmStore.groups[0]?.mount ?? null)
   );
+
+  // Width (redesign spec §Frame): the list caps at ~1100px — a task list is
+  // rows of chips, not prose, and the old 660px prose column truncated titles
+  // that had room to spare — while the board takes the full pane with just the
+  // standard gutter, because a column short of its cards is not a board.
+  // Schedules is a list too, so it takes the cap whatever the tasks mode is.
+  const capped = $derived(tab === 'schedules' || tasksSettings.filters.mode !== 'board');
 
   function selectTab(next: string) {
     const url = new URL(page.url);
@@ -106,11 +114,11 @@
 
 <AppFrame>
   {#snippet main()}
-    <MainColumn>
-      <div class="flex flex-col gap-5 px-7 pt-6 pb-7">
+    <MainColumn wide>
+      <div class={['flex flex-col gap-5 px-7 pt-6 pb-7', capped ? 'mx-auto w-full max-w-[1100px]' : '']}>
         <PageHeader
           title="Tasks"
-          subtitle="Your work for the day, and what runs on a schedule — you and the assistant share the same list. Everything lives in plain files in your project folders."
+          subtitle="You and the assistant share these lists — plain files in your project folders."
         >
           <div class="flex items-center gap-3">
             <SegmentedControl

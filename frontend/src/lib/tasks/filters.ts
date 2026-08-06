@@ -311,8 +311,17 @@ export function splitOverdue(rows: TaskEntry[], todayIso: string): { overdue: Ta
   return { overdue, rest: rows.filter((row) => overdueDays(row, todayIso) === null) };
 }
 
-/** The empty-Today "Next up" picker: open backlog (outside the today view), standard sort, capped. */
+/**
+ * The empty-Today "Next up" picker: open backlog (outside the today view),
+ * standard sort, capped.
+ *
+ * The today rows are excluded by OBJECT IDENTITY, never by `id`: `id` is
+ * nullable and duplicable (the leniency contract renders both), so an id-keyed
+ * set answered `has(null)` for every id-less backlog entry the moment one
+ * id-less row was flagged for today — and the whole id-less backlog vanished.
+ * `todayFilter` returns the very references it was handed, so identity is exact.
+ */
 export function nextUp(tasks: TaskEntry[], todayIso: string, limit: number): TaskEntry[] {
-  const today = new Set(todayFilter(tasks, todayIso).map((task) => task.id));
-  return sortTasks(tasks.filter((task) => !isCompleted(task) && !today.has(task.id))).slice(0, limit);
+  const today = new Set(todayFilter(tasks, todayIso));
+  return sortTasks(tasks.filter((task) => !isCompleted(task) && !today.has(task))).slice(0, limit);
 }
