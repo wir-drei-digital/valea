@@ -602,8 +602,8 @@ const cockpitTodayFields = [
       'notes',
       { prepared: ['title', 'summary', 'page'] },
       // tasks+schedules spec §UI surfaces → Cockpit: the tasks line REPLACED
-      // `openLoops`. Nullable (a malformed `tasks.json` degrades to null while
-      // the section stays ok) — see `Valea.Cockpit`.
+      // `openLoops`. Nullable (a malformed `tasks.json` degrades to null with
+      // the section's `todayJson` untouched) — see `Valea.Cockpit`.
       { tasks: ['dueToday', 'overdue', 'inProgress', { top: ['id', 'title', 'due', 'today', 'priority'] }] }
     ]
   },

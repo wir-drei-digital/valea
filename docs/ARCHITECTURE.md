@@ -1555,10 +1555,16 @@ per-account mail status (one entry per running Mail Engine —
 `account`/`configured`/`state`/`pending_ops`/`notices`, degrading to an
 empty list when no Engine is up rather than crashing the whole payload),
 the lenient calendar line (`events_today` + `next`, see Calendar above),
-and the 5 most recent sessions. Leniency contract: an ICM with no `today.json`
-at all gets no section (not an error); unreadable/malformed JSON gets a
-section with `"ok" => false` (the FE renders a calm "today.json couldn't be
-read" note, never an error state); wrong-typed fields degrade to `nil`/`[]`
+and the 5 most recent sessions. Leniency contract: EVERY enabled ICM gets a
+section, and `"today_json"` reports the briefing file's state — `"present"`,
+`"absent"` (the empty briefing fields; the FE renders nothing for it) or
+`"unreadable"` for malformed/unreadable JSON (the FE renders a calm
+"today.json couldn't be read" note, never an error state). The Today & Tasks
+redesign (2026-08-06) retired both the old "absent file → no section at all"
+rule and the `"ok"` boolean it was paired with: dropping the section also hid
+the tasks line below it, which reads `tasks.json` — a different file with its
+own fate — so that line is now computed for every section regardless of what
+`today.json` is doing. Wrong-typed fields degrade to `nil`/`[]`
 rather than failing the parse (mirrored on the frontend by
 `normalizeCockpitToday` in `frontend/src/lib/today/cockpit.ts`, whose own
 numeric fields degrade non-finite raw input to `0` the same way). `today.json`
@@ -1995,9 +2001,10 @@ takes the identical fire path incl. step 7, is allowed for `executable`
 
 `Valea.Cockpit.today/0` gained a per-ICM **tasks line** — `due_today`,
 `overdue`, `in_progress` and the top 3 (today-flag, then due, then priority)
-— computed for every section including one whose `today.json` is broken,
-because the two files are independent; a malformed `tasks.json` yields
-`"tasks" => nil` (the calm note) without touching the section's `"ok"`. It
+— computed for every section, including one whose `today.json` is broken or
+missing entirely, because the two files are independent; a malformed
+`tasks.json` yields `"tasks" => nil` (the calm note) without touching the
+section's `"today_json"` state. It
 replaced `open_loops`, which is gone from the section entirely. Top-level
 `"schedule_notices"` carries the last 24 h of `waiting`/`failed`/`registered`
 events **workspace-wide** — the store query has no mount filter; only the
