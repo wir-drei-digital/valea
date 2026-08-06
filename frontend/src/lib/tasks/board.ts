@@ -41,6 +41,32 @@ export function deriveColumns(tasks: TaskEntry[]): BoardColumn[] {
   }));
 }
 
+/**
+ * The entry a column derives from: the pending drop's status while a write is in
+ * flight, otherwise the file's — with `""` normalized to `open`.
+ *
+ * Why the normalization happens HERE, before `deriveColumns` (carried question
+ * from Task 2's review): `columnStatusOf` already reads `""` as Open, but
+ * `orderTaskRows` sorts every unknown status AFTER every known one, so inside
+ * the Open column a today-flagged `""` card sat below the calm `open` ones and
+ * the split read as a sorting glitch. In the LIST that partition is right — a
+ * row with a status Valea doesn't know carries it as a chip and belongs last —
+ * but on the board the column IS the status, so a card that reached Open has
+ * nothing left to explain. `orderTaskRows` itself is untouched (the list depends
+ * on it); the board hands it a COPY.
+ *
+ * That copy is also where the optimistic drop overlay lands, so column
+ * placement and drag feedback can never disagree about where a card is. It is a
+ * DISPLAY projection: `raw` deliberately keeps the file's own status, because
+ * nothing writes from a board card (`dropPatch` is given the row's real entry).
+ */
+export function boardTask(task: TaskEntry, pendingStatus?: string): TaskEntry {
+  const status = pendingStatus ?? (task.status === '' ? 'open' : task.status);
+  // Same reference when nothing changed — the board maps a derived entry back to
+  // its project by identity, and a needless copy would lose that.
+  return status === task.status ? task : { ...task, status };
+}
+
 /** The patch a drop writes — or null when the drop is a no-op or the card can't be addressed. */
 export function dropPatch(task: TaskEntry, columnStatus: string): { status: string } | null {
   if (task.id === null) return null;

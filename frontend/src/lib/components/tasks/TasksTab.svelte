@@ -53,6 +53,7 @@
     taskSession
   } from './task-shapes';
   import QuickAdd from './QuickAdd.svelte';
+  import TaskBoard from './TaskBoard.svelte';
   import TaskRow from './TaskRow.svelte';
   import TaskEditor from './TaskEditor.svelte';
 
@@ -226,9 +227,15 @@
     sections.filter((section) => section.open.length > 0 || section.done.length > 0 || section.notes.length > 0)
   );
 
-  /** Grouped by priority or due date, the ledger notes have no section to sit under — they get one quiet block. */
+  /**
+   * Grouped by priority or due date, the ledger notes have no section to sit
+   * under — they get one quiet block. The BOARD has no project sections at all
+   * (its columns are statuses), so every note is stray there whatever the
+   * persisted grouping says: an unreadable `tasks.json` must not go silent
+   * because the user switched to the board.
+   */
   const strayNotes = $derived(
-    filters.groupBy === 'project'
+    filters.mode === 'list' && filters.groupBy === 'project'
       ? []
       : icms
           .map((icm) => ({ mountKey: icm.mountKey, name: icm.icmName || icm.mountKey, notes: noteLines(icm) }))
@@ -502,23 +509,38 @@
         onAdd={(mountKey, title) => void quickAdd(mountKey, title)}
       />
 
-      {#if filters.mode === 'board'}
-        <!-- Task 9 replaces this line with the board itself; the toggle is
-             honest about where it goes rather than rendering dead furniture. -->
-        <p class="text-ink-meta text-[13px]">Board view is coming next.</p>
-      {:else}
-        {#if strayNotes.length > 0}
-          <!-- Grouped by priority or due date there are no project sections, so
-               the leniency notes say which ledger they are about. -->
-          <div class="flex flex-col gap-1 pt-2">
-            {#each strayNotes as entry (entry.mountKey)}
-              {#each entry.notes as note (note)}
-                <p class="text-ink-meta text-[12.5px]">{entry.name}: {note}</p>
-              {/each}
+      {#if strayNotes.length > 0}
+        <!-- With no project sections to sit under — grouped by priority or due
+             date, or on the board — the leniency notes say which ledger they
+             are about. -->
+        <div class="flex flex-col gap-1 pt-2">
+          {#each strayNotes as entry (entry.mountKey)}
+            {#each entry.notes as note (note)}
+              <p class="text-ink-meta text-[12.5px]">{entry.name}: {note}</p>
             {/each}
-          </div>
-        {/if}
+          {/each}
+        </div>
+      {/if}
 
+      {#if filters.mode === 'board'}
+        <!-- The same rows the list would show, dealt into status columns. The
+             board owns its own writes (drop → patch, Archive all → clearDone)
+             and reports through the tab's one error line. -->
+        <TaskBoard
+          rows={toRows(filteredTasks)}
+          {todayIso}
+          onOpen={openEditor}
+          onError={(message) => (rowError = message)}
+        />
+        {#if filteredTasks.length === 0 && debounced.trim() !== ''}
+          <!-- The spec's search contract holds on the board too: three columns
+               of zeros state the fact but never name the query that caused it.
+               The other empty cases need no line here — the columns are always
+               on screen saying there is nothing in them, and "Next up" is a
+               list affordance. -->
+          <p class="text-ink-body pt-2 text-[13px]">No tasks match "{debounced.trim()}".</p>
+        {/if}
+      {:else}
         <div class="flex flex-col gap-7 pt-2">
           {#each visibleSections as section (section.key)}
             {@const split = splitOverdue(section.open, todayIso)}

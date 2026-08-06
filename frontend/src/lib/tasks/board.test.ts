@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTask } from './filters';
-import { DEFAULT_BOARD_STATUSES, boardLabel, deriveColumns, dropPatch } from './board';
+import { DEFAULT_BOARD_STATUSES, boardLabel, boardTask, deriveColumns, dropPatch } from './board';
 
 const t = (raw: Record<string, unknown>) => normalizeTask({ id: 'x', title: 't', ...raw });
 
@@ -40,6 +40,41 @@ describe('deriveColumns', () => {
       t({ id: 'urgent', status: 'open', today: true })
     ]);
     expect(cols[0].tasks.map((x) => x.id)).toEqual(['urgent', 'later']);
+  });
+});
+
+describe('boardTask', () => {
+  it('normalizes an empty status to open, keeping every other field', () => {
+    const task = boardTask(t({ id: 'a', status: '', title: 'plan' }));
+    expect(task.status).toBe('open');
+    expect(task.title).toBe('plan');
+    // A display projection only — the file's own value stays in `raw`.
+    expect(task.raw.status).toBe('');
+  });
+
+  it('returns the SAME entry when nothing changes (the board maps cards back by identity)', () => {
+    const task = t({ id: 'a', status: 'in_progress' });
+    expect(boardTask(task)).toBe(task);
+    expect(boardTask(task, 'in_progress')).toBe(task);
+  });
+
+  it('a pending drop wins over the file, so the card sits in the column it was dropped on', () => {
+    const task = t({ id: 'a', status: 'open' });
+    expect(boardTask(task, 'waiting').status).toBe('waiting');
+    expect(task.status).toBe('open');
+  });
+
+  it('puts a today-flagged no-status card FIRST in Open — the list partition would sort it last', () => {
+    const flagged = t({ id: 'flagged', status: '', today: true });
+    const calm = t({ id: 'calm', status: 'open' });
+
+    const prepared = deriveColumns([flagged, calm].map((task) => boardTask(task)));
+    expect(prepared[0].tasks.map((x) => x.id)).toEqual(['flagged', 'calm']);
+
+    // Without the normalization: `orderTaskRows` files `""` with the unknown
+    // statuses, which on the board reads as a sorting glitch (the column is
+    // already the status, so there is no chip explaining the split).
+    expect(deriveColumns([flagged, calm])[0].tasks.map((x) => x.id)).toEqual(['calm', 'flagged']);
   });
 });
 
