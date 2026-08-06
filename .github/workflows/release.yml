@@ -190,21 +190,32 @@ jobs:
         run: cd backend && mix local.hex --force && mix local.rebar --force
 
       # Burrito's Linux ERTS is MUSL-linked (its beam.smp carries a
-      # /tmp/libc-musl-… interpreter), but rustler_precompiled picks NIF
-      # artifacts by the BUILD HOST's triple — gnu on this runner — so the
-      # sidecar shipped a glibc mdex NIF a musl BEAM can never load: every
-      # markdown parse on Linux raised UndefinedFunctionError and icm_page
-      # 500'd ("markdown files cannot be opened", found 2026-08-06 on the
-      # packaged 0.3.0). TARGET_ARCH/TARGET_ABI are rustler_precompiled's
-      # documented (Nerves-style) override; vendor defaults to "unknown",
-      # yielding x86_64-unknown-linux-musl — a variant mdex ships and
-      # checksums. Linux lane only: macOS/Windows BEAMs share one libc with
-      # their NIFs and must keep host detection.
-      - name: Point rustler_precompiled at the musl NIFs (Linux)
+      # /tmp/libc-musl-… interpreter), so the mdex Rust NIF must be a musl
+      # cdylib with NO dynamic libgcc dependency. Neither precompiled mdex
+      # variant satisfies that on end-user glibc distros: the gnu artifact
+      # can't load into a musl BEAM at all, and the musl artifact still
+      # NEEDs libgcc_s.so.1 — the loader then grabs the SYSTEM's gnu libgcc,
+      # which imports the glibc-private _dl_find_object and fails ("markdown
+      # files cannot be opened", found 2026-08-06 on the packaged 0.3.0;
+      # both variants disproven against real artifacts in a container).
+      # So this lane force-builds the NIF from the crate source mdex ships:
+      # musl target + static libgcc leaves libc.so as the only NEEDED,
+      # which resolves to Burrito's bundled musl. MDEX_NATIVE_BUILD=1 also
+      # flips mdex's optional rustler dep to required — it must be exported
+      # before deps.get runs (package-backend), hence GITHUB_ENV here.
+      # Linux lane only: macOS/Windows BEAMs share one libc with their
+      # host-built NIFs.
+      - name: Force a self-contained musl mdex NIF (Linux)
         if: matrix.burrito_target == 'linux_x64'
         run: |
-          echo "TARGET_ARCH=x86_64" >> "$GITHUB_ENV"
-          echo "TARGET_ABI=musl" >> "$GITHUB_ENV"
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          {
+            echo "MDEX_NATIVE_BUILD=1"
+            echo "CARGO_BUILD_TARGET=x86_64-unknown-linux-musl"
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+            echo "RUSTFLAGS=-C target-feature=-crt-static -C link-arg=-static-libgcc"
+          } >> "$GITHUB_ENV"
 
       - name: Build SPA + Burrito sidecar (+ spawn shim on Windows)
         env:
