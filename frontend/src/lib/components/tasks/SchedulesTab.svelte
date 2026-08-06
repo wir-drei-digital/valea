@@ -3,7 +3,10 @@
   // with per-row pause / edit / run-now / delete plus expandable run history,
   // and the tri-state Pause-all switch last, as a quiet footer — making a
   // schedule is the reason to open this tab; pausing every one of them is the
-  // rare thing, and it has nothing to say until there IS a schedule.
+  // rare thing, and the CONTROL has nothing to offer until there IS a schedule.
+  // Its STATE banner is the exception and stays at the top, ungated: a paused
+  // scheduler falsifies every "Active" chip below it, so it has to be read
+  // first (review round 2, Important).
   //
   // The honest limitation is stated on the page, not buried: nothing fires while
   // Valea is closed (spec §Decisions — "Limitation stated honestly in the UI").
@@ -45,21 +48,17 @@
    * something to say for itself (`schedulesLedgerNote` — an unreadable
    * `schedules.json` is NOT an empty one, and must keep saying so). An empty,
    * readable section collapses entirely; the composer above it is the answer.
+   *
+   * Empty here is also what puts the single "No schedules here yet." line on
+   * screen (the `{:else}` below), and that is the ONLY state in which the line
+   * is true: an unreadable ledger keeps its section, so "no schedules yet" is
+   * never said over a file Valea could not read — that would dress a read
+   * failure up as a fact about the user's files, the one thing the leniency
+   * contract must never do.
    */
   const listedIcms = $derived(
     icms.filter((icm) => icm.schedules.length > 0 || schedulesLedgerNote(icm.status) !== null)
   );
-
-  /**
-   * One line, once, instead of the same sentence under every project heading.
-   *
-   * It renders exactly when NO section does, which is also the only state in
-   * which it is true: an unreadable ledger keeps its section, so "no schedules
-   * yet" is never said over a file Valea could not read (that would dress a
-   * read failure up as a fact about the user's files — the one thing the
-   * leniency contract must never do).
-   */
-  const showsEmptyLine = $derived(listedIcms.length === 0);
 
   /** Nothing anywhere to pause means the kill switch has nothing to offer — the footer stays away. */
   const anySchedules = $derived(icms.some((icm) => icm.schedules.length > 0));
@@ -347,6 +346,22 @@
   />
 {:else}
   <div class="flex flex-col gap-4">
+    <!-- The banner stays at the TOP, above everything, even though its switch
+         now sits in the footer: it CORRECTS the rows below it. A row chips
+         "Active" off its own `paused` field alone, so with the scheduler
+         globally paused every one of them is wrong until this line is read —
+         it has to arrive before the list, not after it. It self-gates on
+         `banner !== null`, which is the ordinary case, so the tab still opens
+         on `New schedule` whenever there is nothing exceptional to say. -->
+    {#if killSwitch.banner}
+      <p
+        class={['text-[12.5px]', killSwitch.tone === 'warn' ? 'text-warn-ink' : 'text-ink-body']}
+        role={killSwitch.tone === 'warn' ? 'alert' : 'status'}
+      >
+        {killSwitch.banner}
+      </p>
+    {/if}
+
     <div>
       <Button
         type="button"
@@ -516,10 +531,6 @@
       </div>
     {/if}
 
-    {#if showsEmptyLine}
-      <p class="text-ink-meta text-[12.5px]">No schedules here yet.</p>
-    {/if}
-
     {#if listedIcms.length > 0}
       <div class="flex flex-col gap-7">
         {#each listedIcms as icm (icm.mountKey)}
@@ -561,13 +572,16 @@
           </section>
         {/each}
       </div>
+    {:else}
+      <!-- Once, here, instead of the same sentence under every project heading. -->
+      <p class="text-ink-meta text-[12.5px]">No schedules here yet.</p>
     {/if}
 
     {#if anySchedules}
       <!-- Unboxed (§11: never boxed section headers) — the kill switch is a
-           quiet footer row, separated by the same hairline the lists use. Its
-           banner and error ride along with it: they announce what the switch
-           did, and an announcement with no switch in sight is a headless one. -->
+           quiet footer row, separated by the same hairline the lists use.
+           `pauseAllError` rides along because it is this button's own reply to
+           this button's own click; the state banner does not (see the top). -->
       <footer class="border-paper-hairline mt-6 border-t pt-4">
         <p class="text-overline">Schedules pause</p>
         <div class="mt-1.5 flex flex-wrap items-center justify-between gap-3">
@@ -586,15 +600,6 @@
             {killSwitch.engaged ? 'Resume all' : 'Pause all'}
           </Button>
         </div>
-
-        {#if killSwitch.banner}
-          <p
-            class={['mt-2 text-[12.5px]', killSwitch.tone === 'warn' ? 'text-warn-ink' : 'text-ink-body']}
-            role={killSwitch.tone === 'warn' ? 'alert' : 'status'}
-          >
-            {killSwitch.banner}
-          </p>
-        {/if}
 
         {#if pauseAllError}
           <p class="text-warn-ink mt-2 text-[12.5px]" role="alert">{pauseAllError}</p>
