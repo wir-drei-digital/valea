@@ -18,7 +18,12 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { TasksSettingsStore } from './settings.svelte';
-import { TASKS_FILTERS_KEY, TODAY_ASSIGNEE_KEY } from './settings';
+import {
+  TASKS_FILTERS_KEY,
+  TODAY_ASSIGNEE_KEY,
+  decodeTasksFilterSettings,
+  type TasksViewMode
+} from './settings';
 
 /**
  * Fresh module per test: the SINGLETON reads storage at construction, and that
@@ -52,11 +57,17 @@ function stubStorage(seed: Record<string, string> = {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('tasksSettings', () => {
-  it('seeds from storage, field-wise', async () => {
-    stubStorage({ [TASKS_FILTERS_KEY]: JSON.stringify({ mode: 'board', groupBy: 'nope' }) });
+  it('seeds BOTH keys from storage, field-wise', async () => {
+    stubStorage({
+      [TASKS_FILTERS_KEY]: JSON.stringify({ mode: 'board', groupBy: 'nope' }),
+      [TODAY_ASSIGNEE_KEY]: JSON.stringify('user')
+    });
     const s = await freshStore();
     expect(s.filters.mode).toBe('board');
     expect(s.filters.groupBy).toBe('project');
+    // Seeded too, or only this key's WRITE path would be covered and a
+    // constructor reading the wrong key would pass every other test here.
+    expect(s.todayAssignee, 'the Today toggle must survive a reload').toBe('user');
   });
 
   it('setFilters merges a patch and persists the WHOLE record', async () => {
@@ -73,6 +84,36 @@ describe('tasksSettings', () => {
     s.setTodayAssignee('user');
     expect(store.get(TODAY_ASSIGNEE_KEY)).toBe(JSON.stringify('user'));
     expect(s.todayAssignee).toBe('user');
+  });
+
+  /**
+   * Memory must not hold what a reload would reject — the invariant
+   * `theme.svelte.ts` states as "store and storage disagreeing across a
+   * reload", here with an extra edge: `Partial<TasksFilterSettings>` admits an
+   * explicit `undefined`, and `JSON.stringify` DROPS undefined-valued keys, so
+   * an unsanitised merge leaves memory holding `undefined` while storage holds
+   * no key at all. Both then read back as the codec's fallback — a value
+   * neither side ever agreed to.
+   */
+  it('sanitises a filter patch on the way IN', async () => {
+    const store = stubStorage();
+    const s = await freshStore();
+
+    // Task 7 clears a facet and casts an enum off a control's string value.
+    s.setFilters({ assignee: undefined, mode: 'kanban' as TasksViewMode });
+
+    expect(s.filters.assignee, "undefined is not a filter value; null is 'Everyone'").toBeNull();
+    expect(s.filters.mode, 'an out-of-vocabulary value must not survive in memory').toBe('list');
+    const reloaded = decodeTasksFilterSettings(JSON.parse(store.get(TASKS_FILTERS_KEY)!));
+    expect(reloaded, 'what a reload yields must equal what memory holds').toEqual({ ...s.filters });
+  });
+
+  it('sanitises the Today assignee on the way IN', async () => {
+    const store = stubStorage();
+    const s = await freshStore();
+    s.setTodayAssignee('agent' as 'user' | null);
+    expect(s.todayAssignee, 'only the literal user narrows to Mine').toBeNull();
+    expect(store.get(TODAY_ASSIGNEE_KEY)).toBe(JSON.stringify(null));
   });
 
   it('a broken localStorage still yields a working in-memory store', async () => {
@@ -93,12 +134,12 @@ describe('tasksSettings', () => {
  * settling on an ===-equal second write.
  *
  * These build the store with `new TasksSettingsStore()`, NOT `freshStore()` —
- * see the note there. Falsification, confirmed by deleting the `untrack` from
- * `setFilters` and re-running: the first pin dies inside `flushSync()` with
- * `effect_update_depth_exceeded`. The `setTodayAssignee` pin is the one that
- * cannot fail today — that setter reads no state, so it has nothing to leak;
- * it stands as a constraint on any future write path there (a toggle helper
- * that reads `this.todayAssignee` would need the `untrack` its sibling has).
+ * see the note there. Both pins are falsified, each by deleting the `untrack`
+ * from its own setter and re-running: `setFilters` dies inside `flushSync()`
+ * with `effect_update_depth_exceeded`, and `setTodayAssignee` reports 2 runs
+ * against 1 — that setter persists `this.todayAssignee` rather than `value`,
+ * so it too reads what it just wrote, and settles at two runs only because its
+ * second write is ===-equal.
  */
 describe('TasksSettingsStore — the write paths must not subscribe their caller', () => {
   it('does not subscribe an effect that calls setFilters to what it wrote', () => {

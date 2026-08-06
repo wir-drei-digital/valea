@@ -26,17 +26,30 @@ export class TasksSettingsStore {
   filters = $state<TasksFilterSettings>(decodeTasksFilterSettings(readJson(TASKS_FILTERS_KEY)));
   todayAssignee = $state<'user' | null>(decodeTodayAssignee(readJson(TODAY_ASSIGNEE_KEY)));
 
+  /**
+   * Decoded on the way IN as well as out, the rule `theme.svelte.ts` states as
+   * "memory must not hold what a reload would reject". `Partial` admits an
+   * explicit `undefined` (clearing a facet off a UI control), and the UI also
+   * hands enums over an unchecked cast; the codec is total and idempotent on
+   * valid values, so honest callers keep exactly the merge semantics they had.
+   *
+   * The undefined case is the sharp one: `JSON.stringify` DROPS an
+   * undefined-valued key, so an unsanitised merge would leave memory holding
+   * `undefined` and storage holding no key — two states, neither of which is a
+   * value the store ever agreed to.
+   */
   setFilters(patch: Partial<TasksFilterSettings>): void {
     untrack(() => {
-      this.filters = { ...this.filters, ...patch };
+      this.filters = decodeTasksFilterSettings({ ...this.filters, ...patch });
       writeJson(TASKS_FILTERS_KEY, this.filters);
     });
   }
 
+  /** Same rule as `setFilters`, and it persists what MEMORY holds, not `value` — one decode, one truth. */
   setTodayAssignee(value: 'user' | null): void {
     untrack(() => {
-      this.todayAssignee = value;
-      writeJson(TODAY_ASSIGNEE_KEY, value);
+      this.todayAssignee = decodeTodayAssignee(value);
+      writeJson(TODAY_ASSIGNEE_KEY, this.todayAssignee);
     });
   }
 }
