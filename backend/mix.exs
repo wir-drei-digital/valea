@@ -78,6 +78,13 @@ defmodule Valea.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:mdex, "~> 0.7"},
+      # Locked ONLY so the release workflow's Linux lane can force-build the
+      # mdex NIF from source (MDEX_NATIVE_BUILD=1 — see docs/RELEASING.md's
+      # Linux note): rustler is an optional dep of mdex_native, and optional
+      # deps of dependencies never enter mix.lock, so CI's `deps.get --only
+      # prod` couldn't fetch it. Optional + runtime: false — nothing loads or
+      # compiles NIFs in dev/test.
+      {:rustler, "~> 0.36", optional: true, runtime: false},
       {:bandit, "~> 1.5"},
       {:dotenvy, "~> 1.0"},
       {:corsica, "~> 2.1"},
