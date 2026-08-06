@@ -215,6 +215,20 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
           rustup target add x86_64-unknown-linux-musl
+          # rustc's musl target emits a hard `-lgcc_s` for the unwinder once
+          # crt-static is off, and musl-gcc's sysroot has no libgcc_s.so.1
+          # (run 31128730852: "cannot find libgcc_s.so.1"). This GNU ld
+          # linker-script shim resolves -lgcc_s to the STATIC libgcc
+          # archives instead, so the finished cdylib carries no dynamic
+          # libgcc dependency — the whole point of the musl build. GNU ld
+          # applies -L search paths to every -l regardless of order, so the
+          # shim dir wins over the (absent) sysroot copy.
+          shim="$RUNNER_TEMP/libgcc-shim"
+          mkdir -p "$shim"
+          printf 'GROUP ( %s %s )\n' \
+            "$(gcc -print-file-name=libgcc_eh.a)" \
+            "$(gcc -print-file-name=libgcc.a)" > "$shim/libgcc_s.so"
+          echo "LIBGCC_SHIM_DIR=$shim" >> "$GITHUB_ENV"
 
       # Step-scoped on purpose: these env vars must reach ONLY the sidecar
       # build (mix deps.get + the NIF's cargo). Exported job-wide via
@@ -228,7 +242,7 @@ jobs:
           MDEX_NATIVE_BUILD: "1"
           CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          RUSTFLAGS: -C target-feature=-crt-static -C link-arg=-static-libgcc
+          RUSTFLAGS: -C target-feature=-crt-static -L native=${{ env.LIBGCC_SHIM_DIR }}
         # deps.clean first: a restored cache carries mdex_native already
         # compiled (with the unusable precompiled .so in its priv/native),
         # and mix would happily skip the rebuild this step exists for.
