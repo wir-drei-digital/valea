@@ -127,9 +127,11 @@ Three quiet cards (`paper-card` bg), each rendered only with content:
 1. **New mail** — newest unread rows across configured accounts (cap 4:
    sender-or-subject line, deep link to `/mail?account=…&message=…`), then one
    footer line per configured account: `<account> · <n> unread → open Mail`.
-2. **Schedules** — `registered` notices from the last 24h, last run line when
-   the notices carry one, and `next: <title>, <relative time>` from the
-   schedules list (soonest upcoming across ICMs). Links to the Schedules tab.
+2. **Schedules** — `registered` notices from the last 24h, linking to the
+   Schedules tab. (Planning amendment: the mocked `next: <title>, <time>`
+   line is cut — no next-fire time exists on the frontend wire, and adding
+   a scheduler API for a rail garnish fails YAGNI. Revisit if the tab ever
+   grows next-run display.)
 3. **Recent sessions** — up to 5, as today (live dot, timestamp).
 
 ### Empty page
