@@ -7,7 +7,8 @@ import {
   hasBriefing,
   nextEventTime,
   railMailRows,
-  todayTailSegments
+  todayTailSegments,
+  unreadableLedgerNotes
 } from './today-view';
 
 function message(over: Partial<MailUnreadMessage> & { msgId: string }): MailUnreadMessage {
@@ -149,6 +150,43 @@ describe('hasBriefing', () => {
   it('is false for a briefing file that says nothing — an empty string included', () => {
     expect(hasBriefing(section({}))).toBe(false);
     expect(hasBriefing(section({ notes: '' }))).toBe(false);
+  });
+});
+
+describe('unreadableLedgerNotes', () => {
+  const ledger = (over: { mountKey: string; icmName?: string; status: 'ok' | 'absent' | 'unreadable' }) => ({
+    icmName: '',
+    ...over
+  });
+
+  it('says nothing about a readable or absent ledger', () => {
+    expect(
+      unreadableLedgerNotes([
+        ledger({ mountKey: 'work', icmName: 'Work', status: 'ok' }),
+        ledger({ mountKey: 'home', icmName: 'Home', status: 'absent' })
+      ])
+    ).toEqual([]);
+  });
+
+  it('names the project and reuses the Tasks list grammar', () => {
+    expect(
+      unreadableLedgerNotes([
+        ledger({ mountKey: 'work', icmName: 'Work', status: 'unreadable' }),
+        ledger({ mountKey: 'home', icmName: 'Home', status: 'ok' })
+      ])
+    ).toEqual(['Work: tasks.json is unreadable — fix by hand or ask the agent']);
+  });
+
+  it('falls back to the mount key when the manifest names nothing, and keeps ledger order', () => {
+    expect(
+      unreadableLedgerNotes([
+        ledger({ mountKey: 'a-mount', status: 'unreadable' }),
+        ledger({ mountKey: 'b-mount', icmName: 'B', status: 'unreadable' })
+      ])
+    ).toEqual([
+      'a-mount: tasks.json is unreadable — fix by hand or ask the agent',
+      'B: tasks.json is unreadable — fix by hand or ask the agent'
+    ]);
   });
 });
 

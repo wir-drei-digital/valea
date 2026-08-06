@@ -13,11 +13,12 @@
   // `TasksTab`/`ChatView` precedent: one owner of state that outlives the page),
   // and writes through `tasksStore`.
   //
-  // VISIBILITY IS THE ROUTE'S: it mounts this only when some ledger still holds
-  // an open task, so an empty `merged` here means "nothing for today", never
-  // "nothing at all" — the whole-page welcome card speaks for the latter. That
-  // is why the header and the toggle still render with no rows: the way back
-  // from a toggle that hid everything has to stay on screen.
+  // VISIBILITY IS THE ROUTE'S: it mounts this when some ledger still holds an
+  // open task OR one of them is unreadable, so an empty `merged` here means
+  // "nothing for today", never "nothing at all" — the whole-page welcome card
+  // speaks for the latter. That is why the header and the toggle still render
+  // with no rows: the way back from a toggle that hid everything has to stay on
+  // screen, and an unreadable ledger has a note to show even with no rows at all.
   //
   // The row handlers below are COPIES of TasksTab's, not an extraction: they are
   // three to six lines each, they share the same store, and a "task row actions"
@@ -39,7 +40,7 @@
     type TaskEntry
   } from '$lib/tasks/filters';
   import { sessionLiveById } from '$lib/tasks/handoff';
-  import { todayTailSegments } from '$lib/today/today-view';
+  import { todayTailSegments, unreadableLedgerNotes } from '$lib/today/today-view';
   import {
     repairFields,
     rowKeys,
@@ -72,6 +73,14 @@
 
   const icms = $derived(tasksStore.taskIcms);
   const mine = $derived(tasksSettings.todayAssignee === 'user');
+
+  /**
+   * Ledgers Valea could not parse. They contribute no rows, so without this the
+   * section would be silent about tasks that exist in a broken file — and the
+   * route's whole-page empty state would go further and call the day empty. The
+   * route reads the same helper for that guard; one predicate, two surfaces.
+   */
+  const ledgerNotes = $derived(unreadableLedgerNotes(icms));
 
   /** Every merged entry → its project. The one place a bare `TaskEntry` is resolved back to a mount. */
   const ownerOf = $derived(new Map(merged.map(({ icm, task }) => [task, icm])));
@@ -238,6 +247,14 @@
   {#if rowError}
     <p class="text-warn-ink mt-1.5 text-[12.5px]" role="alert">{rowError}</p>
   {/if}
+
+  <!-- Calm, per the leniency contract: `tasks.json` is the user's file, and one
+       Valea can't parse is a thing to fix, not an app error. Project-named
+       because Today merges the ledgers — "tasks.json is unreadable" alone would
+       not say WHICH. Rendered whether or not there are rows. -->
+  {#each ledgerNotes as note (note)}
+    <p class="text-ink-meta mt-1.5 text-[12.5px]">{note}</p>
+  {/each}
 
   {#if split.overdue.length > 0}
     <!-- Overdue first — the one thing that reorders a list on its own, under

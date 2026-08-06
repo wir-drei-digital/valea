@@ -14,7 +14,13 @@
   import { normalizeCockpitToday, scheduleNoticeHref, scheduleNoticeText, type CockpitToday } from '$lib/today/cockpit';
   import { dateOverline, daySummarySegments, greetingForHour } from '$lib/today/greeting';
   import { mostRecentMountKey } from '$lib/today/quick-session';
-  import { formatTimestamp, hasBriefing, nextEventTime, railMailRows } from '$lib/today/today-view';
+  import {
+    formatTimestamp,
+    hasBriefing,
+    nextEventTime,
+    railMailRows,
+    unreadableLedgerNotes
+  } from '$lib/today/today-view';
   import { minutesOfDay, type CalendarEvent } from '$lib/components/calendar/calendar-shapes';
   import {
     isCompleted,
@@ -226,6 +232,16 @@
     tasksStore.taskIcms.reduce((sum, icm) => sum + icm.tasks.filter((task) => !isCompleted(task)).length, 0)
   );
 
+  /**
+   * The OTHER thing the tasks section can have to say: a ledger Valea could not
+   * parse. It yields no rows, so `openTaskCount` cannot see it — and a page that
+   * counted only rows would offer the welcome card ("add a task and it shows up
+   * here") to a user whose tasks are sitting in a broken file. The section keeps
+   * itself visible for these notes, and `dayIsEmpty` below stands down for them.
+   * `TodayTasks` renders the same list through the same helper.
+   */
+  const ledgerNotes = $derived(unreadableLedgerNotes(tasksStore.taskIcms));
+
   // -- agenda -----------------------------------------------------------------
 
   /** The zone the agenda's day range is interpreted in — the calendar route's own resolution. */
@@ -280,7 +296,9 @@
    * ledgers, and it matters twice: `list_tasks` resolves LATER than the cockpit
    * RPC (so the card would flash on every cold load), and a list that never
    * arrives at all must not be rendered as a workspace with nothing in it —
-   * the one thing the leniency contract forbids outright.
+   * the one thing the leniency contract forbids outright. `ledgerNotes` is that
+   * same rule one level down: a ledger that arrived UNREADABLE is a workspace
+   * whose contents we cannot see, not an empty one.
    */
   const dayIsEmpty = $derived.by(
     () =>
@@ -288,6 +306,7 @@
       attentionCount === 0 &&
       briefingCount === 0 &&
       openTaskCount === 0 &&
+      ledgerNotes.length === 0 &&
       ((today?.calendar ?? null) === null || (agendaSettled && agendaEvents.length === 0)) &&
       configuredMail.length === 0 &&
       registeredNotices.length === 0 &&
@@ -526,11 +545,13 @@
                        set only when the list has NEVER loaded, so a failed
                        background re-list keeps the rows it already has. -->
                   <p class="text-ink-meta text-[13px]">Couldn't read your tasks.</p>
-                {:else if openTaskCount > 0}
+                {:else if openTaskCount > 0 || ledgerNotes.length > 0}
                   <!-- Gated on open work ANYWHERE, not on today's rows: the
                        section keeps its toggle and its tail line on screen when
                        today itself is empty, which is the way back from a
-                       toggle that just hid everything. -->
+                       toggle that just hid everything. An unreadable ledger
+                       counts as something to say on its own — it has a calm note
+                       and no rows to carry it. -->
                   <TodayTasks {merged} {todayIso} />
                 {/if}
 

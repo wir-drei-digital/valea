@@ -11,6 +11,7 @@
  * keep.
  */
 import { timeLabel, type CalendarEvent } from '../components/calendar/calendar-shapes';
+import { ledgerNote, type LedgerStatusLike } from '../components/tasks/task-shapes';
 import type { MailAccountSummary, TodaySection } from './cockpit';
 
 /**
@@ -41,6 +42,30 @@ export function formatTimestamp(iso: string): string {
  */
 export function hasBriefing(section: TodaySection): boolean {
   return Boolean(section.notes) || section.prepared.length > 0;
+}
+
+/**
+ * The calm note for every task ledger Valea could not parse, project-named.
+ *
+ * Today merges the ledgers into one list, so an unreadable `tasks.json`
+ * contributes NO rows — and a page that then said nothing about it would be
+ * claiming a quiet day over a broken file, which the leniency contract forbids
+ * outright (an empty ledger is a fact about the user's files; an unreadable one
+ * is not). The wording is `TasksTab`'s, through the same `ledgerNote`, with the
+ * project prefix its own stray-notes block uses — the two surfaces must not
+ * describe one file two ways.
+ *
+ * It is the whole answer to "does the tasks section have something to say":
+ * the caller renders these notes, keeps the section alive for them, and drops
+ * the whole-page empty state while any of them stands.
+ */
+export function unreadableLedgerNotes(
+  icms: { mountKey: string; icmName: string; status: LedgerStatusLike }[]
+): string[] {
+  return icms.flatMap((icm) => {
+    const note = ledgerNote(icm.status);
+    return note === null ? [] : [`${icm.icmName || icm.mountKey}: tasks.json is ${note}`];
+  });
 }
 
 /** One part of the tasks section's tail line; `emphasis` is the link, everything else is quiet meta. */
