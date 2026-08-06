@@ -28,10 +28,13 @@ export function schedulesLedgerNote(status: 'ok' | 'absent' | 'unreadable'): str
   return status === 'unreadable' ? `schedules.json is ${MALFORMED_SCHEDULES_NOTE}. Nothing fires from it.` : null;
 }
 
-/** Copy for the header Pause-all control. `banner` is `null` when there is nothing to announce. */
+/**
+ * Copy for the Pause-all control. `banner` is `null` when there is nothing to
+ * announce. No `label` here on purpose: the button says `Pause all` /
+ * `Resume all` off `engaged`, which is the shorter truth, and a second label
+ * living in this module would be a string nothing reads.
+ */
 export type KillSwitchCopy = {
-  /** The switch's own label. */
-  label: string;
   /** `true` when the switch reads as engaged (both `on` and `unreadable` — the latter fails closed). */
   engaged: boolean;
   /** Whether the user can toggle it — an unreadable config must be fixed by hand first. */
@@ -44,7 +47,6 @@ export function killSwitchCopy(state: SchedulerPause): KillSwitchCopy {
   switch (state) {
     case 'on':
       return {
-        label: 'Pause all schedules',
         engaged: true,
         toggleable: true,
         banner: 'All schedules are paused. Nothing fires until you resume — slots that pass meanwhile are skipped for good.',
@@ -52,7 +54,6 @@ export function killSwitchCopy(state: SchedulerPause): KillSwitchCopy {
       };
     case 'unreadable':
       return {
-        label: 'Pause all schedules',
         engaged: true,
         toggleable: false,
         // NOT "you paused this": nobody knows what the user asked for, so the
@@ -62,7 +63,7 @@ export function killSwitchCopy(state: SchedulerPause): KillSwitchCopy {
         tone: 'warn'
       };
     default:
-      return { label: 'Pause all schedules', engaged: false, toggleable: true, banner: null, tone: 'none' };
+      return { engaged: false, toggleable: true, banner: null, tone: 'none' };
   }
 }
 

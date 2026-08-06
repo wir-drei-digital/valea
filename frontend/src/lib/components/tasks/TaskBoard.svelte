@@ -79,6 +79,8 @@
 
   const columns = $derived.by(() => {
     const byTask = new Map(cards.map((card) => [card.task, card]));
+    // `tasks` rides along deliberately: `BoardColumn` types its prop as the
+    // whole `BoardColumn` and renders `tasks.length` as the column's count.
     return deriveColumns(cards.map((card) => card.task)).map((column) => ({
       ...column,
       cards: column.tasks.flatMap((task) => {

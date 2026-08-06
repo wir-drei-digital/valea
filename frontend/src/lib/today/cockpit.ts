@@ -283,35 +283,6 @@ export function normalizeCockpitToday(raw: Record<string, unknown>): CockpitToda
 }
 
 /**
- * "work: idle · 2 pending" — one configured account's summary line for the
- * Today header (`routes/+page.svelte` renders one per configured account).
- */
-export function mailSummaryLine(mail: MailAccountSummary): string {
-  return `${mail.account}: ${mail.state} · ${mail.pendingOps} pending`;
-}
-
-/** Spec F's Today-page calendar line: "3 events today · next: 09:30 Coffee with Priya" (no next → count only). */
-export function calendarSummaryLine(calendar: CalendarSummary): string {
-  const count = `${calendar.eventsToday} ${calendar.eventsToday === 1 ? 'event' : 'events'} today`;
-  return calendar.next ? `${count} · next: ${calendar.next.time} ${calendar.next.title}` : count;
-}
-
-/**
- * The tasks line's counts as one sentence — "2 due today · 1 overdue · 1 in
- * progress", dropping the zeroes so a quiet ledger reads quietly. `null` when
- * all three are zero AND there is nothing in `top`: the section then has nothing
- * to say about tasks, and a "0 due today" line would be noise.
- */
-export function tasksSummaryLine(tasks: TodayTasks): string | null {
-  const parts: string[] = [];
-  if (tasks.dueToday > 0) parts.push(`${tasks.dueToday} due today`);
-  if (tasks.overdue > 0) parts.push(`${tasks.overdue} overdue`);
-  if (tasks.inProgress > 0) parts.push(`${tasks.inProgress} in progress`);
-  if (parts.length > 0) return parts.join(' · ');
-  return tasks.top.length > 0 ? `${tasks.top.length} open` : null;
-}
-
-/**
  * One notice's sentence. `waiting` is a run parked on a permission ask,
  * `failed` is a run that did not complete, `registered` is a schedule this
  * workspace saw for the first time in the last 24 h.

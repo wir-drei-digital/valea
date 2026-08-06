@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mailSummaryLine, normalizeCockpitToday } from './cockpit';
+import { normalizeCockpitToday } from './cockpit';
 
 // Mirrors the Spec-D cockpit payload shape from `backend/lib/valea/cockpit.ex`
 // — an unconstrained-looking but fully typed :map, so keys arrive snake_case
@@ -250,39 +250,7 @@ describe('section todayJson state', () => {
   });
 });
 
-describe('mailSummaryLine', () => {
-  it('formats one account as "slug: state · N pending"', () => {
-    expect(
-      mailSummaryLine({
-        account: 'work',
-        configured: true,
-        state: 'idle',
-        pendingOps: 2,
-        notices: [],
-        unread: [],
-        unreadCount: 0
-      })
-    ).toBe('work: idle · 2 pending');
-  });
-
-  it('formats zero pending plainly', () => {
-    expect(
-      mailSummaryLine({
-        account: 'zoe',
-        configured: true,
-        state: 'syncing',
-        pendingOps: 0,
-        notices: [],
-        unread: [],
-        unreadCount: 0
-      })
-    ).toBe('zoe: syncing · 0 pending');
-  });
-});
-
-// -- Spec F calendar line -----------------------------------------------------
-
-import { calendarSummaryLine } from './cockpit';
+// -- Spec F calendar summary --------------------------------------------------
 
 describe('calendar summary (Spec F)', () => {
   it('normalizes the camelCased typed shape (and a snake fallback) with a null next', () => {
@@ -295,37 +263,11 @@ describe('calendar summary (Spec F)', () => {
     expect(normalizeCockpitToday({}).calendar).toBeNull();
     expect(normalizeCockpitToday({ calendar: null }).calendar).toBeNull();
   });
-
-  it('renders the pinned line shape', () => {
-    expect(calendarSummaryLine({ eventsToday: 3, next: { time: '09:30', title: 'Coffee with Priya' } })).toBe(
-      '3 events today · next: 09:30 Coffee with Priya'
-    );
-    expect(calendarSummaryLine({ eventsToday: 1, next: null })).toBe('1 event today');
-  });
 });
 
-// -- tasks+schedules: the cockpit tasks line + schedule notices ---------------
+// -- schedule notices ---------------------------------------------------------
 
-import { scheduleNoticeHref, scheduleNoticeText, tasksSummaryLine } from './cockpit';
-
-describe('tasksSummaryLine', () => {
-  it('joins only the non-zero counts, in the spec’s order', () => {
-    expect(tasksSummaryLine({ dueToday: 2, overdue: 1, inProgress: 3, top: [] })).toBe(
-      '2 due today · 1 overdue · 3 in progress'
-    );
-    expect(tasksSummaryLine({ dueToday: 0, overdue: 1, inProgress: 0, top: [] })).toBe('1 overdue');
-    expect(tasksSummaryLine({ dueToday: 4, overdue: 0, inProgress: 0, top: [] })).toBe('4 due today');
-  });
-
-  it('falls back to an open count when nothing is due, overdue, or in flight', () => {
-    const top = [{ id: 't-1', title: 'Someday', due: null, today: false, priority: null }];
-    expect(tasksSummaryLine({ dueToday: 0, overdue: 0, inProgress: 0, top })).toBe('1 open');
-  });
-
-  it('is null for a genuinely quiet ledger — a "0 due today" line would be noise', () => {
-    expect(tasksSummaryLine({ dueToday: 0, overdue: 0, inProgress: 0, top: [] })).toBeNull();
-  });
-});
+import { scheduleNoticeHref, scheduleNoticeText } from './cockpit';
 
 describe('schedule notices', () => {
   it('normalizes the camelCased array-item keys, and the snake fallback', () => {

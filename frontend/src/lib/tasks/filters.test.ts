@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   addDaysIso,
   applyTaskFilters,
-  countByStatus,
   dueBucket,
   dueDate,
   groupByDue,
@@ -288,15 +287,6 @@ describe('applyTaskFilters', () => {
     expect(applyTaskFilters(rows, { view: 'all', assignee: null, status: 'done' }, TODAY).map((t) => t.id)).toEqual([
       'finished'
     ]);
-  });
-});
-
-describe('countByStatus', () => {
-  it('counts exact status matches, unknown statuses included', () => {
-    const rows = [task({ status: 'open' }), task({ status: 'open' }), task({ status: 'blocked' })];
-    expect(countByStatus(rows, 'open')).toBe(2);
-    expect(countByStatus(rows, 'blocked')).toBe(1);
-    expect(countByStatus(rows, 'done')).toBe(0);
   });
 });
 

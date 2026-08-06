@@ -210,14 +210,6 @@ export function applyTaskFilters(tasks: TaskEntry[], filters: TaskFilters, today
   return orderTaskRows(narrowed);
 }
 
-/**
- * A status chip's own count, computed against the view the chips narrow — so
- * "· 3" on the chip always matches the rows a click produces.
- */
-export function countByStatus(tasks: TaskEntry[], status: string): number {
-  return tasks.filter((task) => task.status === status).length;
-}
-
 // -- redesign additions (spec 2026-08-06) -------------------------------------
 
 /** `iso + days` in pure string-date math (UTC-anchored, so no DST wobble). */
