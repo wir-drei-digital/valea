@@ -168,7 +168,12 @@ jobs:
           path: |
             backend/deps
             backend/_build
-          key: mix-prod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.tool-versions', 'backend/mix.lock') }}
+          # The workflow file joins the hash: the Linux NIF build strategy
+          # lives in step env here, which mix.lock knows nothing about — a
+          # cached _build from before an env change ships stale NIFs
+          # (run 31127776378 restored the precompiled musl mdex .so right
+          # past MDEX_NATIVE_BUILD=1).
+          key: mix-prod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.tool-versions', 'backend/mix.lock', '.github/workflows/release.yml') }}
 
       - name: Cache Burrito's pinned zig
         uses: actions/cache@v4
@@ -224,7 +229,13 @@ jobs:
           CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           RUSTFLAGS: -C target-feature=-crt-static -C link-arg=-static-libgcc
-        run: just package-backend
+        # deps.clean first: a restored cache carries mdex_native already
+        # compiled (with the unusable precompiled .so in its priv/native),
+        # and mix would happily skip the rebuild this step exists for.
+        run: |
+          (cd backend && mix deps.clean mdex_native --build || true)
+          rm -rf backend/deps/mdex_native/priv/native
+          just package-backend
 
       - name: Build SPA + Burrito sidecar (+ spawn shim on Windows)
         if: matrix.burrito_target != 'linux_x64'
