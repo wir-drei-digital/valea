@@ -25,7 +25,7 @@
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import { tasksStore, type TaskIcm } from '$lib/tasks/store.svelte';
   import { tasksSettings } from '$lib/tasks/settings.svelte';
-  import type { TasksGroupBy } from '$lib/tasks/settings';
+  import type { TasksFilterSettings, TasksGroupBy } from '$lib/tasks/settings';
   import {
     applyTaskFilters,
     groupByDue,
@@ -241,6 +241,17 @@
     return owned.map((row, index) => ({ key: keys[index], ...row }));
   }
 
+  /**
+   * Every control change goes through here, so an ARMED "Clear done"
+   * confirmation cannot survive one: a view or grouping switch takes the card
+   * off screen without cancelling it, and the arming would come back later
+   * attached to a sweep nobody remembers asking for.
+   */
+  function changeFilters(patch: Partial<TasksFilterSettings>): void {
+    confirmingClear = null;
+    tasksSettings.setFilters(patch);
+  }
+
   function toggleShowDone(key: string): void {
     const next = new Set(showDone);
     if (!next.delete(key)) next.add(key);
@@ -369,7 +380,7 @@
           { value: 'list', label: 'List' },
           { value: 'board', label: 'Board' }
         ]}
-        onChange={(mode) => tasksSettings.setFilters({ mode: mode === 'board' ? 'board' : 'list' })}
+        onChange={(mode) => changeFilters({ mode: mode === 'board' ? 'board' : 'list' })}
       />
       <SegmentedControl
         label="Which tasks"
@@ -378,7 +389,7 @@
           { value: 'today', label: 'Today', count: todayCount },
           { value: 'all', label: 'All', count: allCount }
         ]}
-        onChange={(view) => tasksSettings.setFilters({ view: view === 'all' ? 'all' : 'today' })}
+        onChange={(view) => changeFilters({ view: view === 'all' ? 'all' : 'today' })}
       />
       <SegmentedControl
         label="Whose tasks"
@@ -389,7 +400,7 @@
           { value: 'anyone', label: 'Everyone' }
         ]}
         onChange={(assignee) =>
-          tasksSettings.setFilters({ assignee: assignee === 'user' || assignee === 'agent' ? assignee : null })}
+          changeFilters({ assignee: assignee === 'user' || assignee === 'agent' ? assignee : null })}
       />
 
       {#if filters.mode === 'list'}
@@ -400,7 +411,7 @@
              disagree with the control. -->
         <NativeSelect
           id="tasks-group-by"
-          bind:value={() => filters.groupBy, (value) => tasksSettings.setFilters({ groupBy: value as TasksGroupBy })}
+          bind:value={() => filters.groupBy, (value) => changeFilters({ groupBy: value as TasksGroupBy })}
           class="w-auto"
         >
           <option value="project">Project</option>
@@ -457,6 +468,16 @@
                  has one, a priority or due bucket spans mounts and has none. -->
             {@const clearMount = section.icm === null ? null : section.icm.mountKey}
             {@const ledgerDone = section.icm === null ? 0 : section.icm.tasks.filter(isCompleted).length}
+            <!-- A project section's footer counts the LEDGER, so archiving is
+                 reachable from the Today view too (the persisted default, which
+                 folds nothing — done rows never pass `todayFilter`). A priority
+                 or due bucket has no mount to sweep, so it counts its own fold.
+                 The two numbers agree with the archive card by construction. -->
+            {@const footerDone = clearMount === null ? section.done.length : ledgerDone}
+            <!-- The fold can reveal fewer rows than the footer counts when the
+                 filters hide part of the ledger's done set — then the button
+                 says how many, rather than promising all of them. -->
+            {@const partialFold = section.done.length > 0 && section.done.length < footerDone}
             <section>
               <div class="flex items-baseline gap-2">
                 <h2 class="text-overline">{section.label}</h2>
@@ -489,23 +510,27 @@
                 {@render rowList(toRows(section.done), tagged)}
               {/if}
 
-              {#if section.done.length > 0}
+              {#if footerDone > 0}
                 <!-- Every group carries one of these, so the visible words
                      ("Show", "Clear done") repeat down the page — the labels
                      name the section, which is what a screen reader is left
                      with when the header two lines up is out of reach. -->
                 <div class="text-ink-meta mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px]">
-                  <span class="tabular-nums">{section.done.length} done</span>
-                  <span aria-hidden="true">·</span>
-                  <button
-                    type="button"
-                    aria-expanded={expanded}
-                    aria-label={`${expanded ? 'Hide' : 'Show'} done tasks in ${section.label}`}
-                    class="hover:text-ink-heading hover:underline"
-                    onclick={() => toggleShowDone(section.key)}
-                  >
-                    {expanded ? 'Hide' : 'Show'}
-                  </button>
+                  <span class="tabular-nums">{footerDone} done</span>
+                  {#if section.done.length > 0}
+                    <span aria-hidden="true">·</span>
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-label={partialFold
+                        ? `${expanded ? 'Hide' : 'Show'} the ${section.done.length} of ${footerDone} done tasks in ${section.label} these filters allow`
+                        : `${expanded ? 'Hide' : 'Show'} done tasks in ${section.label}`}
+                      class="hover:text-ink-heading hover:underline"
+                      onclick={() => toggleShowDone(section.key)}
+                    >
+                      {expanded ? 'Hide' : 'Show'}{partialFold ? ` ${section.done.length}` : ''}
+                    </button>
+                  {/if}
                   {#if clearMount !== null && confirmingClear !== clearMount}
                     <span aria-hidden="true">·</span>
                     <button
@@ -531,6 +556,11 @@
                   <p class="text-ink-body flex-1 text-[12.5px]">
                     Archive {ledgerDone === 1 ? 'the finished task' : `${ledgerDone} finished tasks`} in
                     {section.label}? They move to this project's archive file.
+                    {#if section.done.length < ledgerDone}
+                      <!-- Said only when the sweep is bigger than the fold: the
+                           card's number would otherwise look like a miscount. -->
+                      This includes finished tasks the current filters hide.
+                    {/if}
                   </p>
                   <Button
                     type="button"
@@ -570,13 +600,13 @@
               {/if}
               <p class="text-ink-body mt-2.5 text-[13px]">
                 Nothing due, overdue, or flagged for today — pick from the backlog above, or see
-                <button type="button" class="underline" onclick={() => tasksSettings.setFilters({ view: 'all' })}>All</button>.
+                <button type="button" class="underline" onclick={() => changeFilters({ view: 'all' })}>All</button>.
               </p>
             </div>
           {:else if filters.assignee !== null}
             <p class="text-ink-body pt-2 text-[13px]">
               Nothing matches these filters.
-              <button type="button" class="underline" onclick={() => tasksSettings.setFilters({ assignee: null })}>
+              <button type="button" class="underline" onclick={() => changeFilters({ assignee: null })}>
                 Show everyone
               </button>
             </p>
