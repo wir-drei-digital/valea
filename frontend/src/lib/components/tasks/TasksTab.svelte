@@ -105,6 +105,12 @@
     }
   }
 
+  /** The row's one-click triage: flip the `today` flag without opening the editor. */
+  async function toggleToday(mountKey: string, task: TaskEntry): Promise<void> {
+    if (task.id === null) return;
+    report(await tasksStore.patchTask(mountKey, task.id, { today: !task.today }));
+  }
+
   async function drop(mountKey: string, task: TaskEntry): Promise<void> {
     if (task.id === null) return;
     report(await tasksStore.setTaskStatus(mountKey, task.id, 'dropped'));
@@ -297,7 +303,9 @@
                     {todayIso}
                     busy={task.id !== null && busyTaskId === task.id}
                     selected={editing?.mountKey === icm.mountKey && editing?.taskId === task.id}
+                    sessionLive={null}
                     onToggleDone={() => void toggleDone(icm.mountKey, task)}
+                    onToggleToday={() => void toggleToday(icm.mountKey, task)}
                     onOpen={() => {
                       if (task.id === null) return;
                       editorError = null;

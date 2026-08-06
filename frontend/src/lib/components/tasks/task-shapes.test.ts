@@ -8,11 +8,13 @@ import {
   ledgerNote,
   priorityLabel,
   repairFields,
-  showsAgentBadge,
+  showsAssigneeGear,
+  sourceChipLabel,
   statusLabel,
   statusOptions,
   taskEditPatch,
   taskErrorMessage,
+  taskSession,
   taskSourceRender,
   unknownStatusHint,
   type TaskEditForm
@@ -99,11 +101,28 @@ describe('priorityLabel / assigneeLabel', () => {
   });
 });
 
-describe('showsAgentBadge', () => {
-  it('badges only agent-created entries', () => {
-    expect(showsAgentBadge(FIXTURE.tasks[0])).toBe(true);
-    expect(showsAgentBadge(FIXTURE.tasks[1])).toBe(false);
-    expect(showsAgentBadge(task({}))).toBe(false);
+describe('showsAssigneeGear', () => {
+  it('gear only for assignee=agent (creator provenance retired from rows)', () => {
+    expect(showsAssigneeGear({ assignee: 'agent' })).toBe(true);
+    expect(showsAssigneeGear({ assignee: 'user' })).toBe(false);
+    expect(showsAssigneeGear({ assignee: null })).toBe(false);
+  });
+});
+
+describe('sourceChipLabel', () => {
+  it('shrinks path-ish labels to their basename, leaves plain text alone', () => {
+    expect(sourceChipLabel('01_clients/kita-villa-vesta/CONTEXT.md')).toBe('CONTEXT.md');
+    expect(sourceChipLabel('CONTEXT.md')).toBe('CONTEXT.md');
+    expect(sourceChipLabel('from a phone call')).toBe('from a phone call');
+    expect(sourceChipLabel('a/b/')).toBe('a/b/'); // trailing slash: not a file label, keep verbatim
+  });
+});
+
+describe('taskSession', () => {
+  it('string session key or null; wrong types are null', () => {
+    expect(taskSession(normalizeTask({ id: 'a', session: 's-1' }))).toBe('s-1');
+    expect(taskSession(normalizeTask({ id: 'a' }))).toBeNull();
+    expect(taskSession(normalizeTask({ id: 'a', session: 7 }))).toBeNull();
   });
 });
 
@@ -126,10 +145,12 @@ describe('dueChip', () => {
 });
 
 describe('taskSourceRender', () => {
+  // The LABEL is the chip's text and rides a single-line row, so it is the
+  // basename (`sourceChipLabel`); the HREF still resolves the whole locator.
   it('links a mail message locator into /mail', () => {
     expect(taskSourceRender('mail:w3d/INBOX/<msg-1@host>', 'primary')).toEqual({
       kind: 'mail',
-      label: 'mail:w3d/INBOX/<msg-1@host>',
+      label: '<msg-1@host>',
       href: '/mail?account=w3d&message=%3Cmsg-1%40host%3E'
     });
   });
@@ -140,34 +161,35 @@ describe('taskSourceRender', () => {
   });
 
   it('leaves a mail-ish locator with too few segments as plain text', () => {
-    expect(taskSourceRender('mail:w3d/INBOX', 'primary')).toEqual({ kind: 'text', label: 'mail:w3d/INBOX' });
+    expect(taskSourceRender('mail:w3d/INBOX', 'primary')).toEqual({ kind: 'text', label: 'INBOX' });
   });
 
   it('links an ICM-relative file path against the task’s own ICM', () => {
     expect(taskSourceRender('clients/lea.md', 'primary')).toEqual({
       kind: 'file',
-      label: 'clients/lea.md',
+      label: 'lea.md',
       href: '/knowledge/primary/clients/lea.md'
     });
     expect(taskSourceRender('brochure.pdf', 'clients')).toMatchObject({
       kind: 'file',
+      label: 'brochure.pdf',
       href: '/knowledge/clients/brochure.pdf'
     });
   });
 
   it('never links anything the spec does not name as a locator', () => {
-    const plain = [
-      'https://example.com/page.html',
-      'Kita follow-up conversation',
-      '/etc/passwd',
-      '../secrets.md',
-      './notes.md',
-      '~/notes.md',
-      'Clients',
-      'clients/'
+    const plain: [source: string, label: string][] = [
+      ['https://example.com/page.html', 'page.html'],
+      ['Kita follow-up conversation', 'Kita follow-up conversation'],
+      ['/etc/passwd', 'passwd'],
+      ['../secrets.md', 'secrets.md'],
+      ['./notes.md', 'notes.md'],
+      ['~/notes.md', 'notes.md'],
+      ['Clients', 'Clients'],
+      ['clients/', 'clients/']
     ];
-    for (const source of plain) {
-      expect(taskSourceRender(source, 'primary')).toEqual({ kind: 'text', label: source });
+    for (const [source, label] of plain) {
+      expect(taskSourceRender(source, 'primary')).toEqual({ kind: 'text', label });
     }
   });
 
@@ -314,7 +336,10 @@ describe('the fixture payload, end to end', () => {
     expect(statusLabel(unknown!.status)).toBe('waiting_on_bank');
 
     const first = FIXTURE.tasks[0];
-    expect(showsAgentBadge(first)).toBe(true);
+    // The row now speaks about who WORKS the task, not who wrote the line:
+    // the agent-created first entry is the user's, the second is the agent's.
+    expect(showsAssigneeGear(first)).toBe(false);
+    expect(showsAssigneeGear(FIXTURE.tasks[1])).toBe(true);
     expect(dueChip(first, TODAY)).toEqual({ text: 'due today', tone: 'today' });
     expect(taskSourceRender(first.source!, FIXTURE.mountKey)).toMatchObject({ kind: 'mail' });
   });

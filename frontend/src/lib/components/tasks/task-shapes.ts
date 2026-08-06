@@ -96,9 +96,41 @@ export function assigneeLabel(assignee: string | null): string {
   }
 }
 
-/** `created_by: "agent"` earns the badge; anything else (including absent) does not. */
-export function showsAgentBadge(task: TaskEntry): boolean {
-  return task.createdBy === 'agent';
+/**
+ * The row's ⚙ marker: who WORKS the task, not who wrote the line.
+ *
+ * `created_by` provenance is retired from rows (redesign spec §List rows) — a
+ * "FROM ASSISTANT" badge on every agent-written entry said nothing actionable
+ * and cost a whole second line. What the user needs at a glance is whether the
+ * assistant is holding this one, which is `assignee`.
+ */
+export function showsAssigneeGear(task: Pick<TaskEntry, 'assignee'>): boolean {
+  return task.assignee === 'agent';
+}
+
+/**
+ * The chat session an entry is bound to (`session` in the raw map — the key
+ * `hand_to_assistant` stamps), or `null` when absent or wrong-typed. Read from
+ * `raw` because it is not part of the rendered display model: nothing but the
+ * row's session chip needs it.
+ */
+export function taskSession(task: TaskEntry): string | null {
+  const session = task.raw.session;
+  return typeof session === 'string' ? session : null;
+}
+
+/**
+ * A source chip's TEXT, shortened to the basename of a path-ish label
+ * (`01_clients/kita-villa-vesta/CONTEXT.md` → `CONTEXT.md`) so provenance fits
+ * a single-line row. The locator itself is untouched — only the label shrinks,
+ * and the href still resolves the whole path.
+ *
+ * A label ending in `/` is a folder-ish string, not a file label, and stays
+ * verbatim; so does anything with no `/` at all ("from a phone call").
+ */
+export function sourceChipLabel(label: string): string {
+  if (!label.includes('/') || label.endsWith('/')) return label;
+  return label.slice(label.lastIndexOf('/') + 1);
 }
 
 /**
@@ -168,6 +200,9 @@ function parsedDue(due: string): string | null {
  * escaping path — stays plain TEXT. The spec enumerates exactly two link-worthy
  * locator kinds, and a confidently wrong link out of freeform provenance is
  * worse than the text.
+ *
+ * Every `label` is the chip's rendered text, shortened by `sourceChipLabel`;
+ * every `href` still addresses the full locator.
  */
 export type TaskSourceRender =
   | { kind: 'mail'; label: string; href: string }
@@ -185,18 +220,18 @@ export function taskSourceRender(source: string, mountKey: string): TaskSourceRe
       const msgId = parts[parts.length - 1];
       return {
         kind: 'mail',
-        label: trimmed,
+        label: sourceChipLabel(trimmed),
         href: `/mail?account=${encodeURIComponent(account)}&message=${encodeURIComponent(msgId)}`
       };
     }
-    return { kind: 'text', label: trimmed };
+    return { kind: 'text', label: sourceChipLabel(trimmed) };
   }
 
   if (isIcmRelativeFile(trimmed)) {
-    return { kind: 'file', label: trimmed, href: knowledgeHref(mountKey, trimmed) };
+    return { kind: 'file', label: sourceChipLabel(trimmed), href: knowledgeHref(mountKey, trimmed) };
   }
 
-  return { kind: 'text', label: trimmed };
+  return { kind: 'text', label: sourceChipLabel(trimmed) };
 }
 
 /**
