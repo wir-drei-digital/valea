@@ -205,19 +205,29 @@ jobs:
       # before deps.get runs (package-backend), hence GITHUB_ENV here.
       # Linux lane only: macOS/Windows BEAMs share one libc with their
       # host-built NIFs.
-      - name: Force a self-contained musl mdex NIF (Linux)
+      - name: Install the musl toolchain for the mdex NIF (Linux)
         if: matrix.burrito_target == 'linux_x64'
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
           rustup target add x86_64-unknown-linux-musl
-          {
-            echo "MDEX_NATIVE_BUILD=1"
-            echo "CARGO_BUILD_TARGET=x86_64-unknown-linux-musl"
-            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
-            echo "RUSTFLAGS=-C target-feature=-crt-static -C link-arg=-static-libgcc"
-          } >> "$GITHUB_ENV"
+
+      # Step-scoped on purpose: these env vars must reach ONLY the sidecar
+      # build (mix deps.get + the NIF's cargo). Exported job-wide via
+      # GITHUB_ENV they leak into the later `tauri build`, which then tries
+      # to cross-compile the GTK shell for musl and dies in pkg-config
+      # (run 31127372229).
+      - name: Build SPA + Burrito sidecar (Linux, self-contained musl mdex NIF)
+        if: matrix.burrito_target == 'linux_x64'
+        env:
+          BURRITO_TARGET: ${{ matrix.burrito_target }}
+          MDEX_NATIVE_BUILD: "1"
+          CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          RUSTFLAGS: -C target-feature=-crt-static -C link-arg=-static-libgcc
+        run: just package-backend
 
       - name: Build SPA + Burrito sidecar (+ spawn shim on Windows)
+        if: matrix.burrito_target != 'linux_x64'
         env:
           BURRITO_TARGET: ${{ matrix.burrito_target }}
         run: just package-backend
