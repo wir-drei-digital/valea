@@ -17,12 +17,17 @@
   // The old status SegmentedControl is gone (spec: the board covers status
   // browsing, done rows fold behind their section footer). `applyTaskFilters`
   // keeps its `status` axis for compatibility and is passed `null`.
+  import { goto } from '$app/navigation';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { NativeSelect } from '$lib/components/ui/native-select/index.js';
   import { EmptyState, SegmentedControl } from '$lib/components/shell';
   import ListTodo from '@lucide/svelte/icons/list-todo';
+  import { api } from '$lib/api/client';
+  import { recentSessionsStore } from '$lib/stores/recent-sessions.svelte';
+  import { workspaceStore } from '$lib/stores/workspace.svelte';
+  import { setInitialPrompt } from '$lib/stores/initial-prompt';
   import { tasksStore, type TaskIcm } from '$lib/tasks/store.svelte';
   import { tasksSettings } from '$lib/tasks/settings.svelte';
   import type { TasksFilterSettings, TasksGroupBy } from '$lib/tasks/settings';
@@ -38,7 +43,15 @@
     todayFilter,
     type TaskEntry
   } from '$lib/tasks/filters';
-  import { duplicateIdNote, ledgerNote, repairFields, rowKeys, taskErrorMessage } from './task-shapes';
+  import { handoffPrompt, sessionLiveById } from '$lib/tasks/handoff';
+  import {
+    duplicateIdNote,
+    ledgerNote,
+    repairFields,
+    rowKeys,
+    taskErrorMessage,
+    taskSession
+  } from './task-shapes';
   import QuickAdd from './QuickAdd.svelte';
   import TaskRow from './TaskRow.svelte';
   import TaskEditor from './TaskEditor.svelte';
@@ -87,6 +100,8 @@
   let quickError = $state<string | null>(null);
   let rowError = $state<string | null>(null);
   let busyTaskId = $state<string | null>(null);
+  /** The task whose hand-off is in flight — one at a time, so a double click can't open two sessions. */
+  let handingOff = $state<string | null>(null);
   let clearing = $state<string | null>(null);
   /** The ICM whose "Clear done" is awaiting its inline confirmation. */
   let confirmingClear = $state<string | null>(null);
@@ -279,6 +294,46 @@
     report(await tasksStore.patchTask(mountKey, task.id, { today: !task.today }));
   }
 
+  /**
+   * Hand the row's task to a fresh session (spec §Hand to assistant). Order
+   * matters: the session is created and seeded FIRST, then the ledger entry is
+   * flipped to `in_progress`/`agent` and stamped with the session id, so the
+   * task never claims a session that doesn't exist. The reverse order would
+   * leave an in_progress task pointing at nothing whenever creation failed.
+   */
+  async function handOff(mountKey: string, task: TaskEntry): Promise<void> {
+    if (task.id === null || handingOff !== null) return;
+    handingOff = task.id;
+    rowError = null;
+    try {
+      const created = await api.createAgentSession(mountKey, workspaceStore.generation ?? 0);
+      if (!created.ok) {
+        rowError =
+          created.error === 'harness_unavailable'
+            ? "The assistant isn't ready — open Settings → Agent (the gear in the sidebar) and run the checks."
+            : 'The session could not be started. Please try again.';
+        return;
+      }
+      const sessionId = (created.data as { id: string }).id;
+      setInitialPrompt(sessionId, handoffPrompt(task, mountKey));
+      const patched = await tasksStore.patchTask(mountKey, task.id, {
+        status: 'in_progress',
+        assignee: 'agent',
+        session: sessionId
+      });
+      if (!patched.ok) {
+        // The session exists and is reachable from Recent sessions; say why the
+        // row didn't move rather than navigating away from the evidence.
+        rowError = taskErrorMessage(patched.error);
+        return;
+      }
+      void recentSessionsStore.refresh();
+      void goto(`/chat?session=${sessionId}`);
+    } finally {
+      handingOff = null;
+    }
+  }
+
   async function drop(mountKey: string, task: TaskEntry): Promise<void> {
     if (task.id === null) return;
     report(await tasksStore.setTaskStatus(mountKey, task.id, 'dropped'));
@@ -345,16 +400,21 @@
 {#snippet rowList(rows: Row[], tagged: boolean)}
   <ul class="mt-1.5 flex flex-col">
     {#each rows as row (row.key)}
+      <!-- The bound session's live dot, when the recency window still knows it:
+           `sessionLiveById` answers `null` for an id that has aged out, and the
+           chip then renders without a dot rather than claiming "ended". -->
+      {@const session = taskSession(row.task)}
       <TaskRow
         task={row.task}
         mountKey={row.icm.mountKey}
         {todayIso}
         projectTag={tagged ? row.icm.icmName || row.icm.mountKey : null}
-        busy={row.task.id !== null && busyTaskId === row.task.id}
+        busy={row.task.id !== null && (busyTaskId === row.task.id || handingOff === row.task.id)}
         selected={editing?.mountKey === row.icm.mountKey && editing?.taskId === row.task.id}
-        sessionLive={null}
+        sessionLive={session === null ? null : sessionLiveById(recentSessionsStore.groups, session)}
         onToggleDone={() => void toggleDone(row.icm.mountKey, row.task)}
         onToggleToday={() => void toggleToday(row.icm.mountKey, row.task)}
+        onHandOff={() => void handOff(row.icm.mountKey, row.task)}
         onOpen={() => openEditor(row.icm.mountKey, row.task)}
         onDrop={() => void drop(row.icm.mountKey, row.task)}
         onRepair={() => void repair(row.icm.mountKey, row.task)}

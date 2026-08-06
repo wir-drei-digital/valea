@@ -62,6 +62,7 @@
     projectTag = null,
     onToggleDone,
     onToggleToday,
+    onHandOff,
     onOpen,
     onDrop,
     onRepair
@@ -82,6 +83,12 @@
     onToggleDone: () => void;
     /** Flip the `today` flag — the day's triage, one click from the row. */
     onToggleToday: () => void;
+    /**
+     * Start a session seeded with this task. Optional: a list that has no
+     * assistant to hand to (or no session route) renders no button at all
+     * rather than a dead one.
+     */
+    onHandOff?: () => void;
     onOpen: () => void;
     onDrop: () => void;
     /** Copy an id-less entry into a properly stamped task (see `ID_LESS_TASK_NOTE`). */
@@ -254,6 +261,25 @@
 
   {#if addressable}
     <div class="flex h-8 shrink-0 items-center gap-0.5">
+      {#if onHandOff}
+        <!-- The cockpit differentiator, and the first thing in the cluster: the
+             row hands its own task to a session seeded with it. The label is an
+             arrow because the button MOVES the task somewhere; the aria-label
+             says the sentence the arrow is short for. -->
+        <button
+          type="button"
+          disabled={busy}
+          onclick={onHandOff}
+          aria-label="Hand to the assistant"
+          class={[
+            'text-ink-meta hover:bg-paper-card hover:text-ink-heading flex h-8 items-center rounded-md px-1.5 text-[11.5px] whitespace-nowrap',
+            revealed
+          ]}
+        >
+          → Assistant
+        </button>
+      {/if}
+
       <button
         type="button"
         disabled={busy}
