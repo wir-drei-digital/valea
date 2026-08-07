@@ -26,4 +26,18 @@ describe('absPathFor', () => {
   it('returns null for a mount with no resolved root', () => {
     expect(absPathFor([{ mountKey: 'broken', root: '' }], 'broken', 'a.md')).toBeNull();
   });
+
+  it('returns null for a relPath carrying a .. segment, however deep', () => {
+    expect(absPathFor(mounts, 'work', '../../etc')).toBeNull();
+    expect(absPathFor(mounts, 'work', 'Clients/../../../etc/passwd')).toBeNull();
+  });
+
+  it('returns null for an absolute relPath', () => {
+    expect(absPathFor(mounts, 'work', '/etc/passwd')).toBeNull();
+  });
+
+  it('allows a filename that merely contains dots, as long as no segment IS ..', () => {
+    expect(absPathFor(mounts, 'work', '..notes.md')).toBe('/Users/d/ICMs/Work/..notes.md');
+    expect(absPathFor(mounts, 'work', 'foo..bar')).toBe('/Users/d/ICMs/Work/foo..bar');
+  });
 });

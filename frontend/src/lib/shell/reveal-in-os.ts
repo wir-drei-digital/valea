@@ -14,8 +14,16 @@ type MountRoot = { mountKey: string; root: string };
 
 /**
  * A node's absolute path: the mount's resolved `root` plus its ICM-relative
- * path. `null` when the mount is unknown or has no root, so a caller offers
- * nothing rather than aiming the file manager at a wrong path.
+ * path. `null` when the mount is unknown, has no root, or `relPath` would
+ * escape it (absolute, or carrying a `..` segment) — so a caller offers
+ * nothing rather than aiming the file manager at a wrong, possibly
+ * out-of-mount path.
+ *
+ * `opener:allow-reveal-item-in-dir` ships with no pre-configured scope of
+ * its own, so this containment check is the ONLY thing standing between
+ * `revealInOs` and revealing an arbitrary filesystem location — worth
+ * doing properly even though every real caller today builds `relPath` from
+ * a backend directory listing, where a literal `..` segment cannot occur.
  */
 export function absPathFor(
   mounts: readonly MountRoot[],
@@ -26,7 +34,22 @@ export function absPathFor(
   if (!root) return null;
 
   const trimmed = root.replace(/\/+$/, '');
-  return relPath ? `${trimmed}/${relPath}` : trimmed;
+  if (!relPath) return trimmed;
+
+  // Reject anything that could walk the join outside the mount. Absolute
+  // `relPath` would make the join ignore `trimmed` outright; a `..`
+  // SEGMENT walks back up a directory. Testing split segments — not a
+  // substring match — is what lets a real filename like `..notes.md` or
+  // `foo..bar` through unrejected.
+  if (relPath.startsWith('/')) return null;
+  if (relPath.split('/').some((segment) => segment === '..')) return null;
+
+  const joined = `${trimmed}/${relPath}`;
+
+  // Verified, not merely intended: confirm the join actually landed inside
+  // the mount rather than trusting the two checks above to have covered
+  // every way out.
+  return joined.startsWith(`${trimmed}/`) ? joined : null;
 }
 
 /**
