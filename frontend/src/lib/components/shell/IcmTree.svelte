@@ -1,10 +1,9 @@
 <script lang="ts">
   import type { NavTreeItem } from '$lib/shell/nav';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import SquarePlus from '@lucide/svelte/icons/square-plus';
   import IcmTree from './IcmTree.svelte';
   import EntryMenu from '$lib/components/knowledge/EntryMenu.svelte';
-  import { fileLeafLabel } from '$lib/components/knowledge/file-leaf';
+  import { fileIcon, folderIcon } from '$lib/components/knowledge/file-icon';
   import { icmStore } from '$lib/stores/icm.svelte';
   import { treeOpenState } from '$lib/stores/tree-state.svelte';
 
@@ -212,11 +211,19 @@
               rowTone(node.href)
             ]}
           >
-            <ChevronRight
-              class={[
-                'size-3 shrink-0 text-ink-meta transition-transform',
-                treeOpenState.isOpen(node.href) ? 'rotate-90' : ''
-              ]}
+            <!-- The folder's own glyph carries open/closed, replacing the
+                 rotating chevron. One glyph per row, in one column, so leaf
+                 and folder labels start at the same x — they did not before,
+                 because leaves had nothing in the chevron's slot.
+                 `aria-expanded` on the button is unchanged, so nothing is
+                 lost for assistive tech.
+                 `<svelte:component>`, not `{@const}` + a bare tag: this sits
+                 inside the row `<button>`, not as an immediate child of the
+                 `{#if}`/`{#each}` block, and Svelte 5 rejects `{@const}`
+                 anywhere else. -->
+            <svelte:component
+              this={folderIcon(treeOpenState.isOpen(node.href))}
+              class="text-ink-meta size-3.5 shrink-0"
               strokeWidth={1.5}
             />
             <span class="flex-1 truncate">{node.label}</span>
@@ -276,16 +283,15 @@
                 rowTone(node.href)
               ]}
             >
+              <!-- `<svelte:component>`, not `{@const}` + a bare tag: see the
+                   folder glyph's comment above — same placement rule, same
+                   fix. -->
+              <svelte:component
+                this={fileIcon(node.label)}
+                class="text-ink-meta size-3.5 shrink-0"
+                strokeWidth={1.5}
+              />
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
-              {#if node.isFile}
-                <!-- Format badge for a non-.md file leaf — the same
-                     `fileLeafLabel` text the separate (now removed)
-                     non-clickable file rows showed ("FILE" when the file has
-                     no extension at all). -->
-                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
-                  {fileLeafLabel(node.ext)}
-                </span>
-              {/if}
             </button>
           {:else}
             <a
@@ -298,16 +304,15 @@
                 rowTone(node.href)
               ]}
             >
+              <!-- `<svelte:component>`, not `{@const}` + a bare tag: see the
+                   folder glyph's comment above — same placement rule, same
+                   fix. -->
+              <svelte:component
+                this={fileIcon(node.label)}
+                class="text-ink-meta size-3.5 shrink-0"
+                strokeWidth={1.5}
+              />
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
-              {#if node.isFile}
-                <!-- Format badge for a non-.md file leaf — the same
-                     `fileLeafLabel` text the separate (now removed)
-                     non-clickable file rows showed ("FILE" when the file has
-                     no extension at all). -->
-                <span class="text-ink-meta text-[10px] font-semibold tracking-[0.04em]">
-                  {fileLeafLabel(node.ext)}
-                </span>
-              {/if}
             </a>
           {/if}
           <!-- The row's right gutter. Siblings of the row control, never

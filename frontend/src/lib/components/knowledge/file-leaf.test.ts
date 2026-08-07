@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fileLeafKind, fileLeafLabel } from './file-leaf';
+import { fileLeafKind } from './file-leaf';
 
 describe('fileLeafKind', () => {
   it('maps image extensions to "image"', () => {
@@ -38,18 +38,5 @@ describe('fileLeafKind', () => {
   it('is case-insensitive defensively, even though the backend already lowercases', () => {
     expect(fileLeafKind('.PDF')).toBe('pdf');
     expect(fileLeafKind('.PNG')).toBe('image');
-  });
-});
-
-describe('fileLeafLabel', () => {
-  it('renders the ext as an uppercase label without the dot', () => {
-    expect(fileLeafLabel('.pdf')).toBe('PDF');
-    expect(fileLeafLabel('.png')).toBe('PNG');
-  });
-
-  it('falls back to "FILE" for a missing/blank ext', () => {
-    expect(fileLeafLabel(undefined)).toBe('FILE');
-    expect(fileLeafLabel('')).toBe('FILE');
-    expect(fileLeafLabel('.')).toBe('FILE');
   });
 });

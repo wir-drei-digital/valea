@@ -1,20 +1,17 @@
 /**
  * Pure decision logic for non-.md file leaves (A-T15 fix wave) — which
- * VIEWER a file's `ext` opens in, and the small uppercase ext label shown
- * beside the name in the Knowledge list panes. Same "extract the logic, no
- * component render harness" convention as `mount-sections.ts`.
+ * VIEWER a file's `ext` opens in. Same "extract the logic, no component
+ * render harness" convention as `mount-sections.ts`.
  *
  * `ext` comes from `Valea.ICM.tree/0`'s `:file` leaves — already lowercase
  * with the leading dot (e.g. `".pdf"`); the mapping re-lowercases
  * defensively anyway.
  *
- * The two exports are DIFFERENT partitions and neither may be borrowed for
- * the other's job (final review, I1): `fileLeafKind` is the viewer bucket
- * (`FileView` is its only consumer), `fileLeafLabel` is a display string
- * (`IcmTree`'s rows). A third partition lives server-side and is not
- * mirrored here at all — `ValeaWeb.FilesController`'s `@allowed_types` is
- * the CREDENTIAL split for `/files/raw`, i.e. which extensions an `<img>`
- * tag may fetch without the control token.
+ * `fileLeafKind` is the viewer bucket (`FileView` is its only consumer). A
+ * second partition lives server-side and is not mirrored here at all —
+ * `ValeaWeb.FilesController`'s `@allowed_types` is the CREDENTIAL split for
+ * `/files/raw`, i.e. which extensions an `<img>` tag may fetch without the
+ * control token.
  */
 
 export type FileLeafKind = 'image' | 'pdf' | 'csv' | 'other';
@@ -38,10 +35,4 @@ export function fileLeafKind(ext: string | null | undefined): FileLeafKind {
   // is a promise about the format, not a guess.
   if (normalized === '.csv') return 'csv';
   return 'other';
-}
-
-/** "PDF"/"PNG"-style label (ext uppercased, dot stripped); "FILE" when the ext is missing/blank. */
-export function fileLeafLabel(ext: string | null | undefined): string {
-  const stripped = (ext ?? '').replace(/^\./, '').trim();
-  return stripped ? stripped.toUpperCase() : 'FILE';
 }
