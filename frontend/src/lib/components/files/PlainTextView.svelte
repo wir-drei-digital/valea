@@ -13,6 +13,8 @@
   // transfer rather than merely ignore its result.
   import { rawFileHeaders, rawFileUrl } from './raw-url';
   import { cappedResponseText } from './capped-text';
+  import CodeBlock from '$lib/highlight/CodeBlock.svelte';
+  import { grammarForFilename } from '$lib/highlight/languages';
 
   let { mountKey, path }: { mountKey: string; path: string } = $props();
 
@@ -52,6 +54,16 @@
       controller.abort();
     };
   });
+
+  // A truncated read is a PREFIX of a file, and highlighting a prefix ends
+  // in whatever state the cut left open — an unterminated string swallowing
+  // the tail in one colour. Plain text is the honest rendering of a partial
+  // file.
+  const grammar = $derived(truncated ? null : grammarForFilename(path));
+  // `text` is `string | null` while the fetch is in flight; the template
+  // below only renders this branch once it is a string, but the derivation
+  // runs regardless.
+  const code = $derived(text ?? '');
 </script>
 
 {#if error}
@@ -62,6 +74,9 @@
   {#if truncated}
     <p class="text-ink-meta pb-2 text-[11.5px]">Showing the first 500 KB.</p>
   {/if}
-  <pre
-    class="text-ink-body font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap">{text}</pre>
+  <CodeBlock
+    {code}
+    {grammar}
+    class="text-ink-body font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap"
+  />
 {/if}

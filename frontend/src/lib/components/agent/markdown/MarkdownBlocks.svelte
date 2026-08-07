@@ -7,6 +7,8 @@
   import MarkdownBlocks from './MarkdownBlocks.svelte';
   import MarkdownInline from './MarkdownInline.svelte';
   import { unescapeMarked, type Token } from '$lib/markdown/agent-markdown';
+  import CodeBlock from '$lib/highlight/CodeBlock.svelte';
+  import { grammarForFence } from '$lib/highlight/languages';
 
   let {
     tokens,
@@ -27,6 +29,7 @@
     header?: Cell[];
     rows?: Cell[][];
     escaped?: boolean;
+    lang?: string;
   };
   const items = $derived(tokens as T[]);
 
@@ -66,10 +69,11 @@
         </ul>
       {/if}
     {:else if token.type === 'code'}
-      <pre
-        class="bg-paper-track overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12px] leading-[1.5] whitespace-pre">{unescapeMarked(
-          token.text ?? ''
-        )}</pre>
+      <CodeBlock
+        code={unescapeMarked(token.text ?? '')}
+        grammar={grammarForFence(token.lang ?? '')}
+        class="bg-paper-track overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12px] leading-[1.5] whitespace-pre"
+      />
     {:else if token.type === 'blockquote'}
       <blockquote class="border-paper-border text-ink-secondary border-l-2 pl-3">
         <MarkdownBlocks tokens={token.tokens ?? []} {onOpenFile} />
