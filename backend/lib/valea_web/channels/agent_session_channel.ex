@@ -116,6 +116,14 @@ defmodule ValeaWeb.AgentSessionChannel do
     {:noreply, assign(socket, :ended, false)}
   end
 
+  # The authoritative busy flag (see `SessionServer.maybe_broadcast_busy/1`).
+  # The join reply still carries the value at attach time; this carries every
+  # change after it, so the client never has to guess from item types.
+  def handle_info({:session_busy, busy}, socket) do
+    push(socket, "busy", %{busy: busy})
+    {:noreply, socket}
+  end
+
   def handle_info({:session_exit, exit_code}, socket) do
     push(socket, "exit", %{exit_code: exit_code})
     {:noreply, assign(socket, :ended, true)}

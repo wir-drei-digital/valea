@@ -240,7 +240,10 @@ defmodule Valea.Agents.SessionServer do
           watchdog: watchdog,
           policy_ctx: policy_ctx,
           on_turn_end: Map.get(opts, :on_turn_end),
-          finalized?: false
+          finalized?: false,
+          # Last busy value BROADCAST, so only transitions go on the wire.
+          # See `maybe_broadcast_busy/1`.
+          busy?: false
         }
 
         broadcast(state, {:session_status, :starting})
@@ -268,13 +271,13 @@ defmodule Valea.Agents.SessionServer do
   def handle_cast(_msg, %{exited?: true} = state), do: {:noreply, state}
 
   def handle_cast({:prompt, content}, state) do
-    {:noreply, send_or_queue(state, content)}
+    noreply_busy(send_or_queue(state, content))
   end
 
   def handle_cast(:cancel, state) do
     {conn, frames} = Connection.cancel(state.conn)
     write_frames(state, frames)
-    {:noreply, %{state | conn: conn}}
+    noreply_busy(%{state | conn: conn})
   end
 
   def handle_cast({:answer_permission, item_id, kind}, state) do
@@ -311,7 +314,7 @@ defmodule Valea.Agents.SessionServer do
     state = %{state | conn: conn}
     state = Enum.reduce(items, state, &append_item(&2, enrich_item(&1, state)))
     state = Enum.reduce(effects, state, &apply_effect(&2, &1))
-    {:noreply, state}
+    noreply_busy(state)
   end
 
   # stderr is a SEPARATE stream — log it, NEVER feed it to the JSON-RPC decoder.
@@ -331,7 +334,7 @@ defmodule Valea.Agents.SessionServer do
     state = set_status(%{state | exited?: true}, :exited)
     broadcast(state, {:session_exit, code})
     audit(state, "session_exited", %{"code" => code})
-    {:noreply, state}
+    noreply_busy(state)
   end
 
   # Stale timeout (already ready or already exited): no-op.
@@ -684,6 +687,7 @@ defmodule Valea.Agents.SessionServer do
     |> append_item(%{"id" => "error", "type" => "error", "text" => reason})
     |> Map.put(:exited?, true)
     |> set_status(:failed)
+    |> maybe_broadcast_busy()
   end
 
   # Fire the session's `on_turn_end` callback AT MOST ONCE. The {:turn} effect
@@ -705,6 +709,35 @@ defmodule Valea.Agents.SessionServer do
   defp write_frames(state, frames), do: Enum.each(frames, &ProcessRuntime.write(state.handle, &1))
 
   defp broadcast(state, msg), do: Phoenix.PubSub.broadcast(Valea.PubSub, state.topic, msg)
+
+  # The busy flag is the SERVER's to state, and this is where it says so.
+  #
+  # It used to be stated exactly once, in the join reply, leaving the client
+  # to infer every later change from item types — raise on any message /
+  # thought / tool item, lower on a `turn`. That inference has one fatal
+  # case: a tool update that lands AFTER its turn completed (a subtask
+  # finishing out of band) re-raises busy with no `turn` item left to come,
+  # and nothing ever lowers it again.
+  #
+  # `turn_in_flight?/1` — is a `session/prompt` request still pending — has
+  # always been the real answer. Broadcast on CHANGE only: every chunk of a
+  # streaming reply passes through the same reduction, and a push per chunk
+  # would be pure noise.
+  defp maybe_broadcast_busy(state) do
+    busy = state.status == :running and Connection.turn_in_flight?(state.conn)
+
+    if busy == Map.get(state, :busy?, false) do
+      state
+    else
+      broadcast(state, {:session_busy, busy})
+      %{state | busy?: busy}
+    end
+  end
+
+  # `{:noreply, …}` with the busy check folded in — used by every clause that
+  # can change whether a turn is in flight, so no future clause can add a
+  # path that silently skips it.
+  defp noreply_busy(state), do: {:noreply, maybe_broadcast_busy(state)}
 
   # Audit is a fire-and-forget cast to a NAMED process that may not exist in
   # some unit contexts; guard so a dead name is a genuine no-op.

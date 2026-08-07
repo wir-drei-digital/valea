@@ -101,6 +101,36 @@ defmodule Valea.Agents.SessionServerTest do
     assert length(rest) >= 3
   end
 
+  # The client used to INFER busy from item types — raised by any tool item,
+  # lowered only by a `turn` item — and the server only ever stated it once,
+  # in the join reply. A tool update arriving after its turn ended (which is
+  # what a subtask finishing out of band produces) therefore re-raised it
+  # with no `turn` left to come, and the composer's working indicator stayed
+  # lit until the channel was rejoined. The server holds the truth; these
+  # pin that it now says so.
+  test "broadcasts the busy rising and falling edges of a turn", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "happy")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    Valea.Agents.SessionServer.prompt(id, "hello")
+
+    assert_receive {:session_busy, true}, 10_000
+    assert_receive {:session_busy, false}, 10_000
+  end
+
+  test "does not repeat an unchanged busy value", %{root: root} do
+    {:ok, %{id: id}} = start_session(root, "happy")
+    Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
+
+    Valea.Agents.SessionServer.prompt(id, "hello")
+
+    assert_receive {:session_busy, true}, 10_000
+    assert_receive {:session_busy, false}, 10_000
+    # Every message chunk and tool update inside one turn passes through the
+    # same reduction; only a CHANGE may be broadcast.
+    refute_receive {:session_busy, false}, 500
+  end
+
   test "interleaved prose and tool calls keep conversation order", %{root: root} do
     {:ok, %{id: id}} = start_session(root, "interleaved")
     Phoenix.PubSub.subscribe(Valea.PubSub, "agent_session:" <> id)
