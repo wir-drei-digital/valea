@@ -29,10 +29,11 @@ type JoinFn = (id: string) => Channel;
  *    top-level `cursor` does. Only live `event` pushes carry `{seq, item}`.
  *    `#upsert` therefore only dedups/advances the cursor off `item.seq` when
  *    it's actually present; snapshot items are merged unconditionally by id.
- *  - `busy` is seeded from `reply.busy` AFTER the snapshot replay loop runs
- *    (which may itself have cleared `busy` via a completed `turn` item in the
- *    snapshot) — the server's `busy` flag is authoritative on every
- *    join/rejoin, exactly as the donor's own comment describes.
+ *  - `busy` is the SERVER's answer, not an inference: seeded from
+ *    `reply.busy` at join and updated by the `busy` push on every
+ *    transition. `prompt/1` still raises it optimistically so the box reacts
+ *    to your own send without a round trip; the next server push corrects it
+ *    if that guess was ever wrong.
  *
  * Third constructor argument (`join`) is dependency injection purely for
  * tests — mirrors `PageEditorStore`/`WorkspaceStore` taking their API surface
@@ -95,6 +96,11 @@ export class AgentSessionStore {
     this.#channel.on('exit', () => {
       this.status = 'exited';
     });
+    // Authoritative (see the class doc). The join reply carries the value at
+    // attach time; this carries every change after it.
+    this.#channel.on('busy', (payload: { busy: boolean }) => {
+      this.#setBusy(payload.busy === true);
+    });
 
     this.#channel
       .join()
@@ -138,16 +144,15 @@ export class AgentSessionStore {
     this.#byId.set(item.id, item);
     if (typeof item.seq === 'number') this.#cursor = Math.max(this.#cursor, item.seq);
 
-    // The backend emits a `turn` item on every turn completion (success and
-    // error alike) — the busy falling edge, which also flushes the client
-    // queue (below, after the rebuild). The RISING edge has two sources:
-    // `prompt/1`, and any activity item arriving while idle — a server-side
-    // queued prompt (`SessionServer.send_or_queue`) starts its turn without
-    // any client push, so its first echoed item is the only edge we can see.
-    if (item.type === 'turn') this.#setBusy(false);
-    else if (item.type === 'message' || item.type === 'thought' || item.type === 'tool') {
-      this.#setBusy(true);
-    }
+    // NOTHING here touches `busy` any more. Inferring it from item types is
+    // exactly the bug this replaced: raising on any message/thought/tool
+    // item meant a tool update that arrived AFTER its turn ended — a subtask
+    // finishing out of band — re-raised it with no `turn` item left to lower
+    // it, stranding the composer's working indicator until a rejoin. The
+    // server broadcasts every transition (`SessionServer.maybe_broadcast_busy/1`).
+    //
+    // The `turn` item still drives the CLIENT QUEUE below: that is about
+    // when locally-held messages may go, not about what the agent is doing.
 
     this.#rebuild();
 

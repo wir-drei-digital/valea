@@ -182,18 +182,51 @@ describe('AgentSessionStore', () => {
     expect(fake.pushed).toEqual([]);
   });
 
-  it('busy flips false (falling edge) when a turn item arrives via an event push', () => {
+  it('takes busy from the server push', () => {
     const fake = fakeChannel();
-    const store = new AgentSessionStore('s1', {}, () => fake.channel);
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
 
-    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'running' });
-
-    store.prompt('hello');
+    fake.emit('busy', { busy: true });
     expect(store.busy).toBe(true);
 
-    fake.emit('event', { seq: 1, item: { id: 't1', type: 'turn', stop_reason: 'end_turn' } });
+    fake.emit('busy', { busy: false });
+    expect(store.busy).toBe(false);
+  });
+
+  // The bug this whole change exists for: a subtask's tool update landing
+  // after its turn completed used to re-raise busy with no `turn` item left
+  // to come, stranding the composer's working indicator until a reload.
+  it('a tool update arriving after the turn ended does not re-arm busy', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('busy', { busy: true });
+    fake.emit('event', { seq: 1, item: { id: 'turn-1', type: 'turn', stop_reason: 'end_turn' } });
+    fake.emit('busy', { busy: false });
+
+    fake.emit('event', {
+      seq: 2,
+      item: { id: 'tool-late', type: 'tool', title: 'Task', status: 'completed' }
+    });
 
     expect(store.busy).toBe(false);
+  });
+
+  it('still flushes the client queue when the turn item lands', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('busy', { busy: true });
+    store.send('queued one');
+    expect(store.queued).toHaveLength(1);
+
+    fake.emit('event', { seq: 1, item: { id: 'turn-1', type: 'turn', stop_reason: 'end_turn' } });
+
+    expect(store.queued).toHaveLength(0);
+    expect(fake.pushed.some((p) => p.event === 'prompt')).toBe(true);
   });
 
   it('busy seeds from the join reply LAST, overriding a turn item already in the snapshot', () => {
@@ -368,20 +401,11 @@ describe('AgentSessionStore prompt queue', () => {
     expect(store.queued.map((m) => m.text)).toEqual(['second']);
   });
 
-  it('an activity item while idle raises busy (server-side queued turn started without a client push)', () => {
-    const { fake, store } = runningStore();
-    expect(store.busy).toBe(false);
-
-    fake.emit('event', {
-      seq: 1,
-      item: { id: 'm1', type: 'message', role: 'user', text: 'queued upstream' }
-    });
-
-    expect(store.busy).toBe(true);
-    expect(store.turnStartedAt).not.toBeNull();
-  });
-
-  it('turnStartedAt anchors on the busy rising edge and clears on the turn end', () => {
+  // `turnStartedAt` shares `#setBusy` with `busy` itself, so it anchors on
+  // the SAME two sources: `prompt/1`'s optimistic raise, and the server's
+  // `busy` push (a server-side queued turn starting without a client push
+  // is exactly what produces a push with no preceding local `prompt/1`).
+  it('turnStartedAt anchors on the busy rising edge and clears on the busy push going false', () => {
     const { fake, store } = runningStore();
     expect(store.turnStartedAt).toBeNull();
 
@@ -393,7 +417,7 @@ describe('AgentSessionStore prompt queue', () => {
     fake.emit('event', { seq: 1, item: { id: 'm1', type: 'thought', text: 'hmm' } });
     expect(store.turnStartedAt).toBe(anchored);
 
-    fake.emit('event', { seq: 2, item: { id: 't1', type: 'turn', stop_reason: 'end_turn' } });
+    fake.emit('busy', { busy: false });
     expect(store.turnStartedAt).toBeNull();
   });
 });
