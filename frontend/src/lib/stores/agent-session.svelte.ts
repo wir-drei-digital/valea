@@ -109,9 +109,10 @@ export class AgentSessionStore {
         // Explicit assignment (not folded into #upsert's per-item max) since
         // snapshot items don't carry their own seq — see class doc.
         this.#cursor = Math.max(this.#cursor, reply.cursor ?? 0);
-        // Seeded AFTER the replay loop above, so it wins over any `busy =
-        // false` the loop applied for a completed `turn` item already in the
-        // snapshot — see class doc.
+        // The server's answer at join time — see class doc. The replay loop
+        // above no longer touches `busy` at all (see `#upsert`), so there is
+        // nothing left for this seed to "win" over; it simply sets the
+        // starting value.
         this.#setBusy(reply.busy ?? false);
         if (reply.status) this.status = reply.status as AgentSessionStatus;
 
@@ -166,11 +167,29 @@ export class AgentSessionStore {
     this.busy = value;
   }
 
+  /**
+   * Fires on the `turn` item that ends the PREVIOUS turn — which the server
+   * always emits before its matching `busy: false` push for that same turn
+   * (`handle_info({:runtime_output, …})` appends the item, then broadcasts
+   * busy — see `SessionServer`). If this flush raised `busy` optimistically
+   * the way `prompt/1` does, that trailing `busy: false` would land right
+   * behind it and clobber the raise back to false (and null out
+   * `turnStartedAt`) even though a new turn had already been dispatched —
+   * a true->false->true flicker on every queue flush. So this pushes
+   * WITHOUT raising busy; the server's own `busy: true` for the new turn is
+   * the only thing that raises it here, at the cost of one round trip of
+   * (accurately) looking idle right after the flush.
+   */
   #flushQueue(): void {
     if (this.queued.length === 0) return;
     const pending = this.queued;
     this.queued = [];
-    for (const message of pending) this.prompt(message.text);
+    for (const message of pending) this.#pushPrompt(message.text);
+  }
+
+  /** The wire push `prompt/1` and `#flushQueue` share — see both for why they raise `busy` differently around it. */
+  #pushPrompt(content: string): void {
+    this.#channel.push('prompt', { content });
   }
 
   /**
@@ -194,7 +213,7 @@ export class AgentSessionStore {
    */
   prompt(content: string): void {
     this.#setBusy(true);
-    this.#channel.push('prompt', { content });
+    this.#pushPrompt(content);
   }
 
   /**

@@ -214,7 +214,17 @@ describe('AgentSessionStore', () => {
     expect(store.busy).toBe(false);
   });
 
-  it('still flushes the client queue when the turn item lands', () => {
+  // The server always emits the `turn` item that triggers a queue flush
+  // BEFORE its matching `busy: false` push for that same completed turn
+  // (`SessionServer` appends the item, then broadcasts busy). If the flush's
+  // prompt push raised `busy` optimistically the way `prompt/1` does, that
+  // trailing `busy: false` would land right behind it and clobber the raise
+  // — a true->false->true flicker on every queue flush. So the flush must
+  // NOT race it: `store.busy` should read false for the one round trip
+  // between the trailing `busy: false` and the server's own `busy: true` for
+  // the newly-dispatched turn — never true then immediately overwritten,
+  // and never left stuck.
+  it('still flushes the client queue when the turn item lands, without racing the trailing busy:false', () => {
     const fake = fakeChannel();
     const store = new AgentSessionStore('s', {}, () => fake.channel);
     fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
@@ -227,15 +237,25 @@ describe('AgentSessionStore', () => {
 
     expect(store.queued).toHaveLength(0);
     expect(fake.pushed.some((p) => p.event === 'prompt')).toBe(true);
+
+    // The completed turn's trailing busy:false, sent right behind the `turn`
+    // item above. The flush must not have raised busy itself, or this would
+    // be clobbering an already-correct true right back to false.
+    fake.emit('busy', { busy: false });
+    expect(store.busy).toBe(false);
+
+    // The server's busy:true for the flushed prompt's new turn arrives next.
+    fake.emit('busy', { busy: true });
+    expect(store.busy).toBe(true);
   });
 
   it('busy seeds from the join reply LAST, overriding a turn item already in the snapshot', () => {
     const fake = fakeChannel();
     const store = new AgentSessionStore('s1', {}, () => fake.channel);
 
-    // The snapshot's own `turn` item would clear busy if seeding happened
-    // BEFORE the replay loop — the server's busy: true (a new turn already
-    // in flight on reconnect) must win.
+    // The snapshot's own `turn` item no longer touches `busy` at all (see
+    // `#upsert`) — this just pins that the join reply's `busy: true` (a new
+    // turn already in flight on reconnect) is what the store ends up with.
     fake.resolveJoinOk({
       items: [{ id: 't0', type: 'turn', stop_reason: 'end_turn' }],
       cursor: 1,
