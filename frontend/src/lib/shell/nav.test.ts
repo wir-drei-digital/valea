@@ -102,6 +102,25 @@ describe('icmToNav', () => {
     expect(nav[0].href).toBe('/knowledge/primary/A.md');
     expect(nav[1].href).toBe('/knowledge/clients/B.md');
   });
+
+  it('shows a page its .md extension, and leaves files and folders alone', () => {
+    const nav = icmToNav([
+      { name: 'Weekly notes', path: 'Weekly notes.md', mountKey: 'work', type: 'page' },
+      { name: 'invoice.pdf', path: 'invoice.pdf', mountKey: 'work', type: 'file', ext: '.pdf' },
+      { name: 'Clients', path: 'Clients', mountKey: 'work', type: 'folder', children: [] }
+    ]);
+
+    expect(nav.map((n) => n.label)).toEqual(['Weekly notes.md', 'invoice.pdf', 'Clients']);
+  });
+
+  it('leaves the href and path untouched — only the LABEL gains the extension', () => {
+    const [page] = icmToNav([
+      { name: 'Weekly notes', path: 'Weekly notes.md', mountKey: 'work', type: 'page' }
+    ]);
+
+    expect(page.path).toBe('Weekly notes.md');
+    expect(page.href).toBe('/knowledge/work/Weekly%20notes.md');
+  });
 });
 
 // tasks+schedules spec §UI surfaces: the Tasks nav item returns, in the daily

@@ -175,6 +175,24 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
         }
       ];
     }
-    return [{ label: n.name, href: knowledgeHref(n.mountKey, n.path), path: n.path, mountKey: n.mountKey }];
+    // Pages are the ONE leaf whose label used to hide its extension: the
+    // backend sends `Path.basename(abs, ".md")` for a page and the full
+    // basename for everything else, so the tree showed `notes` for a file
+    // actually called `notes.md`. Restored HERE rather than in the backend —
+    // `name` stays the stripped basename for every other consumer, and only
+    // the tree row's label changes.
+    //
+    // It travels onward into `EntryMenu`'s rename prefill, which is correct:
+    // the backend's `ensure_md_extension/1` returns a name already ending in
+    // `.md` unchanged, so submitting the prefilled `notes.md` renames to
+    // `notes.md`. The user simply now edits the real filename.
+    return [
+      {
+        label: n.name + '.md',
+        href: knowledgeHref(n.mountKey, n.path),
+        path: n.path,
+        mountKey: n.mountKey
+      }
+    ];
   });
 }
