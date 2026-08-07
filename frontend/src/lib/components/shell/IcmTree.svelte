@@ -206,6 +206,7 @@
              `GitSyncModal.svelte` for the same pattern), and its binding is
              visible to every descendant of this block regardless of depth. -->
         {@const FolderGlyph = folderIcon(treeOpenState.isOpen(node.href))}
+        {#snippet folderRow()}
         <div class="group relative">
           <button
             type="button"
@@ -241,6 +242,21 @@
             />
           {/if}
         </div>
+        {/snippet}
+        {#if showMenus}
+          <EntryMenu
+            variant="context"
+            mountKey={node.mountKey}
+            path={node.path}
+            name={node.label}
+            kind="folder"
+            onBeforeMutate={beforeMutateFor(node.href)}
+            onDeleted={deletedFor(node.path, true)}
+            children={folderRow}
+          />
+        {:else}
+          {@render folderRow()}
+        {/if}
         {#if treeOpenState.isOpen(node.href)}
           <div class="ml-[17px] border-l border-paper-chip-border pl-2">
             {#if node.loaded === false}
@@ -275,6 +291,7 @@
              folder glyph's comment above for why this sits here and not
              inside the `<button>`/`<a>` themselves. -->
         {@const LeafGlyph = fileIcon(node.label)}
+        {#snippet leafRow()}
         <div class="group relative">
           {#if onSelect}
             <button
@@ -357,11 +374,37 @@
                   kind={node.isFile ? 'file' : 'page'}
                   onBeforeMutate={beforeMutateFor(node.href)}
                   onDeleted={deletedFor(node.path, false)}
+                  onOpenInTab={onOpenInTab
+                    ? () => onOpenInTab({ mountKey: node.mountKey, path: node.path })
+                    : undefined}
+                  {openInTabDisabled}
                 />
               {/if}
             </div>
           {/if}
         </div>
+        {/snippet}
+        {#if showMenus}
+          <!-- The row's own right-click menu. Same item list as the ⋯ button
+               in its gutter (`entry-actions.ts`), because there is only one
+               list — see EntryMenu's `variant`. -->
+          <EntryMenu
+            variant="context"
+            mountKey={node.mountKey}
+            path={node.path}
+            name={node.label}
+            kind={node.isFile ? 'file' : 'page'}
+            onBeforeMutate={beforeMutateFor(node.href)}
+            onDeleted={deletedFor(node.path, false)}
+            onOpenInTab={onOpenInTab
+              ? () => onOpenInTab({ mountKey: node.mountKey, path: node.path })
+              : undefined}
+            {openInTabDisabled}
+            children={leafRow}
+          />
+        {:else}
+          {@render leafRow()}
+        {/if}
       {/if}
     </li>
   {/each}
