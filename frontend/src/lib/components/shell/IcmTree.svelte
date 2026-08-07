@@ -200,6 +200,12 @@
   {#each nodes as node (node.href)}
     <li>
       {#if node.children}
+        <!-- Hoisted here, not inside the `<button>` below: `{@const}` must
+             be an immediate child of its block (`{#if}`/`{#each}`/etc — see
+             `IcmProjects.svelte`, `WorkspaceSwitcher.svelte`,
+             `GitSyncModal.svelte` for the same pattern), and its binding is
+             visible to every descendant of this block regardless of depth. -->
+        {@const FolderGlyph = folderIcon(treeOpenState.isOpen(node.href))}
         <div class="group relative">
           <button
             type="button"
@@ -216,16 +222,8 @@
                  and folder labels start at the same x — they did not before,
                  because leaves had nothing in the chevron's slot.
                  `aria-expanded` on the button is unchanged, so nothing is
-                 lost for assistive tech.
-                 `<svelte:component>`, not `{@const}` + a bare tag: this sits
-                 inside the row `<button>`, not as an immediate child of the
-                 `{#if}`/`{#each}` block, and Svelte 5 rejects `{@const}`
-                 anywhere else. -->
-            <svelte:component
-              this={folderIcon(treeOpenState.isOpen(node.href))}
-              class="text-ink-meta size-3.5 shrink-0"
-              strokeWidth={1.5}
-            />
+                 lost for assistive tech. -->
+            <FolderGlyph class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} />
             <span class="flex-1 truncate">{node.label}</span>
             {#if node.count !== undefined}
               <span class="text-ink-meta text-[11px] tabular-nums">{node.count}</span>
@@ -270,6 +268,13 @@
              a host that reveals a file scrolls to it by this attribute, and
              the Files pane — the one host that does — is in selection mode,
              so the button carries it or the reveal silently finds nothing. -->
+        <!-- One `{@const}` covers both leaf forms below: `node.label` is the
+             same input either way, and the two forms are mutually exclusive
+             (`{#if onSelect}`/`{:else}`), so there is never a stale glyph
+             hanging around from the branch that didn't render. See the
+             folder glyph's comment above for why this sits here and not
+             inside the `<button>`/`<a>` themselves. -->
+        {@const LeafGlyph = fileIcon(node.label)}
         <div class="group relative">
           {#if onSelect}
             <button
@@ -283,14 +288,7 @@
                 rowTone(node.href)
               ]}
             >
-              <!-- `<svelte:component>`, not `{@const}` + a bare tag: see the
-                   folder glyph's comment above — same placement rule, same
-                   fix. -->
-              <svelte:component
-                this={fileIcon(node.label)}
-                class="text-ink-meta size-3.5 shrink-0"
-                strokeWidth={1.5}
-              />
+              <LeafGlyph class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} />
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
             </button>
           {:else}
@@ -304,14 +302,7 @@
                 rowTone(node.href)
               ]}
             >
-              <!-- `<svelte:component>`, not `{@const}` + a bare tag: see the
-                   folder glyph's comment above — same placement rule, same
-                   fix. -->
-              <svelte:component
-                this={fileIcon(node.label)}
-                class="text-ink-meta size-3.5 shrink-0"
-                strokeWidth={1.5}
-              />
+              <LeafGlyph class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} />
               <span class="min-w-0 flex-1 truncate">{node.label}</span>
             </a>
           {/if}
@@ -354,9 +345,11 @@
                      coercing `.md`, and delete never had a `.md` assumption to
                      begin with. `isFile` — never `ext` — is the file/page test:
                      an extension-less file (LICENSE, Makefile) has `ext: ''`.
-                     `node.label` is what the dialogs pre-fill, and it is
-                     already kind-correct (the backend's tree sends a file's
-                     FULL basename, a page's title without `.md`). -->
+                     `node.label` is what the dialogs pre-fill, and both kinds
+                     now pre-fill their FULL basename (`icmToNav` restores a
+                     page's `.md`) — safe because `ensure_md_extension/1` is
+                     idempotent, so resubmitting an unchanged `notes.md`
+                     still renames to `notes.md`. See `RenameDialog`. -->
                 <EntryMenu
                   mountKey={node.mountKey}
                   path={node.path}
