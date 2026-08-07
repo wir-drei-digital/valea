@@ -57,6 +57,7 @@
     "@tiptap/pm": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
     "@tiptap/suggestion": "^2.27.2",
+    "lowlight": "^3.3.0",
     "marked": "^18.0.7",
     "paneforge": "^1.0.2",
     "pdfjs-dist": "^6.2.108",
