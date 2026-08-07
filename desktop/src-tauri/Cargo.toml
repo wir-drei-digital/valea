@@ -38,6 +38,11 @@ tauri-plugin-process = "2"
 # there is no `#[tauri::command]` of ours behind it, so the only wiring is the
 # `.plugin(...)` registration in main.rs plus capabilities/notifications.json.
 tauri-plugin-notification = "2"
+# Reveal-in-file-manager for tree rows (file tree & composer pass). Only the
+# `reveal_item_in_dir` half is permitted — see capabilities/default.json — so
+# the plugin's URL opener stays unreachable and links.rs remains the single
+# door to the user's browser.
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.9"

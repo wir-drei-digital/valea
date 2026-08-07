@@ -1,7 +1,8 @@
-// This module, `updater.ts`, and `shell/external-link.ts` are the ONLY
-// modules allowed to touch Tauri IPC (grep-able boundary, mirrors
-// `api/client.ts`'s header comment for `ash_rpc`). One COMPONENT is outside
-// that boundary on purpose — `components/shell/WindowControls.svelte` drives
+// This module, `updater.ts`, `shell/external-link.ts`, and
+// `shell/reveal-in-os.ts` are the ONLY modules allowed to touch Tauri IPC
+// (grep-able boundary, mirrors `api/client.ts`'s header comment for
+// `ash_rpc`). One COMPONENT is outside that boundary on purpose —
+// `components/shell/WindowControls.svelte` drives
 // min/max/close through `@tauri-apps/api/window` — because there is no data
 // to wrap and no browser fallback to define: it renders only where the app
 // owns the window frame, which is nowhere a browser is. This one wraps the
