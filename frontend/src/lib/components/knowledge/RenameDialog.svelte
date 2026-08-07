@@ -9,11 +9,14 @@
   // reference search resolves a single exact target path, not a real
   // folder-scoped query.
   //
-  // `currentName` is the row's own label, so a file leaf pre-fills its FULL
-  // basename (`brochure.pdf`) while a page pre-fills its title without the
-  // extension — matching what the backend does with the submitted name
-  // (`Valea.ICM.rename_target_name/3`: `.md` ensured for a page, taken as
-  // typed for anything else).
+  // `currentName` is the row's own label, so BOTH a file leaf and a page
+  // pre-fill their FULL basename now (`brochure.pdf`, `notes.md` — see
+  // `icmToNav`, which restores a page's `.md` into its label). That stays
+  // safe for a page: the backend's `Valea.ICM.rename_target_name/3` ensures
+  // `.md` on the submitted name, and `ensure_md_extension/1` is idempotent,
+  // so submitting the prefilled `notes.md` unchanged still renames to
+  // `notes.md`. The user simply now edits the real filename instead of a
+  // title with the extension implied.
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';

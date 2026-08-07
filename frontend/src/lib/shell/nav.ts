@@ -54,7 +54,9 @@ export type NavTreeItem = {
   loaded?: boolean;
   /**
    * Non-.md file leaves only — lowercase extension incl. the dot (e.g.
-   * `".pdf"`), mirroring `IcmNode.ext`. Feeds the row's format badge.
+   * `".pdf"`), mirroring `IcmNode.ext`. Feeds `fileLeafKind` (via
+   * `FileView`), which picks the viewer a file leaf opens in — image / pdf /
+   * csv / plain text.
    * `''` for an extension-less regular file (LICENSE, Makefile, a dotfile),
    * because that is what `Path.extname/1` returns — which is exactly why
    * `isFile` below, and never `ext`'s truthiness, is the file/page test.
@@ -63,9 +65,9 @@ export type NavTreeItem = {
   /**
    * `true` on non-.md file leaves and nothing else — the discriminator for
    * anything that must treat files differently from pages. `IcmTree` uses
-   * it to pick the row's format badge and the `EntryMenu`'s `kind`
-   * (`'file'` vs `'page'`), which decides the menu's wording and whether
-   * the backend rename ensures a `.md` extension.
+   * it to pick the `EntryMenu`'s `kind` (`'file'` vs `'page'`), which
+   * decides the menu's wording and whether the backend rename ensures a
+   * `.md` extension.
    */
   isFile?: boolean;
 };
@@ -160,9 +162,10 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
     // the non-.md formats (plain text / pdf.js / image), so the old
     // "visible but never clickable" special case (A-T15 fix wave) is gone
     // along with the separate non-clickable rows the Knowledge list panes
-    // used to render below the tree. `ext` rides along for the row's format
-    // badge, `isFile` for everything that must tell a file from a page (an
-    // extension-less file has `ext: ''`, so `ext` alone can't carry that).
+    // used to render below the tree. `ext` rides along for `FileView`'s
+    // viewer choice (`fileLeafKind`), `isFile` for everything that must tell
+    // a file from a page (an extension-less file has `ext: ''`, so `ext`
+    // alone can't carry that).
     if (n.type === 'file') {
       return [
         {
