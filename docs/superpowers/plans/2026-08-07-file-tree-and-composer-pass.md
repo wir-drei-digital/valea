@@ -10,6 +10,8 @@
 
 **Spec:** [`docs/superpowers/specs/2026-08-07-file-tree-and-composer-pass-design.md`](../specs/2026-08-07-file-tree-and-composer-pass-design.md)
 
+**Task shape:** seven tasks, each one complete feature — a reviewer can meaningfully accept or reject any one of them without touching its neighbours, and none leaves dead code behind if the next is never done. Commits stay frequent *inside* a task, at each point the tree is green.
+
 ## Global Constraints
 
 - **No SSR, ever.** Every module must survive being imported with no `window`, no `navigator`, no `localStorage`. Feature-detect with `try/catch`, never `typeof` — Node 25 ships a global `localStorage` whose methods are undefined, so `typeof` lies. See `lib/persist.ts`.
@@ -28,92 +30,76 @@
 
 ## File Structure
 
-**Phase A — syntax highlighting**
-
-| file | responsibility |
-|---|---|
-| `frontend/src/lib/highlight/languages.ts` (new) | pure: filename/fence → grammar id, and the canonical grammar id list |
-| `frontend/src/lib/highlight/languages.test.ts` (new) | its suite |
-| `frontend/src/lib/highlight/highlight.ts` (new) | lazy grammar registry + `highlight()` + the size guard — the spec listed the registry as its own `registry.ts`; it is ~30 lines of loader map that only `highlight()` calls, so it lives with its caller |
-| `frontend/src/lib/highlight/highlight.test.ts` (new) | its suite, exercising the real lowlight |
-| `frontend/src/lib/highlight/HastNode.svelte` (new) | recursive hast → elements renderer |
-| `frontend/src/lib/highlight/CodeBlock.svelte` (new) | the one `<pre>`; plain first, highlighted when the grammar resolves |
-| `frontend/src/routes/layout.css` (modify) | eight `--code-*` tokens, light + dark, + `@theme` mapping + `.hljs-*` rules |
-| `frontend/src/lib/design/contrast.test.ts` (modify) | AA invariants for the code palette |
-| `frontend/src/lib/components/files/PlainTextView.svelte` (modify) | render through `CodeBlock` |
-| `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte` (modify) | same, for fenced code |
-
-**Phase B — tree labels and icons**
-
-| file | responsibility |
-|---|---|
-| `frontend/src/lib/shell/nav.ts` (modify) | page labels carry `.md` |
-| `frontend/src/lib/shell/nav.test.ts` (modify) | pins it |
-| `frontend/src/lib/components/knowledge/file-icon.ts` (new) | pure: label → lucide component; folder open/closed |
-| `frontend/src/lib/components/knowledge/file-icon.test.ts` (new) | its suite |
-| `frontend/src/lib/components/knowledge/file-leaf.ts` (modify) | `fileLeafLabel` deleted; `fileLeafKind` stays |
-| `frontend/src/lib/components/knowledge/file-leaf.test.ts` (modify) | drops the label cases |
-| `frontend/src/lib/components/shell/IcmTree.svelte` (modify) | icon column in, trailing badge out, chevron → folder glyph |
-
-**Phase C — context menu**
-
-| file | responsibility |
-|---|---|
-| `frontend/src/lib/components/knowledge/entry-actions.ts` (new) | pure: the ordered, gated action descriptor list |
-| `frontend/src/lib/components/knowledge/entry-actions.test.ts` (new) | its suite |
-| `frontend/src/lib/shell/reveal-in-os.ts` (new) | absolute-path join, platform label, the Tauri IPC call |
-| `frontend/src/lib/shell/reveal-in-os.test.ts` (new) | its suite (pure halves only) |
-| `frontend/src/lib/components/ui/context-menu/**` (new, generated) | shadcn-svelte primitive |
-| `frontend/src/lib/components/knowledge/EntryMenu.svelte` (modify) | `variant` prop; renders `entry-actions`' list |
-| `frontend/src/lib/components/shell/IcmTree.svelte` (modify) | wraps rows in the context-menu trigger |
-| `frontend/src/lib/keychain.ts` (modify) | the IPC-boundary comment gains a fourth module |
-| `desktop/src-tauri/Cargo.toml`, `src/main.rs`, `capabilities/default.json` (modify) | opener plugin + one permission |
-| `frontend/package.json` (modify) | `@tauri-apps/plugin-opener` |
-
-**Phase D — busy authority**
-
-| file | responsibility |
-|---|---|
-| `backend/lib/valea/agents/session_server.ex` (modify) | busy-transition broadcast |
-| `backend/lib/valea_web/channels/agent_session_channel.ex` (modify) | pushes it |
-| `backend/test/valea/agents/session_server_test.exs` (modify) | pins the transitions |
-| `frontend/src/lib/stores/agent-session.svelte.ts` (modify) | consumes `busy`, stops inferring |
-| `frontend/src/lib/stores/agent-session.test.ts` (modify) | pins both |
-
-**Phase E — running-work indicator**
-
-| file | responsibility |
-|---|---|
-| `frontend/src/lib/components/agent/activity.ts` (new) | pure: running tools, summary label |
-| `frontend/src/lib/components/agent/activity.test.ts` (new) | its suite |
-| `frontend/src/lib/components/agent/Composer.svelte` (modify) | expandable indicator |
-| `frontend/src/lib/components/views/ChatView.svelte` (modify) | passes `activity` |
-
-**Phase F — sticky composer options**
-
-| file | responsibility |
-|---|---|
-| `frontend/src/lib/stores/composer-options.svelte.ts` (new) | per-workspace remembered chips + the per-session staging handoff |
-| `frontend/src/lib/stores/composer-options.test.ts` (new) | its suite |
-| `frontend/src/lib/stores/agent-session.svelte.ts` (modify) | `opts.applyConfig` |
-| `frontend/src/lib/stores/agent-session.test.ts` (modify) | pins it |
-| `frontend/src/lib/components/views/ChatView.svelte` (modify) | remembers on change, stages on create |
+| task | file | responsibility |
+|---|---|---|
+| 1 | `frontend/src/lib/highlight/languages.ts` (new) | pure: filename/fence → grammar id, and the canonical grammar id list |
+| 1 | `frontend/src/lib/highlight/languages.test.ts` (new) | its suite |
+| 1 | `frontend/src/lib/highlight/highlight.ts` (new) | lazy grammar registry + `highlight()` + the size guard — the spec listed the registry as its own `registry.ts`; it is ~30 lines of loader map that only `highlight()` calls, so it lives with its caller |
+| 1 | `frontend/src/lib/highlight/highlight.test.ts` (new) | its suite, exercising the real lowlight |
+| 1 | `frontend/src/lib/highlight/HastNode.svelte` (new) | recursive hast → elements renderer |
+| 1 | `frontend/src/lib/highlight/CodeBlock.svelte` (new) | the one `<pre>`; plain first, highlighted when the grammar resolves |
+| 1 | `frontend/src/routes/layout.css` (modify) | eight `--code-*` tokens, light + dark, + `.hljs-*` rules |
+| 1 | `frontend/src/lib/design/contrast.test.ts` (modify) | AA invariants for the code palette |
+| 1 | `frontend/src/lib/components/files/PlainTextView.svelte` (modify) | render through `CodeBlock` |
+| 1 | `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte` (modify) | same, for fenced code |
+| 2 | `frontend/src/lib/shell/nav.ts` + `.test.ts` (modify) | page labels carry `.md` |
+| 2 | `frontend/src/lib/components/knowledge/file-icon.ts` + `.test.ts` (new) | pure: label → lucide component; folder open/closed |
+| 2 | `frontend/src/lib/components/knowledge/file-leaf.ts` + `.test.ts` (modify) | `fileLeafLabel` deleted; `fileLeafKind` stays |
+| 2 | `frontend/src/lib/components/shell/IcmTree.svelte` (modify) | icon column in, trailing badge out, chevron → folder glyph |
+| 3 | `frontend/src/lib/components/knowledge/entry-actions.ts` + `.test.ts` (new) | pure: the ordered, gated action descriptor list |
+| 3 | `frontend/src/lib/shell/reveal-in-os.ts` + `.test.ts` (new) | absolute-path join, platform label, the Tauri IPC call |
+| 3 | `frontend/src/lib/keychain.ts` (modify) | the IPC-boundary comment gains a fourth module |
+| 3 | `desktop/src-tauri/{Cargo.toml,src/main.rs,capabilities/default.json}` (modify) | opener plugin + one permission |
+| 4 | `frontend/src/lib/components/ui/context-menu/**` (new, generated) | shadcn-svelte primitive |
+| 4 | `frontend/src/lib/components/knowledge/EntryMenu.svelte` (modify) | `variant` prop; renders `entry-actions`' list |
+| 4 | `frontend/src/lib/components/shell/IcmTree.svelte` (modify) | wraps rows in the context-menu trigger |
+| 5 | `backend/lib/valea/agents/session_server.ex` (modify) | busy-transition broadcast |
+| 5 | `backend/lib/valea_web/channels/agent_session_channel.ex` (modify) | pushes it |
+| 5 | `backend/test/valea/agents/session_server_test.exs` (modify) | pins the transitions |
+| 5 | `frontend/src/lib/stores/agent-session.svelte.ts` + `.test.ts` (modify) | consumes `busy`, stops inferring |
+| 6 | `frontend/src/lib/components/agent/activity.ts` + `.test.ts` (new) | pure: running tools, summary label |
+| 6 | `frontend/src/lib/components/agent/Composer.svelte` (modify) | expandable indicator |
+| 6 | `frontend/src/lib/components/views/ChatView.svelte` (modify) | passes `activity` |
+| 7 | `frontend/src/lib/stores/composer-options.svelte.ts` + `.test.ts` (new) | per-workspace remembered chips + the per-session staging handoff |
+| 7 | `frontend/src/lib/stores/agent-session.svelte.ts` + `.test.ts` (modify) | `opts.applyConfig` |
+| 7 | `frontend/src/lib/components/views/ChatView.svelte` (modify) | remembers on change, stages on create |
 
 ---
 
-# Phase A — Syntax highlighting
-
-### Task 1: The language map
+## Task 1: Syntax highlighting, end to end
 
 **Files:**
-- Create: `frontend/src/lib/highlight/languages.ts`
-- Test: `frontend/src/lib/highlight/languages.test.ts`
+- Create: `frontend/src/lib/highlight/languages.ts`, `languages.test.ts`, `highlight.ts`, `highlight.test.ts`, `HastNode.svelte`, `CodeBlock.svelte`
+- Modify: `frontend/package.json`, `frontend/src/routes/layout.css`, `frontend/src/lib/design/contrast.test.ts`, `frontend/src/lib/components/files/PlainTextView.svelte`, `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `GRAMMARS` (readonly string tuple), `type Grammar`, `isGrammar(value: string): value is Grammar`, `grammarForFilename(name: string): Grammar | null`, `grammarForFence(info: string): Grammar | null`.
+- Consumes: `unescapeMarked` and `Token` from `$lib/markdown/agent-markdown` (existing); `capped-text.ts`'s `truncated` flag as already surfaced by `PlainTextView`.
+- Produces (internal to this task, nothing else in the plan depends on them):
+  ```ts
+  // languages.ts
+  export const GRAMMARS: readonly string[];
+  export type Grammar = (typeof GRAMMARS)[number];
+  export function isGrammar(value: string): value is Grammar;
+  export function grammarForFilename(name: string): Grammar | null;
+  export function grammarForFence(info: string): Grammar | null;
+  // highlight.ts
+  export const MAX_HIGHLIGHT_CHARS: number;
+  export function highlight(code: string, grammar: Grammar | null): Promise<Root | null>; // Root from 'hast'
+  // CodeBlock.svelte props
+  { code: string; grammar: Grammar | null; class?: string }
+  ```
 
-- [ ] **Step 1: Write the failing test**
+**Note on the size constant:** the spec called it `MAX_HIGHLIGHT_BYTES`. It is implemented as characters, because that is what `String.length` gives and what the tokeniser's cost actually tracks. The name says so.
+
+- [ ] **Step 1: Add the dependency**
+
+```bash
+cd frontend && bun add lowlight
+```
+
+Expected: `lowlight@^3` and `highlight.js@^11` land in `package.json` / `bun.lock`.
+
+- [ ] **Step 2: Write the failing test for the language map**
 
 Create `frontend/src/lib/highlight/languages.test.ts`:
 
@@ -186,7 +172,7 @@ describe('GRAMMARS', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/highlight/languages.test.ts
@@ -194,7 +180,7 @@ cd frontend && bunx vitest run src/lib/highlight/languages.test.ts
 
 Expected: FAIL — `Failed to resolve import "./languages"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 4: Implement the language map**
 
 Create `frontend/src/lib/highlight/languages.ts`:
 
@@ -301,7 +287,7 @@ export function grammarForFence(info: string): Grammar | null {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 5: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/highlight/languages.test.ts
@@ -309,37 +295,7 @@ cd frontend && bunx vitest run src/lib/highlight/languages.test.ts
 
 Expected: PASS, 10 tests.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add frontend/src/lib/highlight/languages.ts frontend/src/lib/highlight/languages.test.ts
-git commit -m "feat(highlight): filename and fence to grammar map"
-```
-
----
-
-### Task 2: The highlighter
-
-**Files:**
-- Create: `frontend/src/lib/highlight/highlight.ts`
-- Test: `frontend/src/lib/highlight/highlight.test.ts`
-- Modify: `frontend/package.json` (add `lowlight`)
-
-**Interfaces:**
-- Consumes: `GRAMMARS`, `Grammar` from `./languages` (Task 1).
-- Produces: `MAX_HIGHLIGHT_CHARS: number`, `highlight(code: string, grammar: Grammar | null): Promise<Root | null>` where `Root` is `hast`'s.
-
-**Note on the constant's name:** the spec called this `MAX_HIGHLIGHT_BYTES`. It is implemented as characters, because that is what `String.length` gives and what the tokeniser's cost actually tracks. The name says so.
-
-- [ ] **Step 1: Add the dependency**
-
-```bash
-cd frontend && bun add lowlight
-```
-
-Expected: `lowlight@^3` and `highlight.js@^11` land in `package.json` / `bun.lock`.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 6: Write the failing test for the highlighter**
 
 Create `frontend/src/lib/highlight/highlight.test.ts`:
 
@@ -360,6 +316,14 @@ function classes(nodes: RootContent[]): string[] {
   });
 }
 
+function flatten(nodes: RootContent[]): string {
+  return nodes
+    .map((n) =>
+      n.type === 'text' ? n.value : n.type === 'element' ? flatten(n.children as RootContent[]) : ''
+    )
+    .join('');
+}
+
 describe('highlight', () => {
   it('returns a hast tree carrying hljs classes', async () => {
     const tree = await highlight('defmodule Foo do\nend\n', 'elixir');
@@ -370,12 +334,6 @@ describe('highlight', () => {
   it('preserves the source text exactly', async () => {
     const code = 'const x = "hi";\n\nconst y = 2;\n';
     const tree = await highlight(code, 'typescript');
-    const flatten = (nodes: RootContent[]): string =>
-      nodes
-        .map((n) =>
-          n.type === 'text' ? n.value : n.type === 'element' ? flatten(n.children as RootContent[]) : ''
-        )
-        .join('');
     expect(flatten(tree!.children as RootContent[])).toBe(code);
   });
 
@@ -396,7 +354,7 @@ describe('highlight', () => {
 });
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [ ] **Step 7: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/highlight/highlight.test.ts
@@ -404,7 +362,7 @@ cd frontend && bunx vitest run src/lib/highlight/highlight.test.ts
 
 Expected: FAIL — `Failed to resolve import "./highlight"`.
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 8: Implement the highlighter**
 
 Create `frontend/src/lib/highlight/highlight.ts`:
 
@@ -504,38 +462,24 @@ export async function highlight(code: string, grammar: Grammar | null): Promise<
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 9: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/highlight/highlight.test.ts
 ```
 
-Expected: PASS, 5 tests. If "loads every grammar" fails naming one id, that id has no `highlight.js/lib/languages/<id>` module — remove it from `GRAMMARS` and from `BY_EXTENSION` in Task 1's file rather than inventing a loader.
+Expected: PASS, 5 tests. If "loads every grammar" fails naming one id, that id has no `highlight.js/lib/languages/<id>` module — remove it from `GRAMMARS` and from `BY_EXTENSION` rather than inventing a loader.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit the two pure modules**
 
 ```bash
-git add frontend/package.json frontend/bun.lock frontend/src/lib/highlight/highlight.ts frontend/src/lib/highlight/highlight.test.ts
+git add frontend/package.json frontend/bun.lock frontend/src/lib/highlight/
 git commit -m "feat(highlight): lazy lowlight highlighter returning a hast tree"
 ```
 
----
+- [ ] **Step 11: Write the failing palette test**
 
-### Task 3: The code palette
-
-**Files:**
-- Modify: `frontend/src/routes/layout.css`
-- Test: `frontend/src/lib/design/contrast.test.ts`
-
-**Interfaces:**
-- Consumes: nothing.
-- Produces: CSS custom properties `--code-keyword`, `--code-string`, `--code-comment`, `--code-number`, `--code-fn`, `--code-type`, `--code-attr`, `--code-punct` in both palettes, and `.hljs-*` rules consuming them.
-
-The hex values below are already contrast-verified against `paper-track` (the chat code block's background) and `paper-surface` (the file viewer's) in both themes. The lowest is light `code-comment` at 4.65:1 on track. Do not substitute colours by eye.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `frontend/src/lib/design/contrast.test.ts`, inside the existing `describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => { ... })` block (so it reuses that block's `p`):
+Append to `frontend/src/lib/design/contrast.test.ts`, **inside** the existing `describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => { ... })` block (so it reuses that block's `p`):
 
 ```ts
   // Code blocks sit on `paper-track` in the chat transcript and on
@@ -570,7 +514,7 @@ Append to `frontend/src/lib/design/contrast.test.ts`, inside the existing `descr
   });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 12: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/design/contrast.test.ts
@@ -578,9 +522,11 @@ cd frontend && bunx vitest run src/lib/design/contrast.test.ts
 
 Expected: FAIL — `light must define --code-keyword`.
 
-- [ ] **Step 3: Add the light palette**
+- [ ] **Step 13: Add the light palette**
 
-In `frontend/src/routes/layout.css`, in the `:root { ... }` block, after the ink group, add:
+The hex values below are already contrast-verified against `paper-track` and `paper-surface` in both themes; the tightest is light `code-comment` at 4.65:1 on track. **Do not substitute colours by eye.**
+
+In `frontend/src/routes/layout.css`, in the `:root { ... }` block, after the ink group:
 
 ```css
   /* code — syntax highlighting inks. Verified AA on paper-track (the chat
@@ -598,9 +544,9 @@ In `frontend/src/routes/layout.css`, in the `:root { ... }` block, after the ink
   --code-punct: #57503f;
 ```
 
-- [ ] **Step 4: Add the dark palette**
+- [ ] **Step 14: Add the dark palette**
 
-In the `.dark { ... }` block, in the matching position, add:
+In the `.dark { ... }` block, in the matching position:
 
 ```css
   /* code — see the :root block's note. */
@@ -614,7 +560,7 @@ In the `.dark { ... }` block, in the matching position, add:
   --code-punct: #a8a294;
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 15: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/design/contrast.test.ts
@@ -622,9 +568,9 @@ cd frontend && bunx vitest run src/lib/design/contrast.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 6: Map the highlight.js scopes onto the palette**
+- [ ] **Step 16: Map the highlight.js scopes onto the palette**
 
-Still in `layout.css`, inside the existing `@layer base { ... }` block (find it by the `/* Native scroll containers (pre/code blocks, …` comment that already lives there), append:
+Still in `layout.css`, inside the existing `@layer base { ... }` block (it opens at roughly line 356; find the `/* Native scroll containers (pre/code blocks, …` comment that already lives inside it), append:
 
 ```css
   /* highlight.js scopes → the eight code inks. Everything unlisted inherits
@@ -686,38 +632,16 @@ Still in `layout.css`, inside the existing `@layer base { ... }` block (find it 
   }
 ```
 
-- [ ] **Step 7: Verify the whole frontend suite and the type check still pass**
-
-```bash
-cd frontend && bun run check && bun run test
-```
-
-Expected: both clean.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 17: Commit the palette**
 
 ```bash
 git add frontend/src/routes/layout.css frontend/src/lib/design/contrast.test.ts
 git commit -m "feat(design): code palette tokens, AA-pinned on both code surfaces"
 ```
 
----
+- [ ] **Step 18: Write `HastNode.svelte`**
 
-### Task 4: Render highlighted code in both surfaces
-
-**Files:**
-- Create: `frontend/src/lib/highlight/HastNode.svelte`
-- Create: `frontend/src/lib/highlight/CodeBlock.svelte`
-- Modify: `frontend/src/lib/components/files/PlainTextView.svelte`
-- Modify: `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte`
-
-**Interfaces:**
-- Consumes: `highlight` (Task 2), `grammarForFilename` / `grammarForFence` / `Grammar` (Task 1), the `--code-*` palette (Task 3).
-- Produces: `CodeBlock.svelte` with props `{ code: string; grammar: Grammar | null; class?: string }`.
-
-**Whitespace warning:** both components render inside `<pre>`, where every literal newline and indent between template tags becomes visible text. The markup below is deliberately written with no whitespace between control-flow tags and content. Keep it that way; do not reformat it, and remember the frontend has no prettier that would.
-
-- [ ] **Step 1: Write `HastNode.svelte`**
+**Whitespace warning for this step and the next:** both components render inside `<pre>`, where every literal newline and indent between template tags becomes visible text. The markup below is deliberately written with no whitespace between control-flow tags and content. Keep it that way — and remember the frontend has no prettier that would reformat it back.
 
 Create `frontend/src/lib/highlight/HastNode.svelte`:
 
@@ -750,7 +674,7 @@ Create `frontend/src/lib/highlight/HastNode.svelte`:
     >{/if}{/each}
 ```
 
-- [ ] **Step 2: Write `CodeBlock.svelte`**
+- [ ] **Step 19: Write `CodeBlock.svelte`**
 
 Create `frontend/src/lib/highlight/CodeBlock.svelte`:
 
@@ -798,7 +722,7 @@ Create `frontend/src/lib/highlight/CodeBlock.svelte`:
     /></pre>{:else}<pre class={className}>{code}</pre>{/if}
 ```
 
-- [ ] **Step 3: Wire the file viewer**
+- [ ] **Step 20: Wire the file viewer**
 
 In `frontend/src/lib/components/files/PlainTextView.svelte`, add to the imports:
 
@@ -831,7 +755,7 @@ Replace the trailing `<pre …>{text}</pre>` (the last three lines of the file) 
   />
 ```
 
-- [ ] **Step 4: Wire the chat transcript**
+- [ ] **Step 21: Wire the chat transcript**
 
 In `frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte`, add to the imports:
 
@@ -853,7 +777,7 @@ Replace the `{:else if token.type === 'code'}` branch's `<pre>` with:
       />
 ```
 
-- [ ] **Step 5: Verify the type check and the suite**
+- [ ] **Step 22: Verify the type check and the full suite**
 
 ```bash
 cd frontend && bun run check && bun run test
@@ -861,32 +785,30 @@ cd frontend && bun run check && bun run test
 
 Expected: both clean.
 
-- [ ] **Step 6: Verify in the running app**
+- [ ] **Step 23: Verify in the running app**
 
-Start the dev server via the preview tooling (never `bash`), open a `.ex` and a `.ts` file in the Files pane, and confirm: colour in light and dark, no leading/trailing blank line inside the block, horizontal scrolling still works on a long line, and a `.bin` or unknown extension still renders plain.
+Start the dev server via the preview tooling (never `bash`), open a `.ex` and a `.ts` file in the Files pane, and confirm: colour in light and dark, no leading or trailing blank line inside the block, horizontal scrolling still working on a long line, and a `.bin` or unknown extension still rendering plain. Then check a chat message with a ```` ```elixir ```` fence.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 24: Commit**
 
 ```bash
-git add frontend/src/lib/highlight/HastNode.svelte frontend/src/lib/highlight/CodeBlock.svelte frontend/src/lib/components/files/PlainTextView.svelte frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte
+git add frontend/src/lib/highlight/ frontend/src/lib/components/files/PlainTextView.svelte frontend/src/lib/components/agent/markdown/MarkdownBlocks.svelte
 git commit -m "feat(files,chat): syntax-highlight code files and fenced code blocks"
 ```
 
 ---
 
-# Phase B — Tree labels and icons
-
-### Task 5: Page labels carry `.md`
+## Task 2: File endings and type icons in the tree
 
 **Files:**
-- Modify: `frontend/src/lib/shell/nav.ts` (the `icmToNav` page branch, the last `return` in the function)
-- Test: `frontend/src/lib/shell/nav.test.ts`
+- Create: `frontend/src/lib/components/knowledge/file-icon.ts`, `file-icon.test.ts`
+- Modify: `frontend/src/lib/shell/nav.ts`, `nav.test.ts`, `frontend/src/lib/components/knowledge/file-leaf.ts`, `file-leaf.test.ts`, `frontend/src/lib/components/shell/IcmTree.svelte`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: no signature change — `icmToNav`'s page items now carry `label: "<basename>.md"`.
+- Consumes: `NavIcon` from `$lib/shell/nav` (existing export).
+- Produces: `fileIcon(label: string): NavIcon`, `folderIcon(open: boolean): NavIcon`. `icmToNav`'s signature is unchanged; its page items now carry `label: "<basename>.md"`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing label test**
 
 Add to `frontend/src/lib/shell/nav.test.ts`, inside the existing `icmToNav` describe block (or a new one if none exists):
 
@@ -911,7 +833,7 @@ Add to `frontend/src/lib/shell/nav.test.ts`, inside the existing `icmToNav` desc
   });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/shell/nav.test.ts
@@ -919,7 +841,7 @@ cd frontend && bunx vitest run src/lib/shell/nav.test.ts
 
 Expected: FAIL — received `'Weekly notes'`, expected `'Weekly notes.md'`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement the label change**
 
 In `frontend/src/lib/shell/nav.ts`, replace the final `return` of `icmToNav` (the page branch) with:
 
@@ -945,45 +867,22 @@ In `frontend/src/lib/shell/nav.ts`, replace the final `return` of `icmToNav` (th
     ];
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 4: Run it, then the whole suite, and fix the fallout**
 
 ```bash
-cd frontend && bunx vitest run src/lib/shell/nav.test.ts
+cd frontend && bunx vitest run src/lib/shell/nav.test.ts && bun run test
 ```
 
-Expected: PASS. Other assertions in this file that expected a bare page label must be updated to expect the extension — that is the point of the change, not a regression.
+Expected: PASS. Any other assertion anywhere that expected a bare page label must be updated to expect the extension — that is the point of the change, not a regression.
 
-- [ ] **Step 5: Run the whole suite for fallout**
-
-```bash
-cd frontend && bun run test
-```
-
-Expected: PASS. Any other suite asserting a page's tree label needs the same update.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit the label change**
 
 ```bash
 git add frontend/src/lib/shell/nav.ts frontend/src/lib/shell/nav.test.ts
 git commit -m "feat(tree): show a page its .md extension"
 ```
 
----
-
-### Task 6: A file-type icon before every name
-
-**Files:**
-- Create: `frontend/src/lib/components/knowledge/file-icon.ts`
-- Test: `frontend/src/lib/components/knowledge/file-icon.test.ts`
-- Modify: `frontend/src/lib/components/knowledge/file-leaf.ts` (delete `fileLeafLabel`)
-- Modify: `frontend/src/lib/components/knowledge/file-leaf.test.ts` (delete its cases)
-- Modify: `frontend/src/lib/components/shell/IcmTree.svelte`
-
-**Interfaces:**
-- Consumes: `NavIcon` from `$lib/shell/nav` (Task 5's file, unchanged type).
-- Produces: `fileIcon(label: string): NavIcon`, `folderIcon(open: boolean): NavIcon`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 6: Write the failing icon test**
 
 Create `frontend/src/lib/components/knowledge/file-icon.test.ts`:
 
@@ -1039,7 +938,7 @@ describe('folderIcon', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 7: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/knowledge/file-icon.test.ts
@@ -1047,7 +946,7 @@ cd frontend && bunx vitest run src/lib/components/knowledge/file-icon.test.ts
 
 Expected: FAIL — `Failed to resolve import "./file-icon"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 8: Implement the icon map**
 
 Create `frontend/src/lib/components/knowledge/file-icon.ts`:
 
@@ -1136,7 +1035,7 @@ export function folderIcon(open: boolean): NavIcon {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 9: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/knowledge/file-icon.test.ts
@@ -1144,7 +1043,7 @@ cd frontend && bunx vitest run src/lib/components/knowledge/file-icon.test.ts
 
 Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Delete the badge's logic and its cases**
+- [ ] **Step 10: Delete the badge's logic and its cases**
 
 In `frontend/src/lib/components/knowledge/file-leaf.ts`, delete the `fileLeafLabel` function and its doc paragraph. Update the module's header comment: it currently says "The two exports are DIFFERENT partitions…" — reword to describe `fileLeafKind` alone, keeping the note that a third partition (`FilesController`'s `@allowed_types`) lives server-side.
 
@@ -1156,7 +1055,7 @@ cd frontend && bunx vitest run src/lib/components/knowledge/file-leaf.test.ts
 
 Expected: PASS with the remaining `fileLeafKind` cases.
 
-- [ ] **Step 6: Put the icons in the tree**
+- [ ] **Step 11: Put the icons in the tree**
 
 In `frontend/src/lib/components/shell/IcmTree.svelte`:
 
@@ -1186,19 +1085,19 @@ In **both** leaf branches (the `onSelect` button and the `<a>`), delete the `{#i
               <LeafGlyph class="text-ink-meta size-3.5 shrink-0" strokeWidth={1.5} />
 ```
 
-- [ ] **Step 7: Verify the type check and the suite**
+- [ ] **Step 12: Verify the type check and the suite**
 
 ```bash
 cd frontend && bun run check && bun run test
 ```
 
-Expected: both clean. `bun run check` will flag the now-unused `fileLeafLabel` import in `IcmTree.svelte` if it was missed — remove it.
+Expected: both clean. `bun run check` will flag a now-unused `fileLeafLabel` import in `IcmTree.svelte` if it was missed — remove it.
 
-- [ ] **Step 8: Verify in the running app**
+- [ ] **Step 13: Verify in the running app**
 
 Open the Knowledge route and a Files pane. Confirm: one glyph per row in one aligned column, folders visibly opening and closing, no trailing uppercase badge, and long filenames still truncating with the icon fixed in place.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add frontend/src/lib/components/knowledge/file-icon.ts frontend/src/lib/components/knowledge/file-icon.test.ts frontend/src/lib/components/knowledge/file-leaf.ts frontend/src/lib/components/knowledge/file-leaf.test.ts frontend/src/lib/components/shell/IcmTree.svelte
@@ -1207,18 +1106,19 @@ git commit -m "feat(tree): a file-type glyph before every name, replacing the tr
 
 ---
 
-# Phase C — Right-click context menu
+## Task 3: The action list and the reveal plumbing
 
-### Task 7: The shared action list
+Everything the menus will need, with nothing user-visible yet. Split from Task 4 because this half is pure logic plus a Rust/permission change with its own verification cycle (`cargo check`), and a reviewer can reasonably accept the capability grant while sending the menu layout back.
 
 **Files:**
-- Create: `frontend/src/lib/components/knowledge/entry-actions.ts`
-- Test: `frontend/src/lib/components/knowledge/entry-actions.test.ts`
+- Create: `frontend/src/lib/components/knowledge/entry-actions.ts`, `entry-actions.test.ts`, `frontend/src/lib/shell/reveal-in-os.ts`, `reveal-in-os.test.ts`
+- Modify: `frontend/package.json`, `frontend/src/lib/keychain.ts`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/src/main.rs`, `desktop/src-tauri/capabilities/default.json`
 
 **Interfaces:**
-- Consumes: `EntryKind`, `startSessionLabel` from `./entry-kind`.
+- Consumes: `EntryKind`, `startSessionLabel` from `./entry-kind`; `inDesktop` from `$lib/keychain`; `windowChrome` from `$lib/shell/platform`.
 - Produces:
   ```ts
+  // entry-actions.ts
   export type EntryActionId =
     | 'open-in-tab' | 'start-session' | 'reveal'
     | 'copy-path' | 'copy-name'
@@ -1234,9 +1134,14 @@ git commit -m "feat(tree): a file-type glyph before every name, replacing the tr
     canOpenInTab: boolean;
     openInTabDisabled?: string | null;
   }): EntryAction[];
+  // reveal-in-os.ts
+  export function absPathFor(mounts: readonly { mountKey: string; root: string }[], mountKey: string, relPath: string): string | null;
+  export function revealLabel(): string;
+  export function canRevealInOs(): boolean;
+  export function revealInOs(absPath: string): void;
   ```
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing action-list test**
 
 Create `frontend/src/lib/components/knowledge/entry-actions.test.ts`:
 
@@ -1322,7 +1227,7 @@ describe('entryActions', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/knowledge/entry-actions.test.ts
@@ -1330,7 +1235,7 @@ cd frontend && bunx vitest run src/lib/components/knowledge/entry-actions.test.t
 
 Expected: FAIL — `Failed to resolve import "./entry-actions"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement the action list**
 
 Create `frontend/src/lib/components/knowledge/entry-actions.ts`:
 
@@ -1438,7 +1343,7 @@ export function entryActions(input: {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 4: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/knowledge/entry-actions.test.ts
@@ -1446,29 +1351,7 @@ cd frontend && bunx vitest run src/lib/components/knowledge/entry-actions.test.t
 
 Expected: PASS, 9 tests.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add frontend/src/lib/components/knowledge/entry-actions.ts frontend/src/lib/components/knowledge/entry-actions.test.ts
-git commit -m "feat(tree): one gated action list for both row menus"
-```
-
----
-
-### Task 8: Reveal in the OS file manager
-
-**Files:**
-- Create: `frontend/src/lib/shell/reveal-in-os.ts`
-- Test: `frontend/src/lib/shell/reveal-in-os.test.ts`
-- Modify: `frontend/src/lib/keychain.ts` (boundary comment only)
-- Modify: `frontend/package.json`
-- Modify: `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/src/main.rs`, `desktop/src-tauri/capabilities/default.json`
-
-**Interfaces:**
-- Consumes: `inDesktop` from `$lib/keychain`, `windowChrome` from `$lib/shell/platform`, `MountSummary` from `$lib/stores/mounts.svelte`.
-- Produces: `absPathFor(mounts, mountKey, relPath): string | null`, `revealLabel(): string`, `canRevealInOs(): boolean`, `revealInOs(absPath: string): void`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 5: Write the failing reveal test**
 
 Create `frontend/src/lib/shell/reveal-in-os.test.ts`:
 
@@ -1504,7 +1387,7 @@ describe('absPathFor', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 6: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/shell/reveal-in-os.test.ts
@@ -1512,7 +1395,11 @@ cd frontend && bunx vitest run src/lib/shell/reveal-in-os.test.ts
 
 Expected: FAIL — `Failed to resolve import "./reveal-in-os"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 7: Add the plugin dependency and implement the module**
+
+```bash
+cd frontend && bun add @tauri-apps/plugin-opener
+```
 
 Create `frontend/src/lib/shell/reveal-in-os.ts`:
 
@@ -1579,21 +1466,15 @@ export function revealInOs(absPath: string): void {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 8: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/shell/reveal-in-os.test.ts
 ```
 
-Expected: PASS, 5 tests. (`absPathFor` is imported from a module that also imports the Tauri plugin at the top level; vitest resolves the package without invoking it, so the pure half tests cleanly. If the import throws under node, move the plugin import inside `revealInOs` as a dynamic `await import(...)` — the same lazy shape `MountIcmAction.svelte` uses for the dialog plugin — and re-run.)
+Expected: PASS, 5 tests. `absPathFor` is imported from a module that also imports the Tauri plugin at the top level; vitest resolves the package without invoking it, so the pure half tests cleanly. If that import throws under node, move it inside `revealInOs` as a dynamic `await import(...)` — the same lazy shape `MountIcmAction.svelte` uses for the dialog plugin — and re-run.
 
-- [ ] **Step 5: Add the frontend dependency**
-
-```bash
-cd frontend && bun add @tauri-apps/plugin-opener
-```
-
-- [ ] **Step 6: Register the plugin in the desktop crate**
+- [ ] **Step 9: Register the plugin in the desktop crate**
 
 In `desktop/src-tauri/Cargo.toml`, beside the other `tauri-plugin-*` entries:
 
@@ -1617,11 +1498,11 @@ In `desktop/src-tauri/capabilities/default.json`, add to `permissions`:
 		"opener:allow-reveal-item-in-dir",
 ```
 
-- [ ] **Step 7: Update the IPC boundary comment**
+- [ ] **Step 10: Update the IPC boundary comment**
 
 In `frontend/src/lib/keychain.ts`, the header comment names the modules allowed to touch Tauri IPC. Add `shell/reveal-in-os.ts` to that list, so the grep-able boundary stays accurate.
 
-- [ ] **Step 8: Verify the crate compiles and the frontend checks**
+- [ ] **Step 11: Verify the crate compiles and the frontend checks**
 
 ```bash
 cd desktop/src-tauri && cargo check
@@ -1631,27 +1512,34 @@ cd desktop/src-tauri && cargo check
 cd frontend && bun run check && bun run test
 ```
 
-Expected: both clean.
+Expected: all clean.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add frontend/package.json frontend/bun.lock frontend/src/lib/shell/reveal-in-os.ts frontend/src/lib/shell/reveal-in-os.test.ts frontend/src/lib/keychain.ts desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock desktop/src-tauri/src/main.rs desktop/src-tauri/capabilities/default.json
-git commit -m "feat(desktop): reveal a tree row in the OS file manager"
+git add frontend/package.json frontend/bun.lock frontend/src/lib/components/knowledge/entry-actions.ts frontend/src/lib/components/knowledge/entry-actions.test.ts frontend/src/lib/shell/reveal-in-os.ts frontend/src/lib/shell/reveal-in-os.test.ts frontend/src/lib/keychain.ts desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock desktop/src-tauri/src/main.rs desktop/src-tauri/capabilities/default.json
+git commit -m "feat(tree): one gated action list, and reveal-in-file-manager plumbing"
 ```
 
 ---
 
-### Task 9: The context-menu primitive
+## Task 4: The right-click menu
 
 **Files:**
 - Create: `frontend/src/lib/components/ui/context-menu/**` (generated)
+- Modify: `frontend/src/lib/components/knowledge/EntryMenu.svelte`, `frontend/src/lib/components/shell/IcmTree.svelte`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `$lib/components/ui/context-menu/index.js` exporting at least `Root`, `Trigger`, `Content`, `Item`, `Separator` — the same surface `dropdown-menu` exports.
+- Consumes: `entryActions`, `EntryActionId` (Task 3); `absPathFor`, `canRevealInOs`, `revealInOs`, `revealLabel` (Task 3); the existing `RenameDialog`, `DeleteDialog`, `NewEntryDialog` (`{ mode, mountKey, parentPath, open }`), `chatNewHref`, `mountsStore`.
+- Produces: `EntryMenu.svelte` gains
+  ```ts
+  variant?: 'dropdown' | 'context';   // default 'dropdown'
+  onOpenInTab?: () => void;
+  openInTabDisabled?: string | null;
+  children?: Snippet;                 // the row, for variant 'context'
+  ```
 
-- [ ] **Step 1: Generate the component**
+- [ ] **Step 1: Generate the context-menu primitive**
 
 ```bash
 cd frontend && bunx shadcn-svelte@latest add context-menu
@@ -1663,7 +1551,7 @@ cd frontend && bunx shadcn-svelte@latest add context-menu
 cd frontend && grep -E "^\s+(Root|Trigger|Content|Item|Separator)," src/lib/components/ui/context-menu/index.js
 ```
 
-Expected: all five names present. Task 10 selects between the two primitive families by name, so a missing one there means a broken menu.
+Expected: all five names present. The steps below select between the two primitive families by name, so a missing one means a broken menu.
 
 - [ ] **Step 3: Verify nothing else moved**
 
@@ -1673,31 +1561,14 @@ cd frontend && git status --short && bun run check
 
 Expected: only files under `src/lib/components/ui/context-menu/` are new (the CLI may also touch `components.json` — that is fine). `bun run check` clean.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit the primitive**
 
 ```bash
 git add frontend/src/lib/components/ui/context-menu frontend/components.json
 git commit -m "chore(ui): add the shadcn-svelte context-menu primitive"
 ```
 
----
-
-### Task 10: One menu component, two shells
-
-**Files:**
-- Modify: `frontend/src/lib/components/knowledge/EntryMenu.svelte`
-
-**Interfaces:**
-- Consumes: `entryActions`, `EntryAction`, `EntryActionId` (Task 7); `absPathFor`, `canRevealInOs`, `revealInOs`, `revealLabel` (Task 8); the context-menu primitive (Task 9); the existing `RenameDialog`, `DeleteDialog`, `NewEntryDialog`, `chatNewHref`, `mountsStore`.
-- Produces: `EntryMenu.svelte` gains props
-  ```ts
-  variant?: 'dropdown' | 'context';   // default 'dropdown'
-  onOpenInTab?: () => void;
-  openInTabDisabled?: string | null;
-  children?: Snippet;                 // the row, for variant 'context'
-  ```
-
-- [ ] **Step 1: Extend the props and imports**
+- [ ] **Step 5: Extend `EntryMenu`'s props and imports**
 
 In `frontend/src/lib/components/knowledge/EntryMenu.svelte`, add to the imports:
 
@@ -1715,7 +1586,7 @@ In `frontend/src/lib/components/knowledge/EntryMenu.svelte`, add to the imports:
   import { mountsStore } from '$lib/stores/mounts.svelte';
 ```
 
-Add to the `$props()` destructuring and its type:
+Add to the `$props()` destructuring (with defaults) and its type:
 
 ```ts
     variant = 'dropdown',
@@ -1743,7 +1614,7 @@ Add to the `$props()` destructuring and its type:
     children?: Snippet;
 ```
 
-- [ ] **Step 2: Add the state and handlers**
+- [ ] **Step 6: Add the state and handlers**
 
 Below the existing `let deleteOpen = $state(false);`:
 
@@ -1828,9 +1699,9 @@ Below the existing `let deleteOpen = $state(false);`:
   };
 ```
 
-- [ ] **Step 3: Rewrite the markup**
+- [ ] **Step 7: Rewrite `EntryMenu`'s markup**
 
-Replace the whole `<DropdownMenu.Root> … </DropdownMenu.Root>` block with the following. The `{#snippet items(Menu)}` is defined once and rendered into whichever shell the variant picked.
+Replace the whole `<DropdownMenu.Root> … </DropdownMenu.Root>` block, and the two dialog lines below it, with:
 
 ```svelte
 {#snippet items(Menu: typeof DropdownMenu | typeof ContextMenu)}
@@ -1894,7 +1765,7 @@ Replace the whole `<DropdownMenu.Root> … </DropdownMenu.Root>` block with the 
 
 Update the component's header comment: it currently describes a `⋯`-only menu. Say that it renders one action list (`entry-actions.ts`) into either shell, and that the context variant wraps the row.
 
-- [ ] **Step 4: Verify the type check**
+- [ ] **Step 8: Verify the type check**
 
 ```bash
 cd frontend && bun run check
@@ -1914,38 +1785,17 @@ Expected: clean. Two things that may need adapting, in order of likelihood:
 
   and annotate the snippet `{#snippet items(Menu: MenuShell)}`. Do **not** reach for `any` — the point of the shared snippet is that both shells are checked against one contract.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Wrap the folder row**
 
-```bash
-git add frontend/src/lib/components/knowledge/EntryMenu.svelte
-git commit -m "feat(tree): one action list rendered into both the overflow and a context menu"
-```
-
----
-
-### Task 11: Right-click every tree row
-
-**Files:**
-- Modify: `frontend/src/lib/components/shell/IcmTree.svelte`
-
-**Interfaces:**
-- Consumes: `EntryMenu`'s new `variant`/`onOpenInTab`/`openInTabDisabled`/`children` props (Task 10).
-- Produces: nothing new.
-
-- [ ] **Step 1: Wrap the folder row**
-
-In the folder branch, wrap the existing `<div class="group relative"> … </div>` in a context menu when `showMenus` is true. Replace the branch's opening with:
+In `frontend/src/lib/components/shell/IcmTree.svelte`, in the folder branch, insert the snippet opening immediately **before** its `<div class="group relative">`:
 
 ```svelte
-      {#if node.children}
         {#snippet folderRow()}
-          <div class="group relative">
 ```
 
-…and its closing `</div>` (the one that closes `group relative`, immediately before `{#if treeOpenState.isOpen(node.href)}`) with:
+…and immediately **after** that div's closing `</div>` (the one right before `{#if treeOpenState.isOpen(node.href)}`), insert:
 
 ```svelte
-          </div>
         {/snippet}
         {#if showMenus}
           <EntryMenu
@@ -1963,7 +1813,7 @@ In the folder branch, wrap the existing `<div class="group relative"> … </div>
         {/if}
 ```
 
-- [ ] **Step 2: Wrap the leaf row**
+- [ ] **Step 10: Wrap the leaf row**
 
 In the `{:else}` (leaf) branch, insert the snippet opening immediately **before** its `<div class="group relative">`:
 
@@ -1998,11 +1848,11 @@ In the `{:else}` (leaf) branch, insert the snippet opening immediately **before*
         {/if}
 ```
 
-- [ ] **Step 3: Hand the same two props to the leaf's `⋯` menu**
+- [ ] **Step 11: Hand the same two props to the leaf's `⋯` menu**
 
 The existing `<EntryMenu … />` inside the leaf's right gutter gains the same `onOpenInTab` and `openInTabDisabled`, so both menus on a leaf offer identical items. Leave the hover `SquarePlus` button exactly as it is — it is the fast path, and the menu item is the discoverable one.
 
-- [ ] **Step 4: Verify the type check and the suite**
+- [ ] **Step 12: Verify the type check and the suite**
 
 ```bash
 cd frontend && bun run check && bun run test
@@ -2010,33 +1860,29 @@ cd frontend && bun run check && bun run test
 
 Expected: both clean.
 
-- [ ] **Step 5: Verify in the running app**
+- [ ] **Step 13: Verify in the running app**
 
-Right-click a page, a non-`.md` file, and a folder in the sidebar tree, the Knowledge route, and a Files pane. Confirm: the same items appear as under `⋯`; a folder shows no leaf actions and no leading separator; Copy path puts the ICM-relative path on the clipboard; New page here lands the file in the right parent; Delete still asks first. In browser dev, confirm the reveal item is absent. Then confirm the two popover pickers — compose's attach and the session header's file picker — still show **no** menus at all and that right-clicking there does nothing, since they pass `entryMenus` unset by design.
+Right-click a page, a non-`.md` file, and a folder in the sidebar tree, the Knowledge route, and a Files pane. Confirm: the same items as under `⋯`; a folder shows no leaf actions and no leading separator; Copy path puts the ICM-relative path on the clipboard; New page here lands the file in the right parent; Delete still asks first. In browser dev, confirm the reveal item is absent. Then confirm the two popover pickers — compose's attach and the session header's file picker — still show **no** menus at all and that right-clicking there does nothing, since they pass `entryMenus` unset by design.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
-git add frontend/src/lib/components/shell/IcmTree.svelte
+git add frontend/src/lib/components/knowledge/EntryMenu.svelte frontend/src/lib/components/shell/IcmTree.svelte
 git commit -m "feat(tree): right-click any row for its actions"
 ```
 
 ---
 
-# Phase D — Busy authority
-
-### Task 12: The server broadcasts busy transitions
+## Task 5: Busy becomes the server's answer
 
 **Files:**
-- Modify: `backend/lib/valea/agents/session_server.ex`
-- Modify: `backend/lib/valea_web/channels/agent_session_channel.ex`
-- Test: `backend/test/valea/agents/session_server_test.exs`
+- Modify: `backend/lib/valea/agents/session_server.ex`, `backend/lib/valea_web/channels/agent_session_channel.ex`, `backend/test/valea/agents/session_server_test.exs`, `frontend/src/lib/stores/agent-session.svelte.ts`, `frontend/src/lib/stores/agent-session.test.ts`
 
 **Interfaces:**
 - Consumes: `Connection.turn_in_flight?/1` (existing).
-- Produces: a PubSub message `{:session_busy, boolean}` on topic `agent_session:<id>`, and a channel push `"busy"` with payload `%{busy: boolean}`.
+- Produces: PubSub `{:session_busy, boolean}` on `agent_session:<id>`; channel push `"busy"` with `%{busy: boolean}`; `AgentSessionStore.busy` becomes server-driven (no signature change).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing backend test**
 
 Add to `backend/test/valea/agents/session_server_test.exs`:
 
@@ -2072,7 +1918,7 @@ Add to `backend/test/valea/agents/session_server_test.exs`:
   end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 ```bash
 cd backend && mix test test/valea/agents/session_server_test.exs
@@ -2127,7 +1973,7 @@ In the `## Helpers` section, beside `broadcast/2`:
 
 - [ ] **Step 5: Route the clauses through it**
 
-In `session_server.ex`, replace the final `{:noreply, …}` of these clauses with `noreply_busy(…)`:
+Replace the final `{:noreply, …}` of these clauses with `noreply_busy(…)`:
 
 - `handle_cast({:prompt, content}, state)` → `noreply_busy(send_or_queue(state, content))`
 - `handle_cast(:cancel, state)` → `noreply_busy(%{state | conn: conn})`
@@ -2151,7 +1997,7 @@ to:
     |> maybe_broadcast_busy()
 ```
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [ ] **Step 7: Run it to verify it passes**
 
 ```bash
 cd backend && mix test test/valea/agents/session_server_test.exs
@@ -2173,9 +2019,9 @@ In `backend/lib/valea_web/channels/agent_session_channel.ex`, beside `handle_inf
   end
 ```
 
-**Known gap, stated rather than papered over:** this clause gets no unit test. There is no `agent_session_channel` test today (`backend/test/valea_web/channels/` holds only the RPC and workspace-events suites), and standing one up is a larger job than this task. The clause is three lines of pure forwarding, the message it forwards *is* pinned by Step 1's tests, and the end-to-end path is covered by manual verification item 4. If a channel suite is ever added, this is the first case for it.
+**Known gap, stated rather than papered over:** this clause gets no unit test. There is no `agent_session_channel` test today (`backend/test/valea_web/channels/` holds only the RPC and workspace-events suites), and standing one up is a larger job than this task. The clause is three lines of pure forwarding, the message it forwards *is* pinned by Step 1's tests, and the end-to-end path is covered by manual verification. If a channel suite is ever added, this is the first case for it.
 
-- [ ] **Step 9: Run the backend suite**
+- [ ] **Step 9: Run the backend suite and commit**
 
 ```bash
 cd backend && mix test
@@ -2183,26 +2029,12 @@ cd backend && mix test
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
-
 ```bash
 git add backend/lib/valea/agents/session_server.ex backend/lib/valea_web/channels/agent_session_channel.ex backend/test/valea/agents/session_server_test.exs
 git commit -m "fix(agent): the server states busy on every transition, not once at join"
 ```
 
----
-
-### Task 13: The client stops guessing
-
-**Files:**
-- Modify: `frontend/src/lib/stores/agent-session.svelte.ts`
-- Test: `frontend/src/lib/stores/agent-session.test.ts`
-
-**Interfaces:**
-- Consumes: the `"busy"` channel push (Task 12).
-- Produces: no signature change — `AgentSessionStore.busy` is now server-driven.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 10: Write the failing frontend test**
 
 Add to `frontend/src/lib/stores/agent-session.test.ts`, inside the existing `describe('AgentSessionStore', …)`:
 
@@ -2255,7 +2087,7 @@ Add to `frontend/src/lib/stores/agent-session.test.ts`, inside the existing `des
   });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 11: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
@@ -2263,7 +2095,7 @@ cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
 
 Expected: FAIL — "takes busy from the server push" (no handler), and "does not re-arm busy" (the tool item raises it).
 
-- [ ] **Step 3: Subscribe to the push**
+- [ ] **Step 12: Subscribe to the push**
 
 In `frontend/src/lib/stores/agent-session.svelte.ts`'s constructor, beside the other `this.#channel.on(...)` calls:
 
@@ -2275,7 +2107,7 @@ In `frontend/src/lib/stores/agent-session.svelte.ts`'s constructor, beside the o
     });
 ```
 
-- [ ] **Step 4: Delete the inference**
+- [ ] **Step 13: Delete the inference**
 
 In `#upsert`, replace:
 
@@ -2300,7 +2132,7 @@ with:
     // when locally-held messages may go, not about what the agent is doing.
 ```
 
-- [ ] **Step 5: Update the class doc**
+- [ ] **Step 14: Update the class doc**
 
 In the class's doc comment, replace the `busy` bullet ("`busy` is seeded from `reply.busy` AFTER the snapshot replay loop runs…") with:
 
@@ -2312,15 +2144,15 @@ In the class's doc comment, replace the `busy` bullet ("`busy` is seeded from `r
  *    if that guess was ever wrong.
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 15: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
 ```
 
-Expected: PASS. Existing cases that asserted a tool or message item raising `busy` are now testing behaviour that was the bug — delete them, and keep any that assert `reply.busy` seeding at join.
+Expected: PASS. Existing cases that asserted a tool or message item raising `busy` are now testing behaviour that *was* the bug — delete them, and keep any that assert `reply.busy` seeding at join.
 
-- [ ] **Step 7: Run the whole suite and the type check**
+- [ ] **Step 16: Verify the type check and the suite**
 
 ```bash
 cd frontend && bun run check && bun run test
@@ -2328,7 +2160,7 @@ cd frontend && bun run check && bun run test
 
 Expected: both clean.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 17: Commit**
 
 ```bash
 git add frontend/src/lib/stores/agent-session.svelte.ts frontend/src/lib/stores/agent-session.test.ts
@@ -2337,22 +2169,15 @@ git commit -m "fix(chat): take busy from the server instead of inferring it from
 
 ---
 
-# Phase E — Naming the running work
-
-### Task 14: Running-work extraction
+## Task 6: The working indicator names the work
 
 **Files:**
-- Create: `frontend/src/lib/components/agent/activity.ts`
-- Test: `frontend/src/lib/components/agent/activity.test.ts`
+- Create: `frontend/src/lib/components/agent/activity.ts`, `activity.test.ts`
+- Modify: `frontend/src/lib/components/agent/Composer.svelte`, `frontend/src/lib/components/views/ChatView.svelte`
 
 **Interfaces:**
 - Consumes: `AcpItemLike`, `asStringOr` from `./item-shapes`.
-- Produces:
-  ```ts
-  export type RunningTool = { id: string; title: string };
-  export function runningTools(items: AcpItemLike[]): RunningTool[];
-  export function activityLabel(running: RunningTool[]): string;
-  ```
+- Produces: `runningTools(items: AcpItemLike[]): RunningTool[]`, `activityLabel(running: RunningTool[]): string`, `type RunningTool = { id: string; title: string }`; `Composer.svelte` gains `activity?: RunningTool[]` (default `[]`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2416,7 +2241,7 @@ describe('activityLabel', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/agent/activity.test.ts
@@ -2424,7 +2249,7 @@ cd frontend && bunx vitest run src/lib/components/agent/activity.test.ts
 
 Expected: FAIL — `Failed to resolve import "./activity"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement it**
 
 Create `frontend/src/lib/components/agent/activity.ts`:
 
@@ -2474,34 +2299,15 @@ export function activityLabel(running: RunningTool[]): string {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 4: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/components/agent/activity.test.ts
 ```
 
-Expected: PASS, 7 tests. If `asStringOr` is not exported from `item-shapes.ts` with the signature `(value: unknown, fallback: string) => string`, check the file and adapt the calls — it is used the same way in `ConfigChip.svelte`.
+Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add frontend/src/lib/components/agent/activity.ts frontend/src/lib/components/agent/activity.test.ts
-git commit -m "feat(chat): extract the agent's currently-running work"
-```
-
----
-
-### Task 15: The expandable working indicator
-
-**Files:**
-- Modify: `frontend/src/lib/components/agent/Composer.svelte`
-- Modify: `frontend/src/lib/components/views/ChatView.svelte`
-
-**Interfaces:**
-- Consumes: `RunningTool`, `activityLabel` (Task 14).
-- Produces: `Composer.svelte` gains `activity?: RunningTool[]` (default `[]`).
-
-- [ ] **Step 1: Add the prop**
+- [ ] **Step 5: Add the Composer prop**
 
 In `frontend/src/lib/components/agent/Composer.svelte`, add to the imports:
 
@@ -2540,7 +2346,7 @@ Add below the `elapsedLabel` derivation:
   });
 ```
 
-- [ ] **Step 2: Rewrite the indicator markup**
+- [ ] **Step 6: Rewrite the indicator markup**
 
 Replace the whole `{#if busy} … {/if}` working-indicator block at the top of the template with:
 
@@ -2601,7 +2407,7 @@ Replace the whole `{#if busy} … {/if}` working-indicator block at the top of t
   {/if}
 ```
 
-- [ ] **Step 3: Wire the chat view**
+- [ ] **Step 7: Wire the chat view**
 
 In `frontend/src/lib/components/views/ChatView.svelte`, add to the imports:
 
@@ -2620,7 +2426,7 @@ Add beside the other dock-singleton derivations (below `configItems`):
 
 Add `{activity}` to the live-session `<Composer … />` (the one with `busy={store.busy || resuming}`). Leave the new-session composer alone — it has no session and so no activity.
 
-- [ ] **Step 4: Verify the type check and the suite**
+- [ ] **Step 8: Verify the type check and the suite**
 
 ```bash
 cd frontend && bun run check && bun run test
@@ -2628,38 +2434,30 @@ cd frontend && bun run check && bun run test
 
 Expected: both clean. If `<svelte:element>` rejects the conditional `type`/`onclick` under `svelte-check`, split the block into two explicit branches (`{#if activity.length > 0}<button …>{:else}<div role="status" …>{/if}`) repeating the inner markup — correctness over brevity.
 
-- [ ] **Step 5: Verify in the running app**
+- [ ] **Step 9: Verify in the running app**
 
 Run a session against the `slow` fake-adapter scenario (`backend/test/support/fake_adapter.exs`), which scripts several tool calls with a sleep between them. Confirm: the indicator names each tool as it runs, shows `· N running` when more than one overlaps, expands to a list, collapses on its own when the turn ends, and reads plain "Working…" while only text streams.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add frontend/src/lib/components/agent/Composer.svelte frontend/src/lib/components/views/ChatView.svelte
+git add frontend/src/lib/components/agent/activity.ts frontend/src/lib/components/agent/activity.test.ts frontend/src/lib/components/agent/Composer.svelte frontend/src/lib/components/views/ChatView.svelte
 git commit -m "feat(chat): the working indicator names and lists the work in flight"
 ```
 
 ---
 
-# Phase F — Remembered composer options
-
-### Task 16: The store
+## Task 7: Remembered composer options
 
 **Files:**
-- Create: `frontend/src/lib/stores/composer-options.svelte.ts`
-- Test: `frontend/src/lib/stores/composer-options.test.ts`
+- Create: `frontend/src/lib/stores/composer-options.svelte.ts`, `composer-options.test.ts`
+- Modify: `frontend/src/lib/stores/agent-session.svelte.ts`, `agent-session.test.ts`, `frontend/src/lib/components/views/ChatView.svelte`
 
 **Interfaces:**
-- Consumes: `readJson`, `writeJson` from `$lib/persist`.
-- Produces: a `composerOptions` singleton with
-  ```ts
-  remember(workspaceId: string | null, configId: string, value: string): void
-  remembered(workspaceId: string | null): Record<string, string>
-  stageFor(sessionId: string, workspaceId: string | null): void
-  takeStaged(sessionId: string): Record<string, string> | null
-  ```
+- Consumes: `readJson`/`writeJson` from `$lib/persist`; `configWireId`, `configOptions`, `configCurrent` from `$lib/components/agent/item-shapes`; `workspaceStore.id` (`string | null`).
+- Produces: a `composerOptions` singleton with `remember`, `remembered`, `stageFor`, `takeStaged`; `AgentSessionStore`'s second constructor argument gains `applyConfig?: Record<string, string> | null`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing store test**
 
 Create `frontend/src/lib/stores/composer-options.test.ts`:
 
@@ -2745,7 +2543,7 @@ describe('ComposerOptionsStore', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/composer-options.test.ts
@@ -2753,7 +2551,7 @@ cd frontend && bunx vitest run src/lib/stores/composer-options.test.ts
 
 Expected: FAIL — `Failed to resolve import "./composer-options.svelte"`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement the store**
 
 Create `frontend/src/lib/stores/composer-options.svelte.ts`:
 
@@ -2836,7 +2634,7 @@ export class ComposerOptionsStore {
 export const composerOptions = new ComposerOptionsStore();
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 4: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/composer-options.test.ts
@@ -2844,26 +2642,7 @@ cd frontend && bunx vitest run src/lib/stores/composer-options.test.ts
 
 Expected: PASS, 9 tests.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add frontend/src/lib/stores/composer-options.svelte.ts frontend/src/lib/stores/composer-options.test.ts
-git commit -m "feat(chat): remember the composer's config chips per workspace"
-```
-
----
-
-### Task 17: Applying them on a new session
-
-**Files:**
-- Modify: `frontend/src/lib/stores/agent-session.svelte.ts`
-- Test: `frontend/src/lib/stores/agent-session.test.ts`
-
-**Interfaces:**
-- Consumes: `configWireId`, `configOptions`, `configCurrent` from `$lib/components/agent/item-shapes`.
-- Produces: `AgentSessionStore`'s second constructor argument gains `applyConfig?: Record<string, string> | null`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 5: Write the failing apply test**
 
 Add to `frontend/src/lib/stores/agent-session.test.ts`:
 
@@ -2932,7 +2711,7 @@ Add to `frontend/src/lib/stores/agent-session.test.ts`:
   });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 6: Run it to verify it fails**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
@@ -2940,7 +2719,7 @@ cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
 
 Expected: FAIL — no `set_config_option` was pushed.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 7: Implement `applyConfig`**
 
 In `frontend/src/lib/stores/agent-session.svelte.ts`, add the import:
 
@@ -2962,7 +2741,7 @@ Add the field beside `#initialPrompt`:
   #applyConfig: Record<string, string>;
 ```
 
-In the constructor signature, extend the options type and seed the field:
+Extend the constructor signature and seed the field:
 
 ```ts
   constructor(
@@ -3010,39 +2789,21 @@ And add the method beside `#flushQueue`:
   }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 8: Run it to verify it passes**
 
 ```bash
 cd frontend && bunx vitest run src/lib/stores/agent-session.test.ts
 ```
 
-Expected: PASS. If `configOptions`/`configCurrent` are not exported with those names, check `item-shapes.ts` — `ConfigChip.svelte` imports all three the same way.
+Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Wire the chat view**
 
-```bash
-git add frontend/src/lib/stores/agent-session.svelte.ts frontend/src/lib/stores/agent-session.test.ts
-git commit -m "feat(chat): apply staged config options on a new session's first join"
-```
-
----
-
-### Task 18: Wiring the chat view
-
-**Files:**
-- Modify: `frontend/src/lib/components/views/ChatView.svelte`
-
-**Interfaces:**
-- Consumes: `composerOptions` (Task 16), `AgentSessionStore`'s `applyConfig` option (Task 17).
-- Produces: nothing new.
-
-- [ ] **Step 1: Import the store**
+In `frontend/src/lib/components/views/ChatView.svelte`, add the import:
 
 ```ts
   import { composerOptions } from '$lib/stores/composer-options.svelte';
 ```
-
-- [ ] **Step 2: Remember on change**
 
 Replace the live composer's `onSetConfig` with:
 
@@ -3057,8 +2818,6 @@ Replace the live composer's `onSetConfig` with:
             }}
 ```
 
-- [ ] **Step 3: Stage on create**
-
 In `createAndPrompt`, immediately after `setInitialPrompt(data.id, text);`:
 
 ```ts
@@ -3068,9 +2827,7 @@ In `createAndPrompt`, immediately after `setInitialPrompt(data.id, text);`:
     composerOptions.stageFor(data.id, workspaceStore.id);
 ```
 
-- [ ] **Step 4: Hand it to the store**
-
-Replace the store construction:
+And replace the store construction:
 
 ```ts
     const session = new AgentSessionStore(id, {
@@ -3079,7 +2836,7 @@ Replace the store construction:
     });
 ```
 
-- [ ] **Step 5: Verify the type check and the suite**
+- [ ] **Step 10: Verify the type check and the suite**
 
 ```bash
 cd frontend && bun run check && bun run test
@@ -3087,11 +2844,11 @@ cd frontend && bun run check && bun run test
 
 Expected: both clean.
 
-- [ ] **Step 6: Verify in the running app**
+- [ ] **Step 11: Verify in the running app**
 
 Change the model chip in a session, start a new session in the same workspace, and confirm it comes up on the chosen model. Then reopen the older session and confirm it kept its own. If a second workspace is available, confirm the choice did not leak into it.
 
-- [ ] **Step 7: Run the full check**
+- [ ] **Step 12: Run the full check**
 
 ```bash
 just test
@@ -3099,16 +2856,16 @@ just test
 
 Expected: backend tests, codegen freshness, `bun run check` and `bun run test` all pass.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
-git add frontend/src/lib/components/views/ChatView.svelte
-git commit -m "feat(chat): carry the remembered composer options into new sessions"
+git add frontend/src/lib/stores/composer-options.svelte.ts frontend/src/lib/stores/composer-options.test.ts frontend/src/lib/stores/agent-session.svelte.ts frontend/src/lib/stores/agent-session.test.ts frontend/src/lib/components/views/ChatView.svelte
+git commit -m "feat(chat): remember the composer's config chips per workspace"
 ```
 
 ---
 
-## Manual verification (after all phases)
+## Manual verification (after all tasks)
 
 Things no test above covers, from the spec's own list:
 
