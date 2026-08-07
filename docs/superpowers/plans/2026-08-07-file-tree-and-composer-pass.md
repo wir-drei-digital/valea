@@ -2019,7 +2019,16 @@ In `backend/lib/valea_web/channels/agent_session_channel.ex`, beside `handle_inf
   end
 ```
 
-**Known gap, stated rather than papered over:** this clause gets no unit test. There is no `agent_session_channel` test today (`backend/test/valea_web/channels/` holds only the RPC and workspace-events suites), and standing one up is a larger job than this task. The clause is three lines of pure forwarding, the message it forwards *is* pinned by Step 1's tests, and the end-to-end path is covered by manual verification. If a channel suite is ever added, this is the first case for it.
+**Correction (made during execution — the original claim here was wrong).** This plan first said the clause gets no unit test because "there is no `agent_session_channel` test today," citing `backend/test/valea_web/channels/`. That directory does only hold the RPC and workspace-events suites — but the channel's own suite lives one level up, at `backend/test/valea_web/agent_session_channel_test.exs` (218 lines, `Phoenix.ChannelTest`), and predates this branch. The task review caught it.
+
+So the clause **does** get a test, in that existing suite, following the pattern its "seq gating" case already uses:
+
+```elixir
+send(socket.channel_pid, {:session_busy, true})
+assert_push "busy", %{busy: true}
+```
+
+…and the same for `false`. This is the only new code in the task that neither `SessionServer` test reaches.
 
 - [ ] **Step 9: Run the backend suite and commit**
 
