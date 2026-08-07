@@ -78,6 +78,24 @@ defmodule ValeaWeb.AgentSessionChannelTest do
     refute_push "event", %{seq: 1}
   end
 
+  # `SessionServer.maybe_broadcast_busy/1` is pinned directly (server-side)
+  # by `session_server_test.exs`'s "broadcasts the busy rising and falling
+  # edges of a turn" and "does not repeat an unchanged busy value" — this
+  # test covers the one piece of new code neither of those reaches: the
+  # channel's own forwarding of `{:session_busy, busy}` into a `busy` push.
+  # Driven directly (same technique as "seq gating" above), not through a
+  # real turn — deterministic, and the SessionServer side is already covered.
+  test "session_busy is forwarded as a busy push", %{workspace: workspace} do
+    {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
+    assert {:ok, _reply, socket} = join(id)
+
+    send(socket.channel_pid, {:session_busy, true})
+    assert_push "busy", %{busy: true}
+
+    send(socket.channel_pid, {:session_busy, false})
+    assert_push "busy", %{busy: false}
+  end
+
   test "prompt in, event out", %{workspace: workspace} do
     {:ok, %{id: id}} = AgentCase.start_session(workspace, "happy")
     assert {:ok, _reply, socket} = join(id)
