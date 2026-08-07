@@ -49,6 +49,19 @@
   --ink-subtitle: #6e6656;
   --ink-meta: #948a75;
   --ink-overline: #a89085;
+  /* code — syntax highlighting inks. Verified AA on paper-track (the chat
+     code block) and paper-surface (the file viewer) in both themes; see
+     lib/design/contrast.test.ts. Eight scopes, deliberately: highlight.js
+     emits dozens, and folding them onto a palette small enough to reason
+     about is what keeps a code block reading as one object. */
+  --code-keyword: #8a3d62;
+  --code-string: #3f6b3a;
+  --code-comment: #6e6656;
+  --code-number: #8a4f0f;
+  --code-fn: #2f5d48;
+  --code-type: #2a5b7a;
+  --code-attr: #6b4a1f;
+  --code-punct: #57503f;
   /* green — acts */
   --act: #2f5d48;
   --act-hover: #244938;
@@ -201,6 +214,15 @@
   --ink-subtitle: #9f9e9b;
   --ink-meta: #83817f;
   --ink-overline: #807d7b;
+  /* code — see the :root block's note. */
+  --code-keyword: #d98cb3;
+  --code-string: #9ccc8f;
+  --code-comment: #948d7c;
+  --code-number: #e0a86a;
+  --code-fn: #7fc9a5;
+  --code-type: #86b6d6;
+  --code-attr: #d4b483;
+  --code-punct: #a8a294;
   /* green — acts. Hover goes LIGHTER here; on dark paper, more is lighter.
      But the lift is capped: `UpdateNotice.svelte` puts real label text in
      `--primary-foreground` on `hover:bg-act-hover`, so the hover fill still
@@ -378,6 +400,64 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--paper-chip-border) transparent;
+  }
+
+  /* highlight.js scopes → the eight code inks. Everything unlisted inherits
+     the block's own body ink, which is the right answer for plain source and
+     stops an unmapped scope from arriving in some vendor colour. Written as
+     one rule per ink rather than one per scope so the grouping is readable. */
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-section,
+  .hljs-doctag {
+    color: var(--code-keyword);
+  }
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-quote,
+  .hljs-addition {
+    color: var(--code-string);
+  }
+  .hljs-comment,
+  .hljs-deletion {
+    color: var(--code-comment);
+  }
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet {
+    color: var(--code-number);
+  }
+  .hljs-title,
+  .hljs-title_,
+  .hljs-title.function_,
+  .hljs-name {
+    color: var(--code-fn);
+  }
+  .hljs-type,
+  .hljs-built_in,
+  .hljs-class,
+  .hljs-title.class_ {
+    color: var(--code-type);
+  }
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-property {
+    color: var(--code-attr);
+  }
+  .hljs-punctuation,
+  .hljs-operator,
+  .hljs-meta,
+  .hljs-params {
+    color: var(--code-punct);
+  }
+  .hljs-emphasis {
+    font-style: italic;
+  }
+  .hljs-strong {
+    font-weight: 600;
   }
 }
 

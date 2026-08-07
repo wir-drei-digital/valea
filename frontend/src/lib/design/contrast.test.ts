@@ -153,4 +153,35 @@ describe.each(['light', 'dark'] as const)('%s palette invariants', (palette) => 
       expect(contrastRatio(p[token], fg), `${token} vs primary-foreground`).toBeGreaterThanOrEqual(4.5);
     }
   });
+
+  // Code blocks sit on `paper-track` in the chat transcript and on
+  // `paper-surface` in the file viewer, so every code ink has to clear AA on
+  // BOTH. Never `paper-card`: no code block is rendered on one, and holding
+  // the palette to a background it never meets would cost real colour range.
+  it('every code ink clears AA on both surfaces code blocks sit on', () => {
+    const codeTokens = [
+      'code-keyword', 'code-string', 'code-comment', 'code-number',
+      'code-fn', 'code-type', 'code-attr', 'code-punct'
+    ];
+    for (const token of codeTokens) {
+      expect(p[token], `${palette} must define --${token}`).toBeDefined();
+      for (const bg of ['paper-track', 'paper-surface']) {
+        expect(
+          contrastRatio(p[token], p[bg]),
+          `${token} on ${bg}`
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  // Comments are the one code ink that is deliberately recessive — it is
+  // prose the reader skips. Pinned so a later palette tweak cannot quietly
+  // make a comment shout louder than the code it annotates.
+  it('comment is the quietest code ink', () => {
+    const others = ['code-keyword', 'code-string', 'code-number', 'code-fn', 'code-type', 'code-attr', 'code-punct'];
+    const comment = contrastRatio(p['code-comment'], p['paper-track']);
+    for (const token of others) {
+      expect(contrastRatio(p[token], p['paper-track']), token).toBeGreaterThan(comment);
+    }
+  });
 });
