@@ -36,6 +36,7 @@
     FileActivityRail
   } from '$lib/components/agent';
   import { sessionInfoTitle } from '$lib/components/agent/item-shapes';
+  import { runningTools } from '$lib/components/agent/activity';
   import { turnCount, latestTurnAutoOpenPath } from '$lib/components/agent/auto-open';
   import { checkExistence, deriveFileActivity } from '$lib/components/agent/file-activity';
   import type { ChatPaneDescriptor, ChatNewPaneDescriptor } from '$lib/panes/pane-route';
@@ -174,6 +175,10 @@
       a.id.localeCompare(b.id)
     )
   );
+  // What the composer's working indicator names. Derived from the same
+  // `store.items` the transcript reads — a running tool is just a tool item
+  // that has not reached a terminal status.
+  const activity = $derived.by(() => runningTools(store?.items ?? []));
 
   // --- Which ICM this session runs in ---
   //
@@ -789,6 +794,7 @@
             {usageItem}
             queued={store.queued}
             turnStartedAt={store.turnStartedAt}
+            {activity}
             placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
             onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
             onStop={() => store?.cancel()}

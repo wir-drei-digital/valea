@@ -15,6 +15,8 @@
   import Square from '@lucide/svelte/icons/square';
   import Pencil from '@lucide/svelte/icons/pencil';
   import X from '@lucide/svelte/icons/x';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import ConfigChip from './ConfigChip.svelte';
   import {
     configWireId,
@@ -22,6 +24,7 @@
     usageFields,
     type AcpItemLike
   } from './item-shapes';
+  import { activityLabel, type RunningTool } from './activity';
   import type { QueuedMessage } from '$lib/stores/agent-session.svelte';
 
   let {
@@ -30,6 +33,7 @@
     usageItem = undefined,
     queued = [],
     turnStartedAt = null,
+    activity = [],
     onSend,
     onStop,
     onSetConfig,
@@ -44,6 +48,13 @@
     usageItem?: AcpItemLike | undefined;
     queued?: QueuedMessage[];
     turnStartedAt?: number | null;
+    /**
+     * Tool calls in flight right now (`activity.ts`). Drives what the working
+     * indicator SAYS and what it expands to show. Empty is the normal case
+     * for a turn that is only streaming text, and the indicator then reads
+     * exactly as it always did.
+     */
+    activity?: RunningTool[];
     onSend: (text: string) => void;
     onStop: () => void;
     onSetConfig: (configId: string, value: string) => void;
@@ -134,6 +145,15 @@
     return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
   }
 
+  const workingLabel = $derived(activityLabel(activity));
+  let activityOpen = $state(false);
+
+  // Collapse when the work finishes: leaving an empty expanded list under the
+  // composer would be furniture with nothing in it.
+  $effect(() => {
+    if (activity.length === 0) activityOpen = false;
+  });
+
   // --- Queued message inline editing ---
 
   let editingId = $state<string | null>(null);
@@ -178,17 +198,56 @@
 
 <div class="px-4 pt-1 pb-4">
   {#if busy}
-    <!-- Working indicator: three staggered bouncing dots + the turn's
-         elapsed time, sitting on top of the composer card. -->
-    <div class="flex items-center gap-2 px-1 pb-1.5" role="status" aria-label="Agent working">
-      <span class="flex items-end gap-[3px]" aria-hidden="true">
-        <span class="bg-work-dot size-1.5 animate-bounce rounded-full [animation-delay:-0.32s]"></span>
-        <span class="bg-work-dot size-1.5 animate-bounce rounded-full [animation-delay:-0.16s]"></span>
-        <span class="bg-work-dot size-1.5 animate-bounce rounded-full"></span>
-      </span>
-      <span class="text-ink-secondary text-[12px]">Working…</span>
-      {#if elapsedLabel}
-        <span class="text-ink-meta text-[11.5px] tabular-nums">{elapsedLabel}</span>
+    <!-- Working indicator: three staggered bouncing dots, the name of the
+         work actually in flight, and the turn's elapsed time. When tools are
+         running the line is a BUTTON that expands to list them — "Working…"
+         was equally true of a two-second edit and a five-minute research
+         subtask, which made it useless exactly when it mattered.
+         SECURITY: tool titles are agent-authored — plain interpolation. -->
+    <div class="px-1 pb-1.5">
+      <svelte:element
+        this={activity.length > 0 ? 'button' : 'div'}
+        type={activity.length > 0 ? 'button' : undefined}
+        onclick={activity.length > 0 ? () => (activityOpen = !activityOpen) : undefined}
+        role={activity.length > 0 ? undefined : 'status'}
+        aria-expanded={activity.length > 0 ? activityOpen : undefined}
+        aria-label={activity.length > 0 ? undefined : 'Agent working'}
+        class="flex w-full items-center gap-2 text-left"
+      >
+        <span class="flex items-end gap-[3px]" aria-hidden="true">
+          <span class="bg-work-dot size-1.5 animate-bounce rounded-full [animation-delay:-0.32s]"></span>
+          <span class="bg-work-dot size-1.5 animate-bounce rounded-full [animation-delay:-0.16s]"></span>
+          <span class="bg-work-dot size-1.5 animate-bounce rounded-full"></span>
+        </span>
+        <span class="text-ink-secondary min-w-0 truncate text-[12px]">{workingLabel}</span>
+        {#if activity.length > 1}
+          <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">
+            · {activity.length} running
+          </span>
+        {/if}
+        {#if elapsedLabel}
+          <span class="text-ink-meta shrink-0 text-[11.5px] tabular-nums">{elapsedLabel}</span>
+        {/if}
+        {#if activity.length > 0}
+          <span class="ml-auto shrink-0">
+            {#if activityOpen}
+              <ChevronUp class="text-ink-meta size-3.5" aria-hidden="true" />
+            {:else}
+              <ChevronDown class="text-ink-meta size-3.5" aria-hidden="true" />
+            {/if}
+          </span>
+        {/if}
+      </svelte:element>
+
+      {#if activityOpen}
+        <ul class="mt-1.5 flex flex-col gap-1 pl-[26px]">
+          {#each activity as item (item.id)}
+            <li class="text-ink-body flex items-center gap-2 text-[12px]">
+              <span class="bg-suggest-dash size-1.5 shrink-0 rounded-full" aria-hidden="true"></span>
+              <span class="min-w-0 flex-1 truncate" title={item.title}>{item.title}</span>
+            </li>
+          {/each}
+        </ul>
       {/if}
     </div>
   {/if}
