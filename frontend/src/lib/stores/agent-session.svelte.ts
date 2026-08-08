@@ -168,17 +168,17 @@ export class AgentSessionStore {
   }
 
   /**
-   * Fires on the `turn` item that ends the PREVIOUS turn — which the server
-   * always emits before its matching `busy: false` push for that same turn
-   * (`handle_info({:runtime_output, …})` appends the item, then broadcasts
-   * busy — see `SessionServer`). If this flush raised `busy` optimistically
-   * the way `prompt/1` does, that trailing `busy: false` would land right
-   * behind it and clobber the raise back to false (and null out
-   * `turnStartedAt`) even though a new turn had already been dispatched —
-   * a true->false->true flicker on every queue flush. So this pushes
-   * WITHOUT raising busy; the server's own `busy: true` for the new turn is
-   * the only thing that raises it here, at the cost of one round trip of
-   * (accurately) looking idle right after the flush.
+   * Fires on the `turn` item that ends the previous turn. `busy` is
+   * necessarily still `true` at this point — the server always appends that
+   * item (and broadcasts it) BEFORE it broadcasts the matching `busy: false`
+   * for the same turn, and that trailing push hasn't been processed yet when
+   * this handler runs. So an optimistic `#setBusy(true)` on this path would
+   * be a no-op (see `#setBusy`: raising an already-true value touches
+   * nothing) — this pushes WITHOUT one, so that redundancy stays explicit
+   * rather than silently relying on it, and `prompt/1` stays the ONE place
+   * that actually raises optimistically. The server's own `busy` pushes are
+   * the only thing that move `busy` on this path: `false` for the turn that
+   * just ended, then `true` once the flushed prompt's new turn is under way.
    */
   #flushQueue(): void {
     if (this.queued.length === 0) return;
@@ -209,7 +209,9 @@ export class AgentSessionStore {
    * Sends a prompt and raises `busy` immediately (not waiting for a server
    * echo) so the UI's busy->idle falling edge fires even for an instant
    * turn — the queue drains on turn completion (see `#upsert`), never
-   * strands.
+   * strands. Unlike `#flushQueue`'s push, this raise is NOT a no-op: a
+   * direct call here (`send/1` while idle, `sendQueuedNow/1`) always starts
+   * from `busy === false`, so `#setBusy(true)` genuinely flips it.
    */
   prompt(content: string): void {
     this.#setBusy(true);

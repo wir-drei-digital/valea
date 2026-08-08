@@ -214,17 +214,7 @@ describe('AgentSessionStore', () => {
     expect(store.busy).toBe(false);
   });
 
-  // The server always emits the `turn` item that triggers a queue flush
-  // BEFORE its matching `busy: false` push for that same completed turn
-  // (`SessionServer` appends the item, then broadcasts busy). If the flush's
-  // prompt push raised `busy` optimistically the way `prompt/1` does, that
-  // trailing `busy: false` would land right behind it and clobber the raise
-  // — a true->false->true flicker on every queue flush. So the flush must
-  // NOT race it: `store.busy` should read false for the one round trip
-  // between the trailing `busy: false` and the server's own `busy: true` for
-  // the newly-dispatched turn — never true then immediately overwritten,
-  // and never left stuck.
-  it('still flushes the client queue when the turn item lands, without racing the trailing busy:false', () => {
+  it('the client queue drains on the turn item, and busy simply follows the server through the handoff', () => {
     const fake = fakeChannel();
     const store = new AgentSessionStore('s', {}, () => fake.channel);
     fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
@@ -235,16 +225,16 @@ describe('AgentSessionStore', () => {
 
     fake.emit('event', { seq: 1, item: { id: 'turn-1', type: 'turn', stop_reason: 'end_turn' } });
 
+    // The turn item flushes the held message out as a real `prompt` push.
     expect(store.queued).toHaveLength(0);
     expect(fake.pushed.some((p) => p.event === 'prompt')).toBe(true);
 
-    // The completed turn's trailing busy:false, sent right behind the `turn`
-    // item above. The flush must not have raised busy itself, or this would
-    // be clobbering an already-correct true right back to false.
+    // `busy` isn't touched by any of the above (see `#upsert`/`#flushQueue`)
+    // — it just tracks whatever the server pushes next: false for the turn
+    // that just ended, then true once the flushed prompt's new turn starts.
     fake.emit('busy', { busy: false });
     expect(store.busy).toBe(false);
 
-    // The server's busy:true for the flushed prompt's new turn arrives next.
     fake.emit('busy', { busy: true });
     expect(store.busy).toBe(true);
   });
