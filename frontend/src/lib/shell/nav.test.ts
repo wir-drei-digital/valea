@@ -30,10 +30,9 @@ describe('icmToNav', () => {
   });
 
   // Side-panes pass: file leaves are navigable now (FileView renders the
-  // non-.md formats), so they get an href and carry their `ext` through for
-  // the tree row's format badge — the old "emitted nowhere" special case is
-  // gone.
-  it('emits file leaves with an href and their ext, at every depth', () => {
+  // non-.md formats), so they get an href — the old "emitted nowhere"
+  // special case is gone.
+  it('emits file leaves with an href, at every depth', () => {
     const withFiles: IcmNode[] = [
       {
         name: 'Offers',
@@ -56,8 +55,7 @@ describe('icmToNav', () => {
       label: 'logo.png',
       href: '/knowledge/primary/logo.png',
       path: 'logo.png',
-      mountKey: 'primary',
-      ext: '.png'
+      mountKey: 'primary'
     });
     // A file leaf is a LEAF: no `children`, so `IcmTree` renders it as a row
     // rather than an expandable folder.
@@ -66,11 +64,8 @@ describe('icmToNav', () => {
     expect(nav[0].children).toHaveLength(2);
     expect(nav[0].children?.[1]).toMatchObject({
       label: 'brochure.pdf',
-      href: '/knowledge/primary/Offers/brochure.pdf',
-      ext: '.pdf'
+      href: '/knowledge/primary/Offers/brochure.pdf'
     });
-    // Pages still carry no `ext` — only file leaves do.
-    expect(nav[0].children?.[0].ext).toBeUndefined();
   });
 
   // `isFile` — NOT `ext` — is what marks a leaf as a non-.md file. An
@@ -89,7 +84,6 @@ describe('icmToNav', () => {
     const nav = icmToNav(nodes);
 
     expect(nav.map((n) => n.isFile)).toEqual([undefined, true, true, undefined]);
-    expect(nav[2].ext).toBe('');
   });
 
   it('a node from a different mount gets that mount\'s own href prefix', () => {

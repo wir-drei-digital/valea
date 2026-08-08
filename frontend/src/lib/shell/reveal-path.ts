@@ -3,6 +3,10 @@
  * needs to reveal a file's ancestors. Lifted out of
  * `routes/knowledge/[...path]/+page.svelte`, where it was inlined and so
  * unavailable to any other pane host.
+ *
+ * Not to be confused with `reveal-in-os.ts` — that one reveals a file in the
+ * OS file manager (Finder/Explorer); this one scrolls and expands a file's
+ * ancestors in Valea's own in-app tree.
  */
 import { knowledgeHref } from './nav';
 

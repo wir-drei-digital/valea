@@ -3,6 +3,9 @@
 // shell out, but that would add a process-exec surface for a convenience,
 // and the desktop is where this is reached.
 //
+// Not to be confused with `reveal-path.ts` — that one scrolls and expands a
+// file's ancestors in Valea's own in-app tree; this one hands off to the OS.
+//
 // One of the FOUR modules allowed to touch Tauri IPC (see keychain.ts's
 // header comment — the grep-able boundary).
 import { revealItemInDir } from '@tauri-apps/plugin-opener';

@@ -8,10 +8,9 @@
  * file, not a consequence, and the design system reserves colour for
  * consequences.
  *
- * Keyed on the LABEL, not on `NavTreeItem.ext`: since pages carry their
+ * Keyed on the LABEL, not on a leaf's extension: since pages carry their
  * `.md` (see `icmToNav`), the label IS the true basename for every leaf
- * kind, and `ext` is populated for file leaves only. One input, one rule, no
- * kind branch.
+ * kind — folder, page, or file. One input, one rule, no kind branch.
  */
 import File from '@lucide/svelte/icons/file';
 import FileArchive from '@lucide/svelte/icons/file-archive';

@@ -53,16 +53,6 @@ export type NavTreeItem = {
   /** Folders only — mirrors `IcmNode.childrenLoaded` (see its doc comment). */
   loaded?: boolean;
   /**
-   * Non-.md file leaves only — lowercase extension incl. the dot (e.g.
-   * `".pdf"`), mirroring `IcmNode.ext`. Feeds `fileLeafKind` (via
-   * `FileView`), which picks the viewer a file leaf opens in — image / pdf /
-   * csv / plain text.
-   * `''` for an extension-less regular file (LICENSE, Makefile, a dotfile),
-   * because that is what `Path.extname/1` returns — which is exactly why
-   * `isFile` below, and never `ext`'s truthiness, is the file/page test.
-   */
-  ext?: string;
-  /**
    * `true` on non-.md file leaves and nothing else — the discriminator for
    * anything that must treat files differently from pages. `IcmTree` uses
    * it to pick the `EntryMenu`'s `kind` (`'file'` vs `'page'`), which
@@ -162,10 +152,10 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
     // the non-.md formats (plain text / pdf.js / image), so the old
     // "visible but never clickable" special case (A-T15 fix wave) is gone
     // along with the separate non-clickable rows the Knowledge list panes
-    // used to render below the tree. `ext` rides along for `FileView`'s
-    // viewer choice (`fileLeafKind`), `isFile` for everything that must tell
-    // a file from a page (an extension-less file has `ext: ''`, so `ext`
-    // alone can't carry that).
+    // used to render below the tree. `isFile` is what marks a leaf as a
+    // non-.md file for everything downstream that must tell a file from a
+    // page — `FileView` derives its own extension from `path` rather than
+    // reading it off this node, so no `ext` needs to ride along here.
     if (n.type === 'file') {
       return [
         {
@@ -173,7 +163,6 @@ export function icmToNav(nodes: IcmNode[]): NavTreeItem[] {
           href: knowledgeHref(n.mountKey, n.path),
           path: n.path,
           mountKey: n.mountKey,
-          ext: n.ext,
           isFile: true
         }
       ];

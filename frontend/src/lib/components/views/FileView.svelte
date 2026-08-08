@@ -34,8 +34,16 @@
   // `.md` is matched exactly as the route's own optimistic `isPage` always
   // did (case-sensitive `endsWith`), so which files open in the editor
   // doesn't change here. `fileLeafKind` buckets the rest into
-  // image/pdf/other — the same mapping the file-leaf ROWS already use, so a
-  // row's icon and the viewer it opens can never disagree.
+  // image/pdf/csv/other — a DELIBERATELY DIFFERENT partition from
+  // `fileIcon` (`file-icon.ts`), which picks a tree row's glyph off the
+  // label instead. The two are allowed to disagree, and do: `.svg` gets
+  // `FileImage` in the tree, but `fileLeafKind` leaves it out of its image
+  // set on purpose (the raw-file route serves SVG as inert `text/plain`,
+  // never `image/svg+xml` — see `file-leaf.ts`), so it opens here as plain
+  // text. `.tsv`/`.xlsx` similarly get `FileSpreadsheet` in the tree but
+  // still open as text — only `.csv` is a real viewer format so far. One
+  // partition picks the row's icon, the other picks the viewer; nothing
+  // requires them to land on the same answer for a given extension.
   const format = $derived.by((): 'md' | 'image' | 'pdf' | 'csv' | 'text' => {
     if (path.endsWith('.md')) return 'md';
     const kind = fileLeafKind(ext);
