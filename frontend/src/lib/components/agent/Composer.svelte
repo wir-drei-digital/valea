@@ -204,14 +204,25 @@
          was equally true of a two-second edit and a five-minute research
          subtask, which made it useless exactly when it mattered.
          SECURITY: tool titles are agent-authored — plain interpolation. -->
-    <div class="px-1 pb-1.5">
+    <!-- `role="status"` lives on this wrapper, not the toggle below, so the
+         live region holds across BOTH states: a bare streaming turn (the
+         toggle is a plain div) and one with tools running (the toggle
+         becomes a button once `activity` is non-empty). It used to sit only
+         on the div branch, so the announcement stopped the moment the first
+         tool started — silent for exactly the long-running subtask a
+         screen-reader user most needs to hear about. -->
+    <div class="px-1 pb-1.5" role="status" aria-label="Agent working">
+      <!-- `role="button"` here just agrees with the tag `this` already picks
+           — svelte:element can't statically prove a dynamic tag is
+           interactive, so the a11y lint wants a role stated whenever the
+           click handler is live; it never overrides anything, since the
+           element really is a `<button>` at that point. -->
       <svelte:element
         this={activity.length > 0 ? 'button' : 'div'}
         type={activity.length > 0 ? 'button' : undefined}
         onclick={activity.length > 0 ? () => (activityOpen = !activityOpen) : undefined}
-        role={activity.length > 0 ? undefined : 'status'}
+        role={activity.length > 0 ? 'button' : undefined}
         aria-expanded={activity.length > 0 ? activityOpen : undefined}
-        aria-label={activity.length > 0 ? undefined : 'Agent working'}
         class="flex w-full items-center gap-2 text-left"
       >
         <span class="flex items-end gap-[3px]" aria-hidden="true">
@@ -239,7 +250,7 @@
         {/if}
       </svelte:element>
 
-      {#if activityOpen}
+      {#if activityOpen && activity.length > 0}
         <ul class="mt-1.5 flex flex-col gap-1 pl-[26px]">
           {#each activity as item (item.id)}
             <li class="text-ink-body flex items-center gap-2 text-[12px]">
