@@ -214,6 +214,63 @@ describe('AgentSessionStore', () => {
     expect(store.busy).toBe(false);
   });
 
+  // The stuck-indicator bug Task 5 was supposed to kill, reached by a
+  // different route: `maybe_broadcast_busy/1` only pushes on a CHANGE, so a
+  // session whose server-side `busy?` never became `true` (adapter fails its
+  // handshake before any turn starts) never gets a `busy: false` push either.
+  // A terminal `status` is the client-side backstop for that optimistic
+  // raise.
+  it('a terminal status push clears an optimistic busy raise the server never corrected', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'starting' });
+
+    store.prompt('go');
+    expect(store.busy).toBe(true);
+    expect(store.turnStartedAt).not.toBeNull();
+
+    // No `busy` push follows — the handshake failed before `busy?` ever
+    // flipped server-side, so there is nothing for maybe_broadcast_busy/1 to
+    // broadcast. `fail/2` still broadcasts the terminal status, though.
+    fake.emit('status', { status: 'failed' });
+
+    expect(store.busy).toBe(false);
+    expect(store.turnStartedAt).toBeNull();
+  });
+
+  // Same backstop, via the `exit` push instead of `status` — the other
+  // terminal transition that can arrive with no preceding `busy: false`.
+  it('the exit push clears an optimistic busy raise the same way', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'starting' });
+
+    store.prompt('go');
+    expect(store.busy).toBe(true);
+    expect(store.turnStartedAt).not.toBeNull();
+
+    fake.emit('exit', { exit_code: 1 });
+
+    expect(store.status).toBe('exited');
+    expect(store.busy).toBe(false);
+    expect(store.turnStartedAt).toBeNull();
+  });
+
+  // The backstop must not fire early: a non-terminal status push (the
+  // ordinary starting -> running transition) leaves an in-flight optimistic
+  // raise alone — only exited/failed/ended clear it.
+  it('a non-terminal status push does not clear busy', () => {
+    const fake = fakeChannel();
+    const store = new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false, status: 'starting' });
+
+    store.prompt('go');
+    fake.emit('status', { status: 'running' });
+
+    expect(store.busy).toBe(true);
+    expect(store.turnStartedAt).not.toBeNull();
+  });
+
   it('the client queue drains on the turn item, and busy simply follows the server through the handoff', () => {
     const fake = fakeChannel();
     const store = new AgentSessionStore('s', {}, () => fake.channel);

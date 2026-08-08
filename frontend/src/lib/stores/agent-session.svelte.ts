@@ -13,6 +13,9 @@ export type AcpItem = { seq?: number; id: string; type: string; [k: string]: unk
 
 export type AgentSessionStatus = 'connecting' | 'starting' | 'running' | 'exited' | 'failed' | 'ended';
 
+/** The statuses that mean the session is over — no more `busy` pushes are coming. See the `busy` backstop in the class doc. */
+const TERMINAL_STATUSES: ReadonlySet<AgentSessionStatus> = new Set(['exited', 'failed', 'ended']);
+
 /** One client-side queued message, editable until it is actually sent. */
 export type QueuedMessage = { id: string; text: string };
 
@@ -32,9 +35,17 @@ type JoinFn = (id: string) => Channel;
  *    it's actually present; snapshot items are merged unconditionally by id.
  *  - `busy` is the SERVER's answer, not an inference: seeded from
  *    `reply.busy` at join and updated by the `busy` push on every
- *    transition. `prompt/1` still raises it optimistically so the box reacts
- *    to your own send without a round trip; the next server push corrects it
- *    if that guess was ever wrong.
+ *    transition the server's own state machine actually makes
+ *    (`maybe_broadcast_busy/1` in `SessionServer` pushes on CHANGE only).
+ *    `prompt/1` still raises it optimistically so the box reacts to your own
+ *    send without a round trip; ordinarily the next server push corrects it
+ *    if that guess was ever wrong. But a session whose server-side `busy?`
+ *    never became `true` in the first place — an adapter that fails its
+ *    handshake before any turn starts is the case that bit — never gets a
+ *    `false` push either, since there is no change to broadcast. A terminal
+ *    `status` (`exited`/`failed`/`ended`) and the `exit` push are the
+ *    client-side backstop for exactly that: whichever fires, `#setBusy(false)`
+ *    clears an optimistic raise the server never learned about.
  *
  * Third constructor argument (`join`) is dependency injection purely for
  * tests — mirrors `PageEditorStore`/`WorkspaceStore` taking their API surface
@@ -107,9 +118,19 @@ export class AgentSessionStore {
     });
     this.#channel.on('status', (payload: { status: string }) => {
       this.status = payload.status as AgentSessionStatus;
+      // Backstop for an optimistic `prompt/1` raise the server never learned
+      // about — see class doc. `maybe_broadcast_busy/1` only pushes on a
+      // CHANGE, so a session that fails before its `busy?` ever became
+      // `true` server-side (a handshake timeout is the case that bit) sends
+      // this terminal status but no matching `busy: false`.
+      if (TERMINAL_STATUSES.has(this.status)) this.#setBusy(false);
     });
     this.#channel.on('exit', () => {
       this.status = 'exited';
+      // Same backstop as the terminal-status branch above, for the one
+      // terminal transition that arrives on its own push instead of through
+      // `status`.
+      this.#setBusy(false);
     });
     // Authoritative (see the class doc). The join reply carries the value at
     // attach time; this carries every change after it.
