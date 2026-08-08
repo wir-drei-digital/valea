@@ -1,5 +1,6 @@
 import type { Channel } from 'phoenix';
 import { joinAgentSession } from '../socket';
+import { configCurrent, configOptions, configWireId } from '../components/agent/item-shapes';
 
 /**
  * One rendered item in an agent session's timeline. Backend items are raw
@@ -82,9 +83,23 @@ export class AgentSessionStore {
   #cursor = 0;
   #initialPrompt: string | null;
   #queueCounter = 0;
+  /**
+   * Config the caller wants this session to START with — the workspace's
+   * remembered chips, staged at creation (`composer-options.svelte.ts`).
+   * Keys are wire ids; each is applied at most once, the first time its
+   * config item arrives, then removed. Empty for every session this client
+   * did not just create, which is how a RESUMED session keeps its own
+   * configuration.
+   */
+  #applyConfig: Record<string, string>;
 
-  constructor(id: string, opts: { initialPrompt?: string | null } = {}, join: JoinFn = joinAgentSession) {
+  constructor(
+    id: string,
+    opts: { initialPrompt?: string | null; applyConfig?: Record<string, string> | null } = {},
+    join: JoinFn = joinAgentSession
+  ) {
     this.#initialPrompt = opts.initialPrompt ?? null;
+    this.#applyConfig = { ...(opts.applyConfig ?? {}) };
     this.#channel = join(id);
 
     this.#channel.on('event', (payload: { seq: number; item: AcpItem }) => {
@@ -155,6 +170,8 @@ export class AgentSessionStore {
     // The `turn` item still drives the CLIENT QUEUE below: that is about
     // when locally-held messages may go, not about what the agent is doing.
 
+    if (item.type === 'config') this.#applyStagedConfig(item);
+
     this.#rebuild();
 
     if (item.type === 'turn') this.#flushQueue();
@@ -190,6 +207,32 @@ export class AgentSessionStore {
   /** The wire push `prompt/1` and `#flushQueue` share — see both for why they raise `busy` differently around it. */
   #pushPrompt(content: string): void {
     this.#channel.push('prompt', { content });
+  }
+
+  /**
+   * Pushes this session's staged value for `item`, if it still makes sense.
+   *
+   * Three gates, each of which has to hold or the push is dropped rather
+   * than sent and refused: the wire id must be staged, the value must
+   * actually differ from what the adapter already has, and it must still be
+   * among the options this adapter offers — a model the harness has since
+   * retired is forgotten here rather than pushed and rejected.
+   *
+   * The key is removed either way, so an option is attempted at most once
+   * per session: `set_config_option` re-emits the item, and re-reading a
+   * staged value on that echo would loop.
+   */
+  #applyStagedConfig(item: AcpItem): void {
+    const wireId = configWireId(item);
+    if (!(wireId in this.#applyConfig)) return;
+
+    const wanted = this.#applyConfig[wireId];
+    delete this.#applyConfig[wireId];
+
+    if (wanted === configCurrent(item)) return;
+    if (!configOptions(item).some((option) => option.id === wanted)) return;
+
+    this.setConfigOption(wireId, wanted);
   }
 
   /**

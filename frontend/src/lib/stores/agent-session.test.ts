@@ -323,6 +323,69 @@ describe('AgentSessionStore', () => {
     expect(store.error).toBe('session_not_found');
   });
 
+  const configItem = (wireId: string, current: string, options: string[]) => ({
+    id: `config-${wireId}`,
+    type: 'config',
+    config_id: wireId,
+    name: wireId,
+    current,
+    options: options.map((id) => ({ id, name: id }))
+  });
+
+  it('applies a staged option once the config item arrives', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s', { applyConfig: { model: 'opus' } }, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('event', { seq: 1, item: configItem('model', 'sonnet', ['sonnet', 'opus']) });
+
+    expect(fake.pushed).toContainEqual({
+      event: 'set_config_option',
+      payload: { config_id: 'model', value: 'opus' }
+    });
+  });
+
+  it('pushes each staged option at most once', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s', { applyConfig: { model: 'opus' } }, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('event', { seq: 1, item: configItem('model', 'sonnet', ['sonnet', 'opus']) });
+    fake.emit('event', { seq: 2, item: configItem('model', 'opus', ['sonnet', 'opus']) });
+
+    expect(fake.pushed.filter((p) => p.event === 'set_config_option')).toHaveLength(1);
+  });
+
+  it('says nothing when the option already matches', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s', { applyConfig: { model: 'opus' } }, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('event', { seq: 1, item: configItem('model', 'opus', ['sonnet', 'opus']) });
+
+    expect(fake.pushed.filter((p) => p.event === 'set_config_option')).toHaveLength(0);
+  });
+
+  it('drops a remembered value the adapter no longer offers', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s', { applyConfig: { model: 'retired-model' } }, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('event', { seq: 1, item: configItem('model', 'sonnet', ['sonnet', 'opus']) });
+
+    expect(fake.pushed.filter((p) => p.event === 'set_config_option')).toHaveLength(0);
+  });
+
+  it('leaves config alone when nothing was staged', () => {
+    const fake = fakeChannel();
+    new AgentSessionStore('s', {}, () => fake.channel);
+    fake.resolveJoinOk({ items: [], cursor: 0, busy: false });
+
+    fake.emit('event', { seq: 1, item: configItem('model', 'sonnet', ['sonnet', 'opus']) });
+
+    expect(fake.pushed.filter((p) => p.event === 'set_config_option')).toHaveLength(0);
+  });
+
   it('dispose leaves the channel', () => {
     const fake = fakeChannel();
     const store = new AgentSessionStore('s1', {}, () => fake.channel);

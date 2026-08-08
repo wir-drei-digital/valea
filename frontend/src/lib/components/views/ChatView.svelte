@@ -27,6 +27,7 @@
   import { sessionsListStore } from '$lib/stores/sessions-list.svelte';
   import { AgentSessionStore } from '$lib/stores/agent-session.svelte';
   import { takeInitialPrompt, setInitialPrompt } from '$lib/stores/initial-prompt';
+  import { composerOptions } from '$lib/stores/composer-options.svelte';
   import {
     Transcript,
     PlanBar,
@@ -76,7 +77,10 @@
     // before the descriptor became `chat:<id>` — the store fires it as the
     // first user turn once its channel join succeeds. A plain sessions-list
     // click or a reload finds nothing pending, which is safe.
-    const session = new AgentSessionStore(id, { initialPrompt: takeInitialPrompt(id) });
+    const session = new AgentSessionStore(id, {
+      initialPrompt: takeInitialPrompt(id),
+      applyConfig: composerOptions.takeStaged(id)
+    });
     store = session;
     return () => {
       session.dispose();
@@ -458,6 +462,10 @@
     }
     const data = result.data as { id: string };
     setInitialPrompt(data.id, text);
+    // Staged for THIS session only — the store applies it on its first join
+    // and forgets it. Resumed sessions stage nothing and keep their own
+    // configuration.
+    composerOptions.stageFor(data.id, workspaceStore.id);
     void sessionsListStore.refresh();
     void recentSessionsStore.refresh();
     context.sessionCreated?.(data.id);
@@ -798,7 +806,14 @@
             placeholder={ended ? 'Continue this session…' : 'Message the agent…'}
             onSend={(text) => (ended ? void resumeAndPrompt(text) : store?.send(text))}
             onStop={() => store?.cancel()}
-            onSetConfig={(configId, value) => store?.setConfigOption(configId, value)}
+            onSetConfig={(configId, value) => {
+              store?.setConfigOption(configId, value);
+              // Remembered for the workspace, so the NEXT session starts here
+              // (`composer-options.svelte.ts`). Written on the user's own
+              // change only — never on an adapter-pushed config update, which
+              // does not come through this callback.
+              composerOptions.remember(workspaceStore.id, configId, String(value));
+            }}
             onEditQueued={(id, text) => store?.updateQueued(id, text)}
             onDismissQueued={(id) => store?.dismissQueued(id)}
             onSendQueuedNow={(id) => store?.sendQueuedNow(id)}
